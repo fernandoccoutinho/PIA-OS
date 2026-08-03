@@ -25,6 +25,8 @@ nav:
   - Início: index.md
   - Primeiros passos: getting-started.md
   - Arquitetura: architecture.md
+  - Entregas:
+      - Entrega 1 — Infraestrutura: entregas/entrega-1.md
 
 markdown_extensions:
   - admonition
