@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pia-os"
+version = "0.1.0"
+description = "PIA-OS — plataforma de gerenciamento de conhecimento com memória local e integração governada de IA."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Fernando Coutinho", email = "fernandoccoutinho@gmail.com" }]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "black>=24.10",
+    "pre-commit>=4.0",
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+]
+
+[project.urls]
+Repository = "https://github.com/fernandoccoutinho/PIA-OS"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pia_os"]
+
+# ---------------------------------------------------------------------------
+# Padronização de código
+# ---------------------------------------------------------------------------
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle · F: pyflakes · I: isort · N: pep8-naming
+# UP: pyupgrade · B: bugbear · C4: comprehensions · SIM: simplify
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM"]
+# Black cuida da formatação; deixamos o Ruff só linting/imports.
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pia_os"]
+
+# ---------------------------------------------------------------------------
+# Testes e cobertura
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --cov=pia_os --cov-report=term-missing"
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["pia_os"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

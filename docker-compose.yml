@@ -1,0 +1,38 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pia-os:dev
+    container_name: pia-os-api
+    env_file:
+      - .env
+    environment:
+      PIA_DATABASE_URL: postgresql+psycopg://pia:pia@db:5432/pia_os
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: pia-os-db
+    environment:
+      POSTGRES_USER: pia
+      POSTGRES_PASSWORD: pia
+      POSTGRES_DB: pia_os
+    ports:
+      - "5432:5432"
+    volumes:
+      - pia_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pia -d pia_os"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pia_pgdata:

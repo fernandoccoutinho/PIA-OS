@@ -1,0 +1,13 @@
+# Normaliza quebras de linha: LF no repositório para todos os arquivos de texto.
+* text=auto eol=lf
+
+# Scripts que exigem CRLF (Windows), se houver.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Arquivos binários — nunca normalizar.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary

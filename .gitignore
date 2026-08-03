@@ -60,6 +60,9 @@ docker-compose.override.yml
 logs/
 *.log
 
+# ===== Documentação (MkDocs build) =====
+site/
+
 # ===== Node / Frontend (interface web) =====
 node_modules/
 .next/

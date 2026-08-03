@@ -1,0 +1,34 @@
+site_name: PIA-OS
+site_description: Plataforma de gerenciamento de conhecimento e integração de IA.
+repo_url: https://github.com/fernandoccoutinho/PIA-OS
+docs_dir: docs
+
+theme:
+  name: material
+  language: pt
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Modo escuro
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Modo claro
+  features:
+    - navigation.sections
+    - content.code.copy
+
+nav:
+  - Início: index.md
+  - Primeiros passos: getting-started.md
+  - Arquitetura: architecture.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - toc:
+      permalink: true
