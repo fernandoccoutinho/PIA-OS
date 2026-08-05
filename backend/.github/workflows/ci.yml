@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pia_user
+          POSTGRES_PASSWORD: pia_password
+          POSTGRES_DB: pia_os
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pia_user -d pia_os"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://pia_user:pia_password@localhost:5432/pia_os
+      ENVIRONMENT: testing
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements/dev.txt
+
+      - name: Install dependencies
+        run: make install-dev
+
+      - name: Lint, format check, tests with coverage
+        run: make check
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            backend/htmlcov
+            backend/coverage.xml
+          retention-days: 14

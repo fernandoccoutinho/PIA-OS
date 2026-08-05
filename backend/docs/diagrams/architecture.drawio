@@ -1,0 +1,36 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Arquitetura Geral" id="architecture">
+    <mxGraphModel dx="800" dy="600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="mw" value="Middlewares (CORS, RequestID, Security, Timing, Logging)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="360" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="api" value="Camada de API (2.5, 2.9)&#10;api/router.py, routers/*, dependencies" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="140" width="360" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="err" value="Tratamento de Erros (2.7)&#10;PIAOSException, Registry, Handlers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;" vertex="1" parent="1">
+          <mxGeometry x="440" y="140" width="320" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="persist" value="Persistencia e ORM (2.3, 2.4)&#10;repositories/*, UnitOfWork, models/, database/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="240" width="360" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="config" value="Configuracao Central (2.2)&#10;config/settings.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1">
+          <mxGeometry x="440" y="240" width="320" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="obs" value="Observabilidade (2.6, 2.8)&#10;logging/, security/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="40" y="340" width="360" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="db" value="PostgreSQL" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1">
+          <mxGeometry x="140" y="440" width="160" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="mw" target="api"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="api" target="err"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="api" target="persist"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="persist" target="db"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;" edge="1" parent="1" source="config" target="api"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

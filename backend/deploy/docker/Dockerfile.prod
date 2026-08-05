@@ -1,0 +1,59 @@
+# Dockerfile.prod — imagem de produção multi-stage.
+#
+# Estágio `builder` instala dependências de compilação (gcc, headers do
+# libpq) e monta um venv; estágio final copia só o venv pronto e o
+# código, sem toolchain de build — imagem final menor e com superfície
+# de ataque reduzida. Usuário não-root, sem dependências de
+# desenvolvimento, `gunicorn` com workers `uvicorn` (processo supervisor
+# real para múltiplos workers, o que `uvicorn` sozinho não oferece).
+
+# --- Estágio 1: build ---
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /srv/app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements/ requirements/
+RUN pip install --no-cache-dir -r requirements/prod.txt
+
+# --- Estágio 2: runtime ---
+FROM python:3.12-slim AS production
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /srv/app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system piaos \
+    && useradd --system --gid piaos --home-dir /srv/app --shell /usr/sbin/nologin piaos
+
+COPY --from=builder /opt/venv /opt/venv
+COPY . .
+RUN chown -R piaos:piaos /srv/app
+
+USER piaos
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS http://localhost:8000/api/v1/health || exit 1
+
+CMD ["gunicorn", "main:app", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--workers", "4", \
+     "--bind", "0.0.0.0:8000", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-"]

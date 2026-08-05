@@ -1,0 +1,30 @@
+[project]
+name = "pia-os-backend"
+version = "0.1.0"
+description = "PIA-OS Backend — infraestrutura arquitetural (Módulo 2.1)"
+requires-python = ">=3.12"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]
+
+# Configuração de testes (pytest, coverage) vive em arquivos dedicados —
+# pytest.ini e coverage.ini — não aqui, conforme o Módulo 2.10. pytest
+# prioriza pytest.ini sobre [tool.pytest.ini_options] quando ambos
+# existem; manter os dois seria uma fonte de divergência silenciosa.
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

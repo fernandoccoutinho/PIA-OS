@@ -1,0 +1,38 @@
+# .dockerignore (cópia documentada — não é a que o Docker usa de fato).
+#
+# O Docker sempre procura `.dockerignore` na raiz do CONTEXTO de build,
+# não ao lado do Dockerfile. Como o contexto de build desta imagem é a
+# raiz de `backend/` (precisa enxergar `requirements/`, `app/`,
+# `main.py`), o arquivo funcional é `backend/.dockerignore` — este aqui
+# é mantido idêntico apenas para que a estrutura `deploy/docker/` (como
+# pedida) documente visualmente o que é ignorado, sem duplicar a fonte
+# de verdade: se precisar mudar o comportamento, edite
+# `backend/.dockerignore`, não este.
+
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.env.*
+!deploy/env/.env.example
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.egg-info/
+
+.git/
+.github/
+.gitignore
+
+tests/
+docs/
+*.md
+!README.md
+
+.DS_Store
