@@ -1,0 +1,300 @@
+path,category,module,purpose
+app/database/base.py,código,app/database,implementação de infraestrutura
+app/database/__init__.py,código,app/database,implementação de infraestrutura
+app/database/engine.py,código,app/database,implementação de infraestrutura
+app/database/session.py,código,app/database,implementação de infraestrutura
+app/database/health.py,código,app/database,implementação de infraestrutura
+app/database/migrations.py,código,app/database,implementação de infraestrutura
+app/config/config.py,código,app/config,implementação de infraestrutura
+app/config/loader.py,código,app/config,implementação de infraestrutura
+app/config/__init__.py,código,app/config,implementação de infraestrutura
+app/config/settings.py,código,app/config,implementação de infraestrutura
+app/config/validators.py,código,app/config,implementação de infraestrutura
+app/config/constants.py,código,app/config,implementação de infraestrutura
+app/config/environment.py,código,app/config,implementação de infraestrutura
+app/middleware/__init__.py,código,app/middleware,implementação de infraestrutura
+app/middleware/request_id.py,código,app/middleware,implementação de infraestrutura
+app/middleware/exception_handler.py,código,app/middleware,implementação de infraestrutura
+app/middleware/timing.py,código,app/middleware,implementação de infraestrutura
+app/services/__init__.py,código,app/services,implementação de infraestrutura
+app/schemas/common.py,código,app/schemas,implementação de infraestrutura
+app/schemas/__init__.py,código,app/schemas,implementação de infraestrutura
+app/schemas/error.py,código,app/schemas,implementação de infraestrutura
+app/schemas/health.py,código,app/schemas,implementação de infraestrutura
+app/__init__.py,código,app/__init__.py,implementação de infraestrutura
+app/routers/__init__.py,código,app/routers,implementação de infraestrutura
+app/routers/metrics.py,código,app/routers,implementação de infraestrutura
+app/routers/root.py,código,app/routers,implementação de infraestrutura
+app/routers/status.py,código,app/routers,implementação de infraestrutura
+app/routers/health.py,código,app/routers,implementação de infraestrutura
+app/routers/version.py,código,app/routers,implementação de infraestrutura
+app/repositories/repository_protocol.py,código,app/repositories,implementação de infraestrutura
+app/repositories/__init__.py,código,app/repositories,implementação de infraestrutura
+app/repositories/exceptions.py,código,app/repositories,implementação de infraestrutura
+app/repositories/base_repository.py,código,app/repositories,implementação de infraestrutura
+app/repositories/unit_of_work.py,código,app/repositories,implementação de infraestrutura
+app/api/responses.py,código,app/api,implementação de infraestrutura
+app/api/__init__.py,código,app/api,implementação de infraestrutura
+app/api/router.py,código,app/api,implementação de infraestrutura
+app/api/documentation.py,código,app/api,implementação de infraestrutura
+app/api/dependencies.py,código,app/api,implementação de infraestrutura
+app/api/module_registry.py,código,app/api,implementação de infraestrutura
+app/logging/formatters.py,código,app/logging,implementação de infraestrutura
+app/logging/filters.py,código,app/logging,implementação de infraestrutura
+app/logging/config.py,código,app/logging,implementação de infraestrutura
+app/logging/__init__.py,código,app/logging,implementação de infraestrutura
+app/logging/middleware.py,código,app/logging,implementação de infraestrutura
+app/logging/handlers.py,código,app/logging,implementação de infraestrutura
+app/logging/context.py,código,app/logging,implementação de infraestrutura
+app/logging/events.py,código,app/logging,implementação de infraestrutura
+app/logging/logger.py,código,app/logging,implementação de infraestrutura
+app/exceptions/configuration.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/base.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/__init__.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/handlers.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/api.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/registry.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/database.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/infrastructure.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/validation.py,código,app/exceptions,implementação de infraestrutura
+app/exceptions/external.py,código,app/exceptions,implementação de infraestrutura
+app/models/__init__.py,código,app/models,implementação de infraestrutura
+app/models/mixins.py,código,app/models,implementação de infraestrutura
+app/models/base_model.py,código,app/models,implementação de infraestrutura
+app/docs/responses.py,código,app/docs,implementação de infraestrutura
+app/docs/__init__.py,código,app/docs,implementação de infraestrutura
+app/docs/examples.py,código,app/docs,implementação de infraestrutura
+app/docs/schemas.py,código,app/docs,implementação de infraestrutura
+app/docs/metadata.py,código,app/docs,implementação de infraestrutura
+app/docs/tags.py,código,app/docs,implementação de infraestrutura
+app/docs/changelog.py,código,app/docs,implementação de infraestrutura
+app/docs/openapi.py,código,app/docs,implementação de infraestrutura
+app/core/__init__.py,código,app/core,implementação de infraestrutura
+app/core/error_codes.py,código,app/core,implementação de infraestrutura
+app/core/lifespan.py,código,app/core,implementação de infraestrutura
+app/core/exceptions.py,código,app/core,implementação de infraestrutura
+app/core/security.py,código,app/core,implementação de infraestrutura
+app/core/logging.py,código,app/core,implementação de infraestrutura
+app/utils/__init__.py,código,app/utils,implementação de infraestrutura
+app/utils/logger.py,código,app/utils,implementação de infraestrutura
+app/security/secrets.py,código,app/security,implementação de infraestrutura
+app/security/csrf.py,código,app/security,implementação de infraestrutura
+app/security/__init__.py,código,app/security,implementação de infraestrutura
+app/security/headers.py,código,app/security,implementação de infraestrutura
+app/security/middleware.py,código,app/security,implementação de infraestrutura
+app/security/policies.py,código,app/security,implementação de infraestrutura
+app/security/trusted_hosts.py,código,app/security,implementação de infraestrutura
+app/security/sanitization.py,código,app/security,implementação de infraestrutura
+app/security/cors.py,código,app/security,implementação de infraestrutura
+app/security/request_validation.py,código,app/security,implementação de infraestrutura
+app/security/rate_limit.py,código,app/security,implementação de infraestrutura
+tests/helpers/__init__.py,teste,2.10,suíte automatizada
+tests/helpers/mocks.py,teste,2.10,suíte automatizada
+tests/helpers/assertions.py,teste,2.10,suíte automatizada
+tests/test_infrastructure.py,teste,2.10,suíte automatizada
+tests/__init__.py,teste,2.10,suíte automatizada
+tests/fixtures/users.py,teste,2.10,suíte automatizada
+tests/fixtures/__init__.py,teste,2.10,suíte automatizada
+tests/fixtures/settings.py,teste,2.10,suíte automatizada
+tests/fixtures/database.py,teste,2.10,suíte automatizada
+tests/fixtures/application.py,teste,2.10,suíte automatizada
+tests/integration/database/__init__.py,teste,2.10,suíte automatizada
+tests/integration/database/test_database_connectivity.py,teste,2.10,suíte automatizada
+tests/integration/__init__.py,teste,2.10,suíte automatizada
+tests/integration/api/test_health.py,teste,2.10,suíte automatizada
+tests/integration/api/__init__.py,teste,2.10,suíte automatizada
+tests/integration/api/test_root.py,teste,2.10,suíte automatizada
+tests/integration/api/test_application_lifespan.py,teste,2.10,suíte automatizada
+tests/integration/logging/test_logging_middleware.py,teste,2.10,suíte automatizada
+tests/integration/logging/__init__.py,teste,2.10,suíte automatizada
+tests/unit/database/test_migrations.py,teste,2.10,suíte automatizada
+tests/unit/database/test_nested_transactions.py,teste,2.10,suíte automatizada
+tests/unit/database/__init__.py,teste,2.10,suíte automatizada
+tests/unit/database/test_database_health.py,teste,2.10,suíte automatizada
+tests/unit/database/test_session_async_paths.py,teste,2.10,suíte automatizada
+tests/unit/database/test_concurrency.py,teste,2.10,suíte automatizada
+tests/unit/database/test_engine_listeners.py,teste,2.10,suíte automatizada
+tests/unit/database/test_database.py,teste,2.10,suíte automatizada
+tests/unit/config/test_startup_validation.py,teste,2.10,suíte automatizada
+tests/unit/config/test_validators.py,teste,2.10,suíte automatizada
+tests/unit/config/__init__.py,teste,2.10,suíte automatizada
+tests/unit/config/test_config.py,teste,2.10,suíte automatizada
+tests/unit/config/test_loader.py,teste,2.10,suíte automatizada
+tests/unit/config/test_error_codes.py,teste,2.10,suíte automatizada
+tests/unit/config/test_environment.py,teste,2.10,suíte automatizada
+tests/unit/config/test_constants.py,teste,2.10,suíte automatizada
+tests/unit/middleware/__init__.py,teste,2.10,suíte automatizada
+tests/unit/middleware/test_request_id_middleware.py,teste,2.10,suíte automatizada
+tests/unit/middleware/test_timing_middleware.py,teste,2.10,suíte automatizada
+tests/unit/deploy/test_docker_compose.py,teste,2.10,suíte automatizada
+tests/unit/deploy/__init__.py,teste,2.10,suíte automatizada
+tests/unit/deploy/test_dockerfiles.py,teste,2.10,suíte automatizada
+tests/unit/deploy/test_env_files.py,teste,2.10,suíte automatizada
+tests/unit/deploy/test_nginx.py,teste,2.10,suíte automatizada
+tests/unit/deploy/test_scripts.py,teste,2.10,suíte automatizada
+tests/unit/__init__.py,teste,2.10,suíte automatizada
+tests/unit/repositories/test_repository_pagination.py,teste,2.10,suíte automatizada
+tests/unit/repositories/test_repository_protocol.py,teste,2.10,suíte automatizada
+tests/unit/repositories/__init__.py,teste,2.10,suíte automatizada
+tests/unit/repositories/test_repository.py,teste,2.10,suíte automatizada
+tests/unit/repositories/test_repository_exceptions.py,teste,2.10,suíte automatizada
+tests/unit/repositories/test_unit_of_work.py,teste,2.10,suíte automatizada
+tests/unit/api/test_responses.py,teste,2.10,suíte automatizada
+tests/unit/api/test_dependencies.py,teste,2.10,suíte automatizada
+tests/unit/api/test_docs_schemas.py,teste,2.10,suíte automatizada
+tests/unit/api/test_docs_tags.py,teste,2.10,suíte automatizada
+tests/unit/api/__init__.py,teste,2.10,suíte automatizada
+tests/unit/api/test_docs_responses.py,teste,2.10,suíte automatizada
+tests/unit/api/test_docs_metadata.py,teste,2.10,suíte automatizada
+tests/unit/api/test_docs_openapi.py,teste,2.10,suíte automatizada
+tests/unit/api/test_api_documentation.py,teste,2.10,suíte automatizada
+tests/unit/api/test_docs_changelog.py,teste,2.10,suíte automatizada
+tests/unit/api/test_docs_examples.py,teste,2.10,suíte automatizada
+tests/unit/logging/test_logging_events.py,teste,2.10,suíte automatizada
+tests/unit/logging/test_utils_logger_shim.py,teste,2.10,suíte automatizada
+tests/unit/logging/__init__.py,teste,2.10,suíte automatizada
+tests/unit/logging/test_logging_context.py,teste,2.10,suíte automatizada
+tests/unit/logging/test_logging_filters.py,teste,2.10,suíte automatizada
+tests/unit/logging/test_logging_config.py,teste,2.10,suíte automatizada
+tests/unit/logging/test_logging_handlers.py,teste,2.10,suíte automatizada
+tests/unit/logging/test_logging_formatters.py,teste,2.10,suíte automatizada
+tests/unit/logging/test_core_logging.py,teste,2.10,suíte automatizada
+tests/unit/exceptions/__init__.py,teste,2.10,suíte automatizada
+tests/unit/exceptions/test_exceptions_environment_behavior.py,teste,2.10,suíte automatizada
+tests/unit/exceptions/test_exceptions_hierarchy.py,teste,2.10,suíte automatizada
+tests/unit/exceptions/test_exceptions_registry.py,teste,2.10,suíte automatizada
+tests/unit/exceptions/test_exceptions_handlers.py,teste,2.10,suíte automatizada
+tests/unit/exceptions/test_api_exceptions.py,teste,2.10,suíte automatizada
+tests/unit/models/__init__.py,teste,2.10,suíte automatizada
+tests/unit/models/test_base_model.py,teste,2.10,suíte automatizada
+tests/unit/models/test_mixins.py,teste,2.10,suíte automatizada
+tests/unit/docs/__init__.py,teste,2.10,suíte automatizada
+tests/unit/docs/test_docs_consistency.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_sanitization.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_headers.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_rate_limit.py,teste,2.10,suíte automatizada
+tests/unit/security/__init__.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_cors.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_csrf.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_policies.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_middleware.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_trusted_hosts.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_secrets.py,teste,2.10,suíte automatizada
+tests/unit/security/test_security_request_validation.py,teste,2.10,suíte automatizada
+tests/factories/__init__.py,teste,2.10,suíte automatizada
+tests/factories/models.py,teste,2.10,suíte automatizada
+tests/conftest.py,teste,2.10,suíte automatizada
+deploy/README_DEPLOY.md,deploy,2.11,containerização/operação
+deploy/compose/docker-compose.test.yml,deploy,2.11,containerização/operação
+deploy/compose/docker-compose.dev.yml,deploy,2.11,containerização/operação
+deploy/compose/docker-compose.yml,deploy,2.11,containerização/operação
+deploy/compose/docker-compose.prod.yml,deploy,2.11,containerização/operação
+deploy/docker/.dockerignore,deploy,2.11,containerização/operação
+deploy/docker/Dockerfile.dev,deploy,2.11,containerização/operação
+deploy/docker/Dockerfile,deploy,2.11,containerização/operação
+deploy/docker/Dockerfile.prod,deploy,2.11,containerização/operação
+deploy/env/.env.production,deploy,2.11,containerização/operação
+deploy/env/.env.development,deploy,2.11,containerização/operação
+deploy/env/.env.test,deploy,2.11,containerização/operação
+deploy/env/.env.example,deploy,2.11,containerização/operação
+deploy/scripts/wait_for_db.sh,deploy,2.11,containerização/operação
+deploy/scripts/start.sh,deploy,2.11,containerização/operação
+deploy/scripts/restore.sh,deploy,2.11,containerização/operação
+deploy/scripts/healthcheck.sh,deploy,2.11,containerização/operação
+deploy/scripts/backup.sh,deploy,2.11,containerização/operação
+deploy/scripts/stop.sh,deploy,2.11,containerização/operação
+deploy/nginx/default.conf,deploy,2.11,containerização/operação
+deploy/nginx/nginx.conf,deploy,2.11,containerização/operação
+docs/API.md,documentação,2.12,documentação técnica
+docs/SECURITY.md,documentação,2.12,documentação técnica
+docs/development/workflow.md,documentação,2.12,documentação técnica
+docs/development/coding_standards.md,documentação,2.12,documentação técnica
+docs/development/contributing.md,documentação,2.12,documentação técnica
+docs/development/release_process.md,documentação,2.12,documentação técnica
+docs/ERRORS.md,documentação,2.12,documentação técnica
+docs/LOGGING.md,documentação,2.12,documentação técnica
+docs/backend/configuration.md,documentação,2.12,documentação técnica
+docs/backend/security.md,documentação,2.12,documentação técnica
+docs/backend/testing.md,documentação,2.12,documentação técnica
+docs/backend/database.md,documentação,2.12,documentação técnica
+docs/backend/logging.md,documentação,2.12,documentação técnica
+docs/backend/exceptions.md,documentação,2.12,documentação técnica
+docs/backend/api.md,documentação,2.12,documentação técnica
+docs/backend/deployment.md,documentação,2.12,documentação técnica
+docs/backend/orm.md,documentação,2.12,documentação técnica
+docs/API_DOCUMENTATION.md,documentação,2.12,documentação técnica
+docs/adr/ADR-001.md,documentação,2.12,documentação técnica
+docs/adr/ADR-005.md,documentação,2.12,documentação técnica
+docs/adr/ADR-007.md,documentação,2.12,documentação técnica
+docs/adr/ADR-002.md,documentação,2.12,documentação técnica
+docs/adr/ADR-008.md,documentação,2.12,documentação técnica
+docs/adr/ADR-003.md,documentação,2.12,documentação técnica
+docs/adr/ADR-004.md,documentação,2.12,documentação técnica
+docs/adr/ADR-006.md,documentação,2.12,documentação técnica
+docs/adr/index.md,documentação,2.12,documentação técnica
+docs/CONFIGURATION.md,documentação,2.12,documentação técnica
+docs/TESTING.md,documentação,2.12,documentação técnica
+docs/architecture/traceability_matrix.md,documentação,2.12,documentação técnica
+docs/architecture/dependency_map.md,documentação,2.12,documentação técnica
+docs/architecture/module_map.md,documentação,2.12,documentação técnica
+docs/architecture/overview.md,documentação,2.12,documentação técnica
+docs/architecture/directory_structure.md,documentação,2.12,documentação técnica
+docs/diagrams/request_flow.drawio,documentação,2.12,documentação técnica
+docs/diagrams/module_dependencies.drawio,documentação,2.12,documentação técnica
+docs/diagrams/deployment.drawio,documentação,2.12,documentação técnica
+docs/diagrams/architecture.md,documentação,2.12,documentação técnica
+docs/diagrams/request_flow.md,documentação,2.12,documentação técnica
+docs/diagrams/architecture.drawio,documentação,2.12,documentação técnica
+docs/diagrams/module_dependencies.md,documentação,2.12,documentação técnica
+docs/diagrams/deployment.md,documentação,2.12,documentação técnica
+docs/DATABASE.md,documentação,2.12,documentação técnica
+Developer_Build_Kit/00_START_HERE/README.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/01_Entrega_1/README.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Referencias/README.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Auditorias/DOCUMENTATION_REPORT.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Auditorias/CODE_QUALITY_REPORT.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Auditorias/TEST_REPORT.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Auditorias/GLOBAL_ARCHITECTURE_AUDIT.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Auditorias/OPENAPI_REPORT.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Auditorias/DEPLOY_REPORT.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.9/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.10/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.3/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.6/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.1/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.4/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.8/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.12/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.11/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.2/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.7/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.5/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/02_Entrega_2/2.13/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/ADR-001.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/ADR-005.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/ADR-007.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/ADR-002.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/ADR-008.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/ADR-003.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/ADR-004.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/ADR-006.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/ADRs/index.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.3.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.4.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.10.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.8.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.5.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.13.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/README.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.9.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.2.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.1.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.11.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.6.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.7.md,build-kit,2.13,navegação/rastreabilidade
+Developer_Build_Kit/Prompts/prompt-2.12.md,build-kit,2.13,navegação/rastreabilidade
+main.py,código,2.1,entrypoint da aplicação
+pytest.ini,configuração,2.10,configuração de testes
+coverage.ini,configuração,2.10,configuração de cobertura
+pyproject.toml,configuração,2.1,configuração de ferramentas
+Makefile,configuração,2.1,comandos padronizados

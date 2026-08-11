@@ -1,0 +1,31 @@
+# Dockerfile.dev — desenvolvimento local com hot reload.
+#
+# Roda como root de propósito (não `Dockerfile.prod`'s usuário não-root):
+# em desenvolvimento o código é bind-mounted do host (ver
+# docker-compose.dev.yml), e permissões de arquivo do host geralmente
+# não coincidem com um UID de container não-root, causando erros de
+# escrita irritantes sem ganho de segurança real (o container de dev
+# nunca é exposto fora da máquina do desenvolvedor).
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /srv/app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 build-essential libpq-dev curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements/ requirements/
+RUN pip install --no-cache-dir -r requirements/dev.txt
+
+# Código copiado aqui só é usado se a imagem rodar sem o bind mount do
+# compose (ex.: `docker build` isolado, fora do docker-compose.dev.yml).
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
