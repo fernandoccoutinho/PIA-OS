@@ -23,7 +23,6 @@ wheels/
 # Ambientes virtuais
 .venv/
 venv/
-env/
 ENV/
 
 # ===== Testes / cobertura =====
@@ -45,6 +44,11 @@ coverage.xml
 .env
 .env.*
 !.env.example
+# Overlays de ambiente do Módulo 2.11 — só placeholders, nunca segredo real
+# (garantido por tests/unit/deploy/test_env_files.py). Versionados de propósito.
+!backend/deploy/env/.env.development
+!backend/deploy/env/.env.test
+!backend/deploy/env/.env.production
 *.pem
 *.key
 
