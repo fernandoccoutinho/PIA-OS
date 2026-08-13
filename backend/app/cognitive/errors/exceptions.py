@@ -17,6 +17,8 @@ from app.cognitive.errors.codes import (
     PIA_8007_LINEAGE_DUPLICATE_EDGE,
     PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND,
     PIA_8009_LINEAGE_EDGE_IMMUTABLE,
+    PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE,
+    PIA_8011_REVISION_STATUS_INVALID_TRANSITION,
 )
 from app.exceptions.base import PIAOSException
 
@@ -174,4 +176,42 @@ class LineageEdgeImmutableError(PIAOSException):
         super().__init__(
             message=(f"LineageEdge {edge_id} é append-only — operação '{operation}' rejeitada."),
             detail={"edge_id": str(edge_id), "operation": operation},
+        )
+
+
+class TransformationRecordImmutableError(PIAOSException):
+    """Tentativa de atualizar ou remover um `TransformationRecord` já
+    persistido — histórico append-only (E3.4/LIB-04)."""
+
+    error_code = PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE
+
+    def __init__(self, record_id: uuid.UUID, operation: str) -> None:
+        self.record_id = record_id
+        self.operation = operation
+        super().__init__(
+            message=(
+                f"TransformationRecord {record_id} é append-only — "
+                f"operação '{operation}' rejeitada."
+            ),
+            detail={"record_id": str(record_id), "operation": operation},
+        )
+
+
+class RevisionStatusInvalidTransitionError(PIAOSException):
+    """Transição inválida de `revision_status` em `CognitiveObject`
+    (correção E3.4.0) — `SUPERSEDED` nunca volta a `CURRENT`/`None`;
+    `CURRENT` nunca volta a `None`."""
+
+    error_code = PIA_8011_REVISION_STATUS_INVALID_TRANSITION
+
+    def __init__(self, coid: uuid.UUID | None, current: object, attempted: object) -> None:
+        self.coid = coid
+        self.current = current
+        self.attempted = attempted
+        super().__init__(
+            message=(
+                f"CognitiveObject {coid}: transição de revision_status "
+                f"'{current}' -> '{attempted}' não é permitida."
+            ),
+            detail={"coid": str(coid), "current": str(current), "attempted": str(attempted)},
         )

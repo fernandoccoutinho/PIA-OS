@@ -25,8 +25,9 @@ from sqlalchemy.orm import Mapped, mapped_column, validates
 from app.cognitive.errors.exceptions import (
     CognitiveObjectClidAlreadySetError,
     CognitiveObjectIdentityImmutableError,
+    RevisionStatusInvalidTransitionError,
 )
-from app.cognitive.models.enums import AccessibilityState
+from app.cognitive.models.enums import AccessibilityState, RevisionStatus
 from app.models.base_model import BaseModel
 from app.models.mixins import SoftDeleteMixin
 
@@ -79,6 +80,25 @@ class CognitiveObject(BaseModel, SoftDeleteMixin):
     estrutural exigido pelo Domain Model; nenhuma política de transição
     é aplicada por este módulo (isso é E3.6)."""
 
+    revision_status: Mapped[RevisionStatus | None] = mapped_column(
+        SAEnum(
+            RevisionStatus,
+            name="revision_status",
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=True,
+        default=None,
+    )
+    """Status de revisão controlada (correção E3.4.0) — `None` para
+    objetos que não participam de uma cadeia de revisão controlada
+    (o caso comum: `DERIVATION`/workspace). Só `VersionManager.revise()`
+    atribui um valor aqui. Distinto de `AccessibilityState` — uma
+    revisão `SUPERSEDED` pode continuar `ACTIVE` para auditoria (§7 do
+    prompt corretivo E3.4.0). Ver `_reject_invalid_revision_status_transition`
+    abaixo para as transições permitidas."""
+
     @property
     def coid(self) -> uuid.UUID | None:
         """Alias de leitura de `id` — COID é o nome do domínio para a
@@ -108,6 +128,27 @@ class CognitiveObject(BaseModel, SoftDeleteMixin):
                 coid=self.id, current_clid=self.clid, attempted_clid=value
             )
         return value
+
+    @validates("revision_status")
+    def _reject_invalid_revision_status_transition(
+        self, key: str, value: RevisionStatus | None
+    ) -> RevisionStatus | None:
+        """Transições permitidas (correção E3.4.0): `None → CURRENT`,
+        `None → SUPERSEDED` (entrada implícita na cadeia — ver
+        `VersionManager.revise()`), `CURRENT → SUPERSEDED`, e valor →
+        mesmo valor (idempotente). Rejeita qualquer outra transição —
+        em particular, `SUPERSEDED` nunca volta a `CURRENT`/`None`
+        (não é possível "reativar" uma revisão superada), e `CURRENT`
+        nunca volta a `None` (não é possível sair silenciosamente da
+        cadeia controlada).
+        """
+        if self.revision_status is None or value == self.revision_status:
+            return value
+        if self.revision_status == RevisionStatus.CURRENT and value == RevisionStatus.SUPERSEDED:
+            return value
+        raise RevisionStatusInvalidTransitionError(
+            coid=self.id, current=self.revision_status, attempted=value
+        )
 
 
 @event.listens_for(CognitiveObject, "before_update")

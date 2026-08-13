@@ -9,6 +9,8 @@ from app.cognitive.errors.codes import (
     PIA_8007_LINEAGE_DUPLICATE_EDGE,
     PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND,
     PIA_8009_LINEAGE_EDGE_IMMUTABLE,
+    PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE,
+    PIA_8011_REVISION_STATUS_INVALID_TRANSITION,
 )
 from app.cognitive.errors.exceptions import (
     ClidInvalidError,
@@ -20,6 +22,8 @@ from app.cognitive.errors.exceptions import (
     LineageEdgeImmutableError,
     LineageEndpointNotFoundError,
     LineageSelfLinkError,
+    RevisionStatusInvalidTransitionError,
+    TransformationRecordImmutableError,
 )
 
 __all__ = [
@@ -33,6 +37,8 @@ __all__ = [
     "PIA_8007_LINEAGE_DUPLICATE_EDGE",
     "PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND",
     "PIA_8009_LINEAGE_EDGE_IMMUTABLE",
+    "PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE",
+    "PIA_8011_REVISION_STATUS_INVALID_TRANSITION",
     "ClidInvalidError",
     "CoidCollisionError",
     "CoidInvalidError",
@@ -42,4 +48,6 @@ __all__ = [
     "LineageEdgeImmutableError",
     "LineageEndpointNotFoundError",
     "LineageSelfLinkError",
+    "RevisionStatusInvalidTransitionError",
+    "TransformationRecordImmutableError",
 ]

@@ -55,3 +55,44 @@ class LineageRelation(StrEnum):
     MERGE = "merge"
     DERIVED_FROM = "derived_from"
     TRANSFORMED_FROM = "transformed_from"
+
+
+class RevisionStatus(StrEnum):
+    """Status de revisão controlada de um `CognitiveObject`
+    (correção E3.4.0) — distinto de `AccessibilityState` (§7 do
+    prompt corretivo: uma revisão `SUPERSEDED` pode continuar
+    `ACTIVE` para auditoria; os dois campos são independentes).
+
+    `None` (o campo é nullable em `CognitiveObject`) significa "não
+    participa de uma cadeia de revisão controlada" — o caso comum
+    para objetos de `DERIVATION`/workspace, que nunca tocam este
+    campo. Apenas objetos passados por `VersionManager.revise()`
+    recebem um valor aqui.
+
+    Somente os dois estados mínimos necessários — `ARCHIVED`,
+    `DELETED`, `EXPIRED`, `RETIRED`, `OBSOLETE` (ou equivalentes) não
+    são implementados nesta fase (§6 do prompt corretivo); política de
+    retenção/arquivamento físico pertence a módulos futuros.
+    """
+
+    CURRENT = "current"
+    SUPERSEDED = "superseded"
+
+
+class TransformationKind(StrEnum):
+    """Distingue `REVISION` de `DERIVATION` em um `TransformationRecord`
+    (correção E3.4.0) — campo obrigatório, ao lado de `operation_type`
+    (que permanece livre/aberto, ex.: "summarize", "revise").
+
+    `DERIVATION`: novo objeto derivado de outro, sem suceder o source
+    — `source` permanece a representação vigente do que quer que ele
+    represente (`VersionManager.derive()`).
+
+    `REVISION`: nova revisão controlada do MESMO patrimônio lógico —
+    `target` torna-se `RevisionStatus.CURRENT`, `source` (se era
+    `CURRENT`, ou implicitamente se nunca teve status) torna-se
+    `RevisionStatus.SUPERSEDED` (`VersionManager.revise()`).
+    """
+
+    REVISION = "revision"
+    DERIVATION = "derivation"

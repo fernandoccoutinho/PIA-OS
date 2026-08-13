@@ -7,7 +7,21 @@ Importar este pacote registra suas tabelas em `app.database.base.Base`
 """
 
 from app.cognitive.models.cognitive_object import CognitiveObject
-from app.cognitive.models.enums import AccessibilityState, LineageRelation
+from app.cognitive.models.enums import (
+    AccessibilityState,
+    LineageRelation,
+    RevisionStatus,
+    TransformationKind,
+)
 from app.cognitive.models.lineage_edge import LineageEdge
+from app.cognitive.models.transformation_record import TransformationRecord
 
-__all__ = ["AccessibilityState", "CognitiveObject", "LineageEdge", "LineageRelation"]
+__all__ = [
+    "AccessibilityState",
+    "CognitiveObject",
+    "LineageEdge",
+    "LineageRelation",
+    "RevisionStatus",
+    "TransformationKind",
+    "TransformationRecord",
+]

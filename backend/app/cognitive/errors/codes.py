@@ -121,6 +121,31 @@ PIA_8009_LINEAGE_EDGE_IMMUTABLE = ErrorCode(
 correção E3.3.1, débito C2): nenhuma edge registrada pode ser mutada
 ou apagada via `LineageRepository`."""
 
+PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE = ErrorCode(
+    code="PIA-8010",
+    default_message="transformation_record_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de atualizar ou remover um `TransformationRecord` já
+persistido — histórico append-only, mesma disciplina de
+`LineageEdge`/`PIA-8009` (E3.4/LIB-04, §9)."""
+
+PIA_8011_REVISION_STATUS_INVALID_TRANSITION = ErrorCode(
+    code="PIA-8011",
+    default_message="revision_status_invalid_transition",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Transição inválida de `revision_status` em `CognitiveObject`
+(correção E3.4.0) — permitido apenas `None → CURRENT`,
+`None → SUPERSEDED`, `CURRENT → SUPERSEDED` e valor → mesmo valor
+(idempotente). `SUPERSEDED` nunca volta a `CURRENT`/`None`; `CURRENT`
+nunca volta a `None`. Usado tanto pelo guard do modelo quanto por
+`VersionManager.revise()` quando `source` já está `SUPERSEDED`."""
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -131,6 +156,8 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8007_LINEAGE_DUPLICATE_EDGE,
     PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND,
     PIA_8009_LINEAGE_EDGE_IMMUTABLE,
+    PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE,
+    PIA_8011_REVISION_STATUS_INVALID_TRANSITION,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {
