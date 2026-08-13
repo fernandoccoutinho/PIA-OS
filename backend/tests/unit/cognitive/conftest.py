@@ -12,19 +12,34 @@ propositalmente só para `SampleModel`, que não é uma entidade real).
 from collections.abc import Generator
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.cognitive.models.cognitive_object import CognitiveObject
+from app.cognitive.models.lineage_edge import LineageEdge
 from app.database.base import Base
+
+_COGNITIVE_TABLES = [CognitiveObject.__table__, LineageEdge.__table__]
 
 
 @pytest.fixture
 def cognitive_sqlite_engine():
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[CognitiveObject.__table__])
+
+    # SQLite não impõe foreign keys por padrão (diferente de
+    # PostgreSQL, usado em produção) — precisa ser habilitado por
+    # conexão. Necessário a partir de E3.3 para que os testes de FK de
+    # `LineageEdge` (parent_coid/child_coid -> cognitive_objects.id)
+    # sejam realistas.
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine, tables=_COGNITIVE_TABLES)
     yield engine
-    Base.metadata.drop_all(engine, tables=[CognitiveObject.__table__])
+    Base.metadata.drop_all(engine, tables=_COGNITIVE_TABLES)
     engine.dispose()
 
 

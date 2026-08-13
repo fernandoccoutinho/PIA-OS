@@ -30,3 +30,28 @@ class AccessibilityState(StrEnum):
     LATENT = "latent"
     INACCESSIBLE = "inaccessible"
     CAUSALLY_EXTINCT = "causally_extinct"
+
+
+class LineageRelation(StrEnum):
+    """Natureza de uma `LineageEdge` — taxonomia já congelada em
+    `E3_DOMAIN_MODEL_DRAFT.md`, seção "8. LineageEdge" (E3.3/LIB-03 é
+    a proprietária). Os 6 valores são usados como estão — nenhum foi
+    adicionado nem removido.
+
+    `PARENT`/`CHILD` existem no vocabulário para uso futuro de módulos
+    que optem por armazenamento simétrico de relação (uma edge
+    explícita em cada direção); `LineageEdge` de E3.3 usa
+    armazenamento direcionado único (`parent_coid`/`child_coid` como
+    colunas já codificam a direção — ver `lineage_edge.py`), então as
+    edges que E3.3 cria usam predominantemente `DERIVED_FROM` como
+    relação padrão de continuidade, não `PARENT`/`CHILD` como valor de
+    `relation_type`. `TRANSFORMED_FROM` fica disponível para quando
+    `E3.4` (`TransformationRecord`) precisar dele.
+    """
+
+    PARENT = "parent"
+    CHILD = "child"
+    BRANCH = "branch"
+    MERGE = "merge"
+    DERIVED_FROM = "derived_from"
+    TRANSFORMED_FROM = "transformed_from"

@@ -4,12 +4,20 @@ from app.cognitive.errors.codes import (
     PIA_8002_CLID_ALREADY_SET,
     PIA_8003_COID_INVALID,
     PIA_8004_COID_COLLISION,
+    PIA_8005_CLID_INVALID,
+    PIA_8006_LINEAGE_SELF_LINK,
+    PIA_8007_LINEAGE_DUPLICATE_EDGE,
+    PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND,
 )
 from app.cognitive.errors.exceptions import (
+    ClidInvalidError,
     CognitiveObjectClidAlreadySetError,
     CognitiveObjectIdentityImmutableError,
     CoidCollisionError,
     CoidInvalidError,
+    LineageDuplicateEdgeError,
+    LineageEndpointNotFoundError,
+    LineageSelfLinkError,
 )
 
 __all__ = [
@@ -18,8 +26,16 @@ __all__ = [
     "PIA_8002_CLID_ALREADY_SET",
     "PIA_8003_COID_INVALID",
     "PIA_8004_COID_COLLISION",
+    "PIA_8005_CLID_INVALID",
+    "PIA_8006_LINEAGE_SELF_LINK",
+    "PIA_8007_LINEAGE_DUPLICATE_EDGE",
+    "PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND",
+    "ClidInvalidError",
     "CoidCollisionError",
     "CoidInvalidError",
     "CognitiveObjectClidAlreadySetError",
     "CognitiveObjectIdentityImmutableError",
+    "LineageDuplicateEdgeError",
+    "LineageEndpointNotFoundError",
+    "LineageSelfLinkError",
 ]

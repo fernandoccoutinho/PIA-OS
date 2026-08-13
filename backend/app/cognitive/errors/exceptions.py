@@ -12,6 +12,10 @@ from app.cognitive.errors.codes import (
     PIA_8002_CLID_ALREADY_SET,
     PIA_8003_COID_INVALID,
     PIA_8004_COID_COLLISION,
+    PIA_8005_CLID_INVALID,
+    PIA_8006_LINEAGE_SELF_LINK,
+    PIA_8007_LINEAGE_DUPLICATE_EDGE,
+    PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND,
 )
 from app.exceptions.base import PIAOSException
 
@@ -91,4 +95,66 @@ class CoidCollisionError(PIAOSException):
         super().__init__(
             message=f"COID {coid} já existe — não pode ser reutilizado para outro objeto.",
             detail={"coid": str(coid) if coid is not None else None},
+        )
+
+
+class ClidInvalidError(PIAOSException):
+    """Valor apresentado como CLID não é um UUID válido — nem instância
+    `uuid.UUID` nem string parseável como UUID (E3.3/LIB-03)."""
+
+    error_code = PIA_8005_CLID_INVALID
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+        super().__init__(
+            message=f"Valor não é um CLID válido: {value!r}.",
+            detail={"value": repr(value)},
+        )
+
+
+class LineageSelfLinkError(PIAOSException):
+    """Tentativa de criar uma `LineageEdge` com `parent_coid == child_coid`
+    (E3.3/LIB-03)."""
+
+    error_code = PIA_8006_LINEAGE_SELF_LINK
+
+    def __init__(self, coid: uuid.UUID) -> None:
+        self.coid = coid
+        super().__init__(
+            message=f"CognitiveObject {coid} não pode ser seu próprio descendente direto.",
+            detail={"coid": str(coid)},
+        )
+
+
+class LineageDuplicateEdgeError(PIAOSException):
+    """A tripla `(parent_coid, child_coid, relation_type)` já existe
+    (E3.3/LIB-03)."""
+
+    error_code = PIA_8007_LINEAGE_DUPLICATE_EDGE
+
+    def __init__(self, parent_coid: uuid.UUID, child_coid: uuid.UUID, relation_type: str) -> None:
+        self.parent_coid = parent_coid
+        self.child_coid = child_coid
+        self.relation_type = relation_type
+        super().__init__(
+            message=(f"LineageEdge ({parent_coid} -> {child_coid}, {relation_type}) já existe."),
+            detail={
+                "parent_coid": str(parent_coid),
+                "child_coid": str(child_coid),
+                "relation_type": str(relation_type),
+            },
+        )
+
+
+class LineageEndpointNotFoundError(PIAOSException):
+    """`parent_coid` ou `child_coid` de uma `LineageEdge` não
+    corresponde a nenhum `CognitiveObject` existente (E3.3/LIB-03)."""
+
+    error_code = PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND
+
+    def __init__(self, coid: uuid.UUID) -> None:
+        self.coid = coid
+        super().__init__(
+            message=f"CognitiveObject {coid} não existe — não pode ser endpoint de LineageEdge.",
+            detail={"coid": str(coid)},
         )
