@@ -10,6 +10,8 @@ import uuid
 from app.cognitive.errors.codes import (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
+    PIA_8003_COID_INVALID,
+    PIA_8004_COID_COLLISION,
 )
 from app.exceptions.base import PIAOSException
 
@@ -58,4 +60,35 @@ class CognitiveObjectClidAlreadySetError(PIAOSException):
                 "current_clid": str(current_clid),
                 "attempted_clid": str(attempted_clid) if attempted_clid else None,
             },
+        )
+
+
+class CoidInvalidError(PIAOSException):
+    """Valor apresentado como COID não é um UUID válido — nem instância
+    `uuid.UUID` nem string parseável como UUID (E3.2/LIB-02)."""
+
+    error_code = PIA_8003_COID_INVALID
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+        super().__init__(
+            message=f"Valor não é um COID válido: {value!r}.",
+            detail={"value": repr(value)},
+        )
+
+
+class CoidCollisionError(PIAOSException):
+    """Um COID já existe (ativo ou soft-deleted) e não pode ser
+    reutilizado para outro `CognitiveObject` (E3.2/LIB-02).
+
+    Identidade nunca é reciclada — mesmo um objeto soft-deleted
+    continua "ocupando" seu COID permanentemente."""
+
+    error_code = PIA_8004_COID_COLLISION
+
+    def __init__(self, coid: uuid.UUID | None) -> None:
+        self.coid = coid
+        super().__init__(
+            message=f"COID {coid} já existe — não pode ser reutilizado para outro objeto.",
+            detail={"coid": str(coid) if coid is not None else None},
         )

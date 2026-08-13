@@ -292,6 +292,14 @@ função. Nenhuma linha de `app/database/migrations.py` foi alterada.
   livremente após a criação (reflexo direto do modelo mínimo do
   Domain Model Draft, não uma limitação de implementação).
 
+## Extensão em E3.2
+
+`ObjectRepository.add()` foi estendido em E3.2/LIB-02 para traduzir
+`PersistenceError` em `CoidCollisionError` — ver
+`E3_2_LIB02_COID_MANAGER.md`. Aditivo (novo `try/except` em torno da
+chamada já existente a `super().add()`), nenhum comportamento anterior
+removido.
+
 ## Itens deferidos
 
 - `CognitiveDistinction`: **DEFERRED** (ver `COGNITIVE_DISTINCTION_STATUS`

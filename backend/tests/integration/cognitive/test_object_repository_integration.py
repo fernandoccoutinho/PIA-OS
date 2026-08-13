@@ -68,3 +68,37 @@ def test_create_persist_retrieve_soft_delete_round_trip_against_real_database():
         leftover = repo.get_by_id(created_id, include_deleted=True)
         repo.delete(leftover)
         uow.commit()
+
+
+def test_coid_collision_is_rejected_by_the_real_database_constraint():
+    """Correção E3.2: a constraint de PK do PostgreSQL real é a
+    autoridade final de unicidade de COID — uma tentativa de persistir
+    um segundo `CognitiveObject` com o mesmo `id` de um já commitado
+    deve ser rejeitada pelo banco de fato (não apenas pela pré-checagem
+    em memória de `CoidManager.assert_unique`, que sozinha não cobre
+    TOCTOU)."""
+    from app.cognitive.errors.exceptions import CoidCollisionError
+
+    with UnitOfWork() as uow:
+        repo = ObjectRepository(uow.session)
+        original = repo.add(CognitiveObject())
+        uow.commit()
+        original_id = original.id
+
+    try:
+        with UnitOfWork() as uow:
+            repo = ObjectRepository(uow.session)
+            duplicate = CognitiveObject()
+            duplicate.id = original_id
+            with pytest.raises(CoidCollisionError) as exc_info:
+                repo.add(duplicate)
+            assert exc_info.value.code == "PIA-8004"
+            uow.rollback()
+    finally:
+        # limpeza — remove o registro de teste do banco real
+        with UnitOfWork() as uow:
+            repo = ObjectRepository(uow.session)
+            leftover = repo.get_by_id(original_id, include_deleted=True)
+            if leftover is not None:
+                repo.delete(leftover)
+                uow.commit()

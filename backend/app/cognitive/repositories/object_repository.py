@@ -31,8 +31,10 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.cognitive.errors.exceptions import CoidCollisionError
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.repositories.base_repository import BaseRepository, Page
+from app.repositories.exceptions import PersistenceError
 
 
 class ObjectRepository(BaseRepository[CognitiveObject]):
@@ -56,6 +58,25 @@ class ObjectRepository(BaseRepository[CognitiveObject]):
 
     def __init__(self, session: Session) -> None:
         super().__init__(session, CognitiveObject)
+
+    def add(self, entity: CognitiveObject) -> CognitiveObject:
+        """Persiste um novo `CognitiveObject`.
+
+        Correção E3.2 (§18/§23 do módulo): traduz uma violação de
+        integridade do banco em `CoidCollisionError` — a autoridade
+        final de unicidade de COID é a constraint de PK, que cobre a
+        janela de corrida (TOCTOU) que uma pré-checagem isolada
+        (`CoidManager.assert_unique`) sozinha não cobre. `cognitive_objects`
+        não tem, hoje, nenhuma constraint de unicidade além da PK
+        (`id`) — qualquer `PersistenceError` em `add()` é, por
+        eliminação, uma colisão de COID; esta suposição deve ser
+        revisada se uma migração futura adicionar outra unique
+        constraint à tabela.
+        """
+        try:
+            return super().add(entity)
+        except PersistenceError as exc:
+            raise CoidCollisionError(entity.id) from exc
 
     def get_by_id(
         self, entity_id: object, *, include_deleted: bool = False

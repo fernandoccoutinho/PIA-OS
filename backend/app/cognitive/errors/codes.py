@@ -39,9 +39,35 @@ ainda não existem em E3.1). Ver `E3_DOMAIN_MODEL_DRAFT.md`: "clid ...
 nunca substituído por outro valor não-None sem passar por
 TransformationRecord/LineageEdge explícito"."""
 
+PIA_8003_COID_INVALID = ErrorCode(
+    code="PIA-8003",
+    default_message="coid_invalid",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.WARNING,
+)
+"""Valor apresentado como COID não é um UUID válido (nem instância
+`uuid.UUID` nem string parseável como UUID) — usado por
+`CoidManager.validate()`/`validate_imported_coid()` (E3.2/LIB-02)."""
+
+PIA_8004_COID_COLLISION = ErrorCode(
+    code="PIA-8004",
+    default_message="coid_collision",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Um COID já existe (ativo ou soft-deleted — identidade nunca é
+reciclada) e não pode ser reutilizado para outro `CognitiveObject` —
+usado tanto na criação local (`CoidManager.assert_unique`,
+`ObjectRepository.add`) quanto na validação de COID importado
+(E3.2/LIB-02)."""
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
+    PIA_8003_COID_INVALID,
+    PIA_8004_COID_COLLISION,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {
