@@ -1,0 +1,58 @@
+# docker-compose.test.yml — banco isolado + execução automática da suíte.
+#
+# Não está na lista literal de arquivos do Módulo 2.11 (que cita só
+# docker-compose.yml/.dev.yml/.prod.yml), mas a própria especificação
+# pede explicitamente um ambiente de "Testes" com banco isolado e
+# execução automática da suíte na seção "DOCKER COMPOSE" — sem este
+# arquivo esse requisito funcional ficaria sem forma concreta. Ver
+# docs/DOCKER.md.
+#
+#   docker compose -f deploy/compose/docker-compose.test.yml up --abort-on-container-exit --exit-code-from api
+#
+# `--abort-on-container-exit` derruba o banco assim que a suíte termina;
+# `--exit-code-from api` propaga o código de saída do pytest para o
+# comando `docker compose` (essencial para um gate de CI).
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.dev  # precisa das dev deps (pytest etc.)
+    container_name: pia_os_api_test
+    environment:
+      ENVIRONMENT: testing
+      DEBUG: "false"
+      DATABASE_URL: postgresql+psycopg://${DB_USER:-pia_user}:${DB_PASSWORD:-pia_password}@db:5432/${DB_NAME:-pia_os_test}
+      SECRET_KEY: test-secret-key-not-for-production
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - pia_os_test_network
+    volumes:
+      - ../..:/srv/app
+    entrypoint: []
+    command: ["pytest"]
+
+  db:
+    image: postgres:16-alpine
+    container_name: pia_os_db_test
+    environment:
+      POSTGRES_USER: ${DB_USER:-pia_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-pia_password}
+      POSTGRES_DB: ${DB_NAME:-pia_os_test}
+    # Sem volume nomeado de propósito — banco de teste é descartável,
+    # recriado do zero a cada execução (isolamento entre execuções).
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-pia_user} -d ${DB_NAME:-pia_os_test}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pia_os_test_network
+
+networks:
+  pia_os_test_network:
+    driver: bridge

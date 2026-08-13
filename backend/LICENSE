@@ -1,0 +1,12 @@
+PIA-OS Backend — Proprietary Software
+
+Copyright (c) 2026. Todos os direitos reservados.
+
+Este software e a documentação associada são proprietários. A licença
+definitiva de distribuição ainda não foi decidida — este arquivo é um
+placeholder consistente com `license_info` declarado no schema OpenAPI
+(`app/docs/openapi.py`, Módulo 2.9: `{"name": "Proprietary"}`).
+
+Nenhum uso, cópia, modificação ou distribuição é autorizado fora dos
+termos que venham a ser definidos formalmente pelos detentores dos
+direitos.

@@ -1,0 +1,108 @@
+# docker-compose.prod.yml — stack de produção.
+#
+#   docker compose -f deploy/compose/docker-compose.prod.yml up -d
+#
+# Autocontido, com nginx como proxy reverso sempre ativo (diferente do
+# docker-compose.yml base, onde nginx é opcional via profile — em
+# produção real, expor a API diretamente sem proxy na frente não é a
+# postura recomendada). `.env.production` (deploy/env/) é o arquivo de
+# variáveis esperado — nunca commitado com segredos reais.
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.prod
+    container_name: pia_os_api_prod
+    env_file:
+      - ../../.env
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - pia_os_prod_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Sem `ports:` publicado diretamente — só o nginx expõe uma porta ao
+    # host; a API só é alcançável através do proxy reverso, na rede
+    # interna do compose.
+
+  db:
+    image: postgres:16-alpine
+    container_name: pia_os_db_prod
+    environment:
+      POSTGRES_USER: ${DB_USER:-pia_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?defina DB_PASSWORD em .env.production}
+      POSTGRES_DB: ${DB_NAME:-pia_os}
+    volumes:
+      - pia_os_prod_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-pia_user} -d ${DB_NAME:-pia_os}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pia_os_prod_network
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Sem `ports:` publicado — banco só acessível de dentro da rede do
+    # compose, nunca diretamente do host em produção.
+
+  # Estrutura apenas (Módulo 2.11) — não conectado pela aplicação ainda.
+  redis:
+    image: redis:7-alpine
+    container_name: pia_os_redis_prod
+    profiles: ["with-redis"]
+    volumes:
+      - pia_os_prod_redis_data:/data
+    networks:
+      - pia_os_prod_network
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: pia_os_nginx_prod
+    ports:
+      - "${NGINX_PORT:-80}:80"
+      # HTTPS (443) fica comentado até existir um certificado real —
+      # ver deploy/nginx/default.conf e docs/DOCKER.md.
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    networks:
+      - pia_os_prod_network
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  pia_os_prod_network:
+    driver: bridge
+
+volumes:
+  pia_os_prod_db_data:
+  pia_os_prod_redis_data:
