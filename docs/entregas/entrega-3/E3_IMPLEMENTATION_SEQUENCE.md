@@ -52,6 +52,19 @@ referência, nunca a reimplementam.
 | **E3.11** | `LIB-11` Synchronization Manager | — (sincroniza o que já existe; nenhuma primitiva nova) |
 | **E3.12** | Integration & Gate E3 → E4 | — (integração/consolidação; nenhuma primitiva nova) |
 
+**Nota de resolução (E3.6.2 — `Metadata`)**: o termo `Metadata` que
+aparece na linha de `E3.6` (e, por consequência, na de `E3.7`) **não
+designa uma primitiva persistente adicional do domínio cognitivo**. A
+entrada é preservada aqui por fidelidade histórica, mas foi resolvida
+em `E3_6_2_METADATA_CONTRACT_RESOLUTION.md`: `Metadata` é
+guarda-chuva de nomenclatura do módulo `LIB-06`, cujos mecanismos
+estruturados efetivamente entregues são `ProvenanceRecord` e
+`AccessibilityState`/`AccessibilityManager`;
+`app.schemas.common.Metadata` permanece schema de resposta de API de
+`E1`/`E2`, fora do domínio cognitivo. Logo, `E3.7` consome estruturas
+cognitivas tipadas já existentes — não um metadata livre —, e
+metadata cognitivo persistente futuro exige EDR explícito.
+
 **`CausalComparison`** é intencionalmente **não atribuída** a nenhum
 módulo nesta tabela. Seu contrato já está preparado em
 `E3_DOMAIN_MODEL_DRAFT.md` (pode ser refinado antes da implementação),
