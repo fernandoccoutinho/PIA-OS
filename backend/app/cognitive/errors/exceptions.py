@@ -26,6 +26,7 @@ from app.cognitive.errors.codes import (
     PIA_8016_RELATIONSHIP_IMMUTABLE,
     PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
     PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
+    PIA_8019_SEARCH_CRITERIA_INVALID,
 )
 from app.exceptions.base import PIAOSException
 
@@ -367,4 +368,24 @@ class AccessibilityInvalidTransitionError(PIAOSException):
                 "exige um 'reason' explícito e não-vazio."
             ),
             detail={"coid": str(coid)},
+        )
+
+
+class SearchCriteriaError(PIAOSException):
+    """Critérios de busca malformados (E3.8/LIB-08).
+
+    Levantada antes de qualquer acesso ao banco — uma consulta
+    malformada não deve nem chegar a ser executada. Conjunto vazio de
+    resultados **não** é erro: é a resposta correta de uma consulta
+    bem-formada que nenhum objeto satisfaz, e não implica inexistência
+    (`SEARCH MISS != NON-EXISTENCE`).
+    """
+
+    error_code = PIA_8019_SEARCH_CRITERIA_INVALID
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            message=f"Critérios de busca inválidos: {reason}",
+            detail={"reason": reason},
         )

@@ -18,6 +18,7 @@ from app.cognitive.errors.codes import (
     PIA_8016_RELATIONSHIP_IMMUTABLE,
     PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
     PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
+    PIA_8019_SEARCH_CRITERIA_INVALID,
 )
 from app.cognitive.errors.exceptions import (
     AccessibilityInvalidTransitionError,
@@ -37,6 +38,7 @@ from app.cognitive.errors.exceptions import (
     RelationshipSelfLinkError,
     RevisionCurrentUniquenessViolationError,
     RevisionStatusInvalidTransitionError,
+    SearchCriteriaError,
     TransformationRecordImmutableError,
 )
 
@@ -60,6 +62,7 @@ __all__ = [
     "PIA_8016_RELATIONSHIP_IMMUTABLE",
     "PIA_8017_PROVENANCE_RECORD_IMMUTABLE",
     "PIA_8018_ACCESSIBILITY_INVALID_TRANSITION",
+    "PIA_8019_SEARCH_CRITERIA_INVALID",
     "AccessibilityInvalidTransitionError",
     "ClidInvalidError",
     "CoidCollisionError",
@@ -76,6 +79,7 @@ __all__ = [
     "RelationshipImmutableError",
     "RelationshipSelfLinkError",
     "RevisionCurrentUniquenessViolationError",
+    "SearchCriteriaError",
     "RevisionStatusInvalidTransitionError",
     "TransformationRecordImmutableError",
 ]

@@ -236,6 +236,22 @@ transição nunca seja o valor default nem efeito colateral de query
 (§4 do Draft) — o mecanismo formal (`CausalHistoryEvent`) é `E3.9`,
 ainda não implementado."""
 
+PIA_8019_SEARCH_CRITERIA_INVALID = ErrorCode(
+    code="PIA-8019",
+    default_message="search_criteria_invalid",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Critérios de busca malformados (E3.8/LIB-08) — nenhuma dimensão
+informada, janela temporal invertida, ou `limit`/`offset` negativos.
+
+Deliberadamente **não** cobre "zero resultados": conjunto vazio é
+resposta válida de uma consulta bem-formada, nunca erro (§25 do
+módulo E3.8). Este é o único código novo de E3.8 — busca é read-only e
+não introduz nenhuma outra condição de domínio."""
+
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -255,6 +271,7 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8016_RELATIONSHIP_IMMUTABLE,
     PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
     PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
+    PIA_8019_SEARCH_CRITERIA_INVALID,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {
