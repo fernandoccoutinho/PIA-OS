@@ -216,3 +216,58 @@ exceções pontuais em código.
   bounded context vs. layout horizontal). Não é uma decisão sobre o
   que COUT-PIA é — é sobre onde o código mora — por isso foi mantida
   em documento próprio em vez de expandir este EDR.
+
+## COUT Data Preservation Rule (adicionada em E3.5.2)
+
+**Princípio arquitetural geral** — não é uma regra específica de
+`Relationship`; orienta qualquer módulo futuro de E3 que produza
+schema/migrações sobre patrimônio cognitivo já persistido.
+
+> Uma transformação de representação — inclusive downgrade de schema —
+> não pode recuperar compatibilidade apagando, fundindo ou
+> sobrescrevendo distinções históricas legitimamente preservadas.
+>
+> Se a representação anterior não puder expressar o estado atual sem
+> perda de distinções, a transformação deve ser explicitamente
+> recusada.
+
+Formalizações operacionais:
+
+```text
+HISTORICAL PRESERVATION > DOWNGRADE CONVENIENCE
+
+SCHEMA REVERSIBILITY != HISTORICAL ERASURE
+```
+
+### Origem
+
+Identificada na auditoria da migração `63d205dec996` (correção
+E3.5.1): o lifecycle de `Relationship` permite legitimamente múltiplas
+gerações históricas da mesma tripla `(source_coid, target_coid,
+relationship_type)` — uma `retired`, uma `active` (o ciclo "retirar a
+antiga, criar uma nova"). O schema anterior a essa migração exigia
+unicidade incondicional sobre todas as linhas; um downgrade
+convencional, executado depois desse estado ter sido legitimamente
+produzido, não conseguiria recriar a constraint anterior sem apagar,
+fundir ou escolher arbitrariamente qual geração preservar.
+
+### Aplicação (E3.5.2)
+
+`63d205dec996` foi classificada como `CONDITIONALLY_REVERSIBLE`:
+downgrade permitido quando o estado atual é representável pelo schema
+anterior sem perda; `DOWNGRADE_SEMANTICALLY_BLOCKED` (recusa
+explícita, antes de qualquer alteração estrutural) quando não é. Ver
+`E3_5_2_LIB05_COUT_DATA_PRESERVATION.md` para a implementação
+completa.
+
+### Orientação para módulos futuros
+
+Qualquer migração que reintroduza uma constraint mais restritiva do
+que o schema atual (unicidade incondicional substituindo unicidade
+condicional, `NOT NULL` substituindo nullable com dados já gravados,
+etc.) deve, no `downgrade()`, verificar explicitamente se o estado
+atual é representável pela constraint mais restritiva **antes** de
+tentar recriá-la — nunca depender do erro genérico que o próprio banco
+produziria ao tentar aplicá-la sobre dados incompatíveis, porque nesse
+ponto a transação já pode ter executado outras alterações destrutivas
+anteriores no mesmo `downgrade()`.

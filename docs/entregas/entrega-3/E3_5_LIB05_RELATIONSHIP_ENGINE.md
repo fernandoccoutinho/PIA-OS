@@ -262,13 +262,20 @@ específicos daquele modelo, não genéricos).
 
 ## Tests
 
-82 testes novos ao todo (75 de E3.5 original + 7 unitários e 1 de
-integração da correção E3.5.1):
+**Correção documental E3.5.2**: a contagem abaixo foi verificada por
+inspeção real do repositório (`grep -c "^def test_"` + `pytest
+--collect-only`), não por aritmética — os números originalmente
+documentados aqui (75 para E3.5, 46 para o repository, 82 no total)
+estavam incorretos. Ver `E3_5_2_LIB05_COUT_DATA_PRESERVATION.md` para
+o detalhamento da correção.
+
+**65 testes novos ao todo** (57 de E3.5 original + 8 da correção
+E3.5.1 — 7 unitários e 1 de integração):
 
 - **Model** (`test_relationship.py`, 7): criação, os 5 valores de
   `RelationshipType`, self-link/duplicata rejeitados por
   constraint, tipos diferentes entre o mesmo par permitidos, FK.
-- **Repository** (`test_relationship_repository.py`, 46): `CR1`-`CR8`,
+- **Repository** (`test_relationship_repository.py`, 36): `CR1`-`CR8`,
   `TY1`-`TY6`, `NV1`-`NV7`, `LS1`-`LS6`, append-only/lifecycle,
   classificação de violação isolada (sinal estruturado).
 - **Engine** (`test_relationship_engine.py`, 10): delegação de
