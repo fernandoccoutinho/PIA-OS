@@ -55,14 +55,19 @@ Se existir qualquer resultado: levanta `RelationshipDowngradeUnsafeError`
 com mensagem clara (`DOWNGRADE_SEMANTICALLY_BLOCKED`) — **antes** de
 qualquer alteração estrutural.
 
-**Por que isso funciona sem tocar `63d205dec996`**: o Alembic processa
-downgrades multi-passo em ordem reversa, uma migração por vez, cada
-passo em sua própria transação. Como `f11551e97026` está posicionada
-**depois** de `63d205dec996` na cadeia, um `alembic downgrade` a partir
-da head atual executa primeiro o `downgrade()` de `f11551e97026` — se
-ele abortar, a transação daquele passo é revertida integralmente e o
-Alembic **nunca chega a processar** o `downgrade()` de `63d205dec996`.
-Nenhuma edição do arquivo original foi necessária.
+**Por que isso funciona sem tocar `63d205dec996`**: como
+`f11551e97026` está posicionada **depois** de `63d205dec996` na
+cadeia, um `alembic downgrade` a partir da head atual executa
+primeiro o `downgrade()` de `f11551e97026`. Se ele levantar exceção
+(`RelationshipDowngradeUnsafeError`) antes de qualquer alteração
+estrutural própria, a execução do downgrade **nunca prossegue** até o
+`downgrade()` de `63d205dec996` — nenhuma edição do arquivo original
+foi necessária. Este é o invariante que a proteção depende — não uma
+alegação genérica de que "cada migração roda em sua própria
+transação" (comportamento que depende da configuração de
+`env.py`/driver e não foi assumido como premissa aqui; testado e
+confirmado empiricamente contra PostgreSQL real via `D1`/`D2`-`D5`,
+não deduzido de um princípio geral do Alembic).
 
 ## Downgrade Semantics
 
@@ -98,15 +103,16 @@ a tripla e a quantidade de gerações envolvidas.
 ## Atomicidade da recusa
 
 Testado (`D2`-`D5`) e confirmado empiricamente contra PostgreSQL real,
-repetido 3 vezes para estabilidade: após `DOWNGRADE_SEMANTICALLY_BLOCKED`,
+repetido 3+ vezes para estabilidade: após `DOWNGRADE_SEMANTICALLY_BLOCKED`,
 todos os registros de `Relationship` permanecem presentes, `retired_at`
 permanece intacto na linha antiga, a relação `active` permanece
 intacta, o índice único parcial e o `CheckConstraint` de simetria
-continuam existindo (confirmado indiretamente: uma tentativa de criar
-uma duplicata ativa após o bloqueio continua sendo rejeitada — prova
-de que o schema E3.5.1 está genuinamente íntegro, não apenas
-aparentemente), nenhuma migração parcial fica aplicada, e o Alembic
-permanece exatamente na revisão `f11551e97026` (nunca retrocede).
+continuam existindo — confirmado tanto por introspecção estrutural
+direta do PostgreSQL (`inspect(engine).get_indexes()`/
+`get_check_constraints()`, correção E3.5.2a) quanto pela rejeição de
+uma nova tentativa de duplicata ativa — nenhuma migração parcial fica
+aplicada, e o Alembic permanece exatamente na revisão `f11551e97026`
+(nunca retrocede).
 
 ## Testes
 
@@ -115,15 +121,22 @@ usando `app.database.migrations` (wrapper programático já existente
 sobre o Alembic — não uma ferramenta nova) para orquestrar
 `upgrade`/`downgrade` reais:
 
-- `test_d1_compatible_downgrade_succeeds` — `D1`: nenhum histórico
-  incompatível, downgrade funciona normalmente, ciclo completo até a
-  migração anterior e de volta à head confirmado.
+- `test_d1_compatible_downgrade_succeeds` — `D1` /
+  `FULL_COMPATIBLE_DOWNGRADE`: nenhum histórico incompatível, downgrade
+  **completo** `f11551e97026 → 63d205dec996 → 2826ce7fa4dc` (correção
+  E3.5.2a — a versão original deste teste executava só o primeiro
+  passo, `f11551e97026 → 63d205dec996`, sem nunca exercitar de fato o
+  `downgrade()` de `63d205dec996`), com introspecção estrutural real
+  do schema resultante (índice/constraints presentes/ausentes
+  corretamente nos dois sentidos) e dados confirmados intactos via
+  consulta SQL direta, e ciclo completo de volta à head confirmado.
 - `test_d2_d3_d4_d5_incompatible_historical_downgrade_is_blocked_without_data_loss`
   — `D2` (bloqueio explícito, mensagem contém
   `DOWNGRADE_SEMANTICALLY_BLOCKED`), `D3` (R0/R1 continuam presentes
   com os estados corretos), `D4` (revisão Alembic não retrocede;
-  schema íntegro, confirmado via rejeição de duplicata ativa), `D5`
-  (nenhum estado parcial, confirmado indiretamente pela integridade de
+  schema íntegro, confirmado via rejeição de duplicata ativa **e**
+  introspecção estrutural direta, correção E3.5.2a), `D5`
+  (nenhum estado parcial, confirmado pela integridade de
   D3/D4).
 
 Executados contra PostgreSQL real 3 vezes para confirmar estabilidade
