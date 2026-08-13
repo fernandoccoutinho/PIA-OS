@@ -267,11 +267,23 @@ proveniência.
 
 ## Testes
 
-**Correção E3.6.1**: 20 testes de integração novos (6 `T1`-`T6`, 3
-`PD1`-`PD5`, 2 `M4`/`M5`, e reativação genuína dos 4 testes de guarda
-de `Relationship` que estavam pulando permanentemente — ver seção
-"Non-Regression E3.5 reativada" abaixo) somados aos 91 de E3.6
-original (87 unitários + 4 de integração):
+**Correção E3.6.1a**: a contagem original documentada aqui ("20
+testes de integração novos") estava incorreta — corrigida por
+inspeção real do diff e `pytest --collect-only`, não por aritmética.
+A correção E3.6.1 (patch anterior) adicionou exatamente **10 novas
+funções de teste de integração**: 5 de `trace_id` (`T1`, `T2`+`T3`
+combinados numa função, `T4`, `T5`, `T6`), 3 de guarda de downgrade
+de `Provenance` (`PD1`, `PD2`+`PD3`+`PD4` combinados, `PD5`), e 2 de
+guarda de `Relationship` (`M4`/`M5`) — os testes `D1`-`D5` de
+`Relationship` que voltaram a executar foram **reativados**, não
+criados (contagem de "testes novos" não os inclui). Total de
+integração passou de 24 para 34.
+
+A correção E3.6.1a (este patch) adiciona **mais 1 função** —
+`test_provenance_guard_still_reachable_from_current_head`, espelhando
+a que já existia para `Relationship` — totalizando **35 testes de
+integração** (confirmado por `pytest tests/integration/cognitive/
+--collect-only -q`).
 
 - **Model** (`test_provenance_record.py`, 8): criação, campos
   opcionais, todos `source_type`×`actor_type`, `provider_id`/
@@ -282,17 +294,19 @@ original (87 unitários + 4 de integração):
 - **AccessibilityManager** (`test_accessibility_manager.py`, 15):
   `A1`-`A10`, idempotência, `assert_accessible`, não-commit.
 - **Integração contra PostgreSQL real**
-  (`test_provenance_accessibility_integration.py`, 10): round-trip com
+  (`test_provenance_accessibility_integration.py`, 9): round-trip com
   múltiplos agentes, append-only real, transição real, concorrência
-  genuína de Accessibility, e `T1`-`T6` (novo, `trace_id`).
+  genuína de Accessibility, e `T1`-`T6` (novo, `trace_id` — 5 funções,
+  `T2`/`T3` combinados).
 - **Guarda de downgrade de Provenance**
-  (`test_provenance_downgrade_safety.py`, 3, novo): `PD1` (tabela
+  (`test_provenance_downgrade_safety.py`, 4): `PD1` (tabela
   vazia), `PD2`-`PD4` (tabela com dado, bloqueio + zero perda + schema
   preservado), `PD5` (ciclo completo, atravessando também a guarda de
-  `Relationship`).
+  `Relationship`), e (E3.6.1a) confirmação explícita de que a guarda
+  continua alcançável a partir de qualquer head futura.
 - **Guarda de downgrade de Relationship, reativada**
   (`test_relationship_downgrade_safety.py`, 4): `D1`-`D5` (E3.5.2a,
-  comportamento inalterado) + `M4`/`M5` (novos, confirmam
+  comportamento inalterado) + `M4`/`M5` (novos em E3.6.1, confirmam
   explicitamente que a guarda continua alcançável/executável a partir
   da head atual).
 
@@ -319,15 +333,31 @@ reverso — prova de que as duas guardas coexistem na cadeia sem se
 confundir, sem necessidade de um "guard manager" (a ordem da cadeia
 Alembic já define a ordem de avaliação).
 
+**Correção E3.6.1a**: o teste de guarda de `Provenance`
+(`test_provenance_downgrade_safety.py`) tinha exatamente o mesmo
+problema — ainda dependia de `head_revision() == "0460b6556563"` —
+não havia sido corrigido junto na E3.6.1, apesar de o princípio já
+estar disponível/aplicado ao lado, em `Relationship`. Corrigido
+seguindo o mesmo padrão exato: skip condition verifica apenas
+existência na cadeia, comparações de "voltou à head" usam
+`migrations.head_revision()` dinâmico. **Validado empiricamente de
+forma decisiva**: criei uma migração fictícia simulando uma "head de
+E3.7" (`2966161f5678`, diferente de `0460b6556563`), apliquei-a, e
+confirmei que os 8 testes de guarda (`Provenance` + `Relationship`)
+continuaram executando e passando normalmente — depois removi essa
+migração de simulação (nunca fez parte do patch, nenhum rastro no
+diff). Prova direta de que a correção é genuinamente future-proof
+para migrações futuras de `E3.7+`.
+
 819 passed, 35 skipped (sem `.env` local — mesmo padrão gracioso de
 sempre; todos os skips agora são genuinamente "requer Postgres real",
 nenhum skip permanente por head desatualizada), 97,65% (mantido).
-**Com `.env`/Postgres real: 34/34 testes de integração passando, zero
+**Com `.env`/Postgres real: 35/35 testes de integração passando, zero
 skips.** Nenhum arquivo protegido tocado; `TransformationRecord`,
 `Relationship` (semantics e lifecycle), `LineageEdge`,
 `VersionManager`, `RelationshipEngine`, `ClidManager`, `CoidManager`,
 `CognitiveObject` (incluindo `accessibility` — nenhuma coluna nova,
-nenhuma mudança na matriz de transição), `e2c89ee3aa59` — todos
+nenhuma mudança na matriz de transição), todas as migrações — todos
 intocados nesta correção (confirmado por `git diff --stat`).
 
 ## Deferred Items
