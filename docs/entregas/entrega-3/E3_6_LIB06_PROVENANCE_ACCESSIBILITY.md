@@ -370,6 +370,20 @@ asserção agora reportam a head observada. Nenhuma função de teste nova
 documento fora deste tocado. `_revision_exists()` permanece intocado —
 continua sendo a checagem correta para a *condição de skip*.
 
+**Correção E3.6.1c (ultra-microcorreção simétrica)**: `M4`
+(`test_m4_relationship_guard_still_reachable_from_current_head`, em
+`test_relationship_downgrade_safety.py`) tinha exatamente a mesma
+fraqueza de asserção que E3.6.1b corrigiu do lado de `Provenance`:
+asseverava `_revision_exists()` sobre `_RELATIONSHIP_GUARD_REVISION`,
+`_E3_5_1_REVISION` e `_PRE_E3_5_1_REVISION`, o que prova apenas que as
+revisões existem na pasta de migrações — `GUARD EXISTS` não implica
+`GUARD PROTECTS CURRENT HEAD`. Corrigido com o mesmo helper local
+`_revision_in_head_ancestry()` (replicado, não movido para produção),
+asseverando ancestralidade real da head para as três revisões. `D1`-`D5`
+e `M5` inalterados, semântica de downgrade inalterada, nenhuma função
+de teste nova (35 de integração, mantido), nenhum código de produção e
+nenhuma migração tocados.
+
 819 passed, 35 skipped (sem `.env` local — mesmo padrão gracioso de
 sempre; todos os skips agora são genuinamente "requer Postgres real",
 nenhum skip permanente por head desatualizada), 97,65% (mantido).

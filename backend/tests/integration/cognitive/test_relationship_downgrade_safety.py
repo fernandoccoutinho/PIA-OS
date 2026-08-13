@@ -327,14 +327,50 @@ def test_d2_d3_d4_d5_incompatible_historical_downgrade_is_blocked_without_data_l
             uow.commit()
 
 
+def _revision_in_head_ancestry(revision_id: str) -> bool:
+    """Confirma que `revision_id` é **ancestral da head atual** — isto
+    é, que qualquer `upgrade("head")` a partir de `base` passa por ela.
+
+    Estritamente mais forte que `_revision_exists()`: `GUARD EXISTS`
+    não implica `GUARD PROTECTS CURRENT HEAD`. Numa cadeia bifurcada,
+    `_revision_exists()` continua `True` enquanto a guarda já não
+    pertence a `ancestors(head)` — exatamente o cenário que este
+    arquivo existe para detectar.
+
+    Deliberadamente sem `try/except`: ao contrário da condição de
+    skip, aqui uma cadeia inconsistente ou um `head_revision()` que
+    falha é informação diagnóstica e deve quebrar o teste
+    ruidosamente, nunca virar um `False` silencioso (E3.6.1c §4).
+
+    Espelha `_revision_in_head_ancestry()` de
+    `test_provenance_downgrade_safety.py` (E3.6.1b); helper local em
+    ambos os arquivos, nunca movido para produção."""
+    from alembic.script import ScriptDirectory
+
+    config = migrations.get_alembic_config()
+    script = ScriptDirectory.from_config(config)
+    return any(
+        rev.revision == revision_id
+        for rev in script.iterate_revisions(migrations.head_revision(), "base")
+    )
+
+
 def test_m4_relationship_guard_still_reachable_from_current_head():
     """M4 do prompt corretivo E3.6.1 — confirma explicitamente que a
     guarda de `Relationship` (E3.5.2) continua funcionando a partir da
     head atual, mesmo depois de módulos posteriores (E3.6/E3.6.1)
     terem estendido a cadeia."""
-    assert _revision_exists(_RELATIONSHIP_GUARD_REVISION)
-    assert _revision_exists(_E3_5_1_REVISION)
-    assert _revision_exists(_PRE_E3_5_1_REVISION)
+    head = migrations.head_revision()
+
+    assert _revision_in_head_ancestry(
+        _RELATIONSHIP_GUARD_REVISION
+    ), f"guarda {_RELATIONSHIP_GUARD_REVISION} não é ancestral da head {head}"
+    assert _revision_in_head_ancestry(
+        _E3_5_1_REVISION
+    ), f"revisão {_E3_5_1_REVISION} não é ancestral da head {head}"
+    assert _revision_in_head_ancestry(
+        _PRE_E3_5_1_REVISION
+    ), f"revisão {_PRE_E3_5_1_REVISION} não é ancestral da head {head}"
 
 
 def test_m5_full_compatible_relationship_downgrade_remains_executable():
