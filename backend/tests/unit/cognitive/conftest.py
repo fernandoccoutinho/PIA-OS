@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.cognitive.models.lineage_edge import LineageEdge
+from app.cognitive.models.provenance_record import ProvenanceRecord
 from app.cognitive.models.relationship import Relationship
 from app.cognitive.models.transformation_record import TransformationRecord
 from app.database.base import Base
@@ -26,6 +27,7 @@ _COGNITIVE_TABLES = [
     LineageEdge.__table__,
     TransformationRecord.__table__,
     Relationship.__table__,
+    ProvenanceRecord.__table__,
 ]
 
 

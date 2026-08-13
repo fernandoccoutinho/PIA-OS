@@ -122,3 +122,25 @@ class RelationshipType(StrEnum):
         """`True` apenas para `RELATED_TO` — os demais são
         direcionados (`A REFERENCES B` não implica `B REFERENCES A`)."""
         return self is RelationshipType.RELATED_TO
+
+
+class ProvenanceSourceType(StrEnum):
+    """Origem de um `ProvenanceRecord` (`E3.6`/`LIB-06`) — o Domain
+    Model Draft lista estes 4 valores como exemplo ("ex.:") e delega
+    explicitamente o fechamento do enum a E3.6: "enum fechado em E3.6,
+    aberto aqui [no Draft]"."""
+
+    HUMAN = "human"
+    AGENT = "agent"
+    IMPORT = "import"
+    SYSTEM = "system"
+
+
+class ProvenanceActorType(StrEnum):
+    """Tipo do ator responsável por uma contribuição (`E3.6`/`LIB-06`)
+    — nunca assume IA por padrão (§ obrigatório do módulo E3.6:
+    `actor_type` não é implicitamente `AGENT`)."""
+
+    HUMAN = "human"
+    AGENT = "agent"
+    SYSTEM = "system"

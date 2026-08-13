@@ -209,6 +209,33 @@ persistida — histórico append-only (E3.5/LIB-05, §12: "alterar/remover
 uma relação não deve apagar um fato histórico"). "Remoção" lógica é
 `retire()` (marca `retired_at`), não delete físico."""
 
+PIA_8017_PROVENANCE_RECORD_IMMUTABLE = ErrorCode(
+    code="PIA-8017",
+    default_message="provenance_record_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de `update`/`delete` físico de um `ProvenanceRecord` já
+persistido — histórico append-only (E3.6/LIB-06, §6: "provenance
+representa fato histórico... não permitir UPDATE destrutivo/DELETE
+físico"). Mesmo princípio de `LineageEdgeImmutableError`/
+`TransformationRecordImmutableError`/`RelationshipImmutableError`."""
+
+PIA_8018_ACCESSIBILITY_INVALID_TRANSITION = ErrorCode(
+    code="PIA-8018",
+    default_message="accessibility_invalid_transition",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de transicionar `AccessibilityState` para
+`CAUSALLY_EXTINCT` sem um `reason` explícito e não-vazio (E3.6/LIB-06)
+— proxy interino para a exigência do Domain Model Draft de que essa
+transição nunca seja o valor default nem efeito colateral de query
+(§4 do Draft) — o mecanismo formal (`CausalHistoryEvent`) é `E3.9`,
+ainda não implementado."""
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -226,6 +253,8 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8014_RELATIONSHIP_DUPLICATE,
     PIA_8015_RELATIONSHIP_ENDPOINT_NOT_FOUND,
     PIA_8016_RELATIONSHIP_IMMUTABLE,
+    PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
+    PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {

@@ -24,6 +24,8 @@ from app.cognitive.errors.codes import (
     PIA_8014_RELATIONSHIP_DUPLICATE,
     PIA_8015_RELATIONSHIP_ENDPOINT_NOT_FOUND,
     PIA_8016_RELATIONSHIP_IMMUTABLE,
+    PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
+    PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
 )
 from app.exceptions.base import PIAOSException
 
@@ -319,4 +321,50 @@ class RelationshipImmutableError(PIAOSException):
                 f"operação '{operation}' rejeitada."
             ),
             detail={"relationship_id": str(relationship_id), "operation": operation},
+        )
+
+
+class ProvenanceRecordImmutableError(PIAOSException):
+    """Tentativa de `update`/`delete` físico de um `ProvenanceRecord`
+    já persistido — histórico append-only (E3.6/LIB-06)."""
+
+    error_code = PIA_8017_PROVENANCE_RECORD_IMMUTABLE
+
+    def __init__(self, provenance_id: uuid.UUID, operation: str) -> None:
+        self.provenance_id = provenance_id
+        self.operation = operation
+        super().__init__(
+            message=(
+                f"ProvenanceRecord {provenance_id} é append-only — "
+                f"operação '{operation}' rejeitada."
+            ),
+            detail={"provenance_id": str(provenance_id), "operation": operation},
+        )
+
+
+class AccessibilityInvalidTransitionError(PIAOSException):
+    """Tentativa de transicionar `AccessibilityState` para
+    `CAUSALLY_EXTINCT` sem um `reason` explícito (E3.6/LIB-06).
+
+    O Domain Model Draft exige que essa transição específica "sempre
+    tem um evento causal associado, nunca é o valor default nem um
+    efeito colateral de query" — o mecanismo formal para isso
+    (`CausalHistoryEvent`) é `E3.9`, ainda não implementado. Como
+    proxy interino, honesto e genuinamente aplicável hoje,
+    `AccessibilityManager.transition()` exige um `reason` não-vazio
+    especificamente para este alvo — não é o mesmo que um evento
+    causal referenciado, mas garante que a transição nunca é
+    silenciosa/automática. Ver `E3_6_LIB06_PROVENANCE_ACCESSIBILITY.md`
+    para a limitação documentada."""
+
+    error_code = PIA_8018_ACCESSIBILITY_INVALID_TRANSITION
+
+    def __init__(self, coid: uuid.UUID) -> None:
+        self.coid = coid
+        super().__init__(
+            message=(
+                f"CognitiveObject {coid}: transição para CAUSALLY_EXTINCT "
+                "exige um 'reason' explícito e não-vazio."
+            ),
+            detail={"coid": str(coid)},
         )
