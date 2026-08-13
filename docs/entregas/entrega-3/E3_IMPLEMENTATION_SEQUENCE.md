@@ -87,15 +87,23 @@ de acessibilidade/memória) ou E7 (Hypervisor/orquestração multi-IA).
 3. **`TransformationRecord` entra em E3.4** — versionamento e
    transformação são operações correlatas (uma nova versão é, em
    geral, o resultado de uma transformação registrada).
-4. **`Relationship Engine` (E3.5) antes de Metadata/Index/Search** —
-   buscar e indexar fazem mais sentido sobre um grafo de relações já
-   existente do que sobre objetos isolados.
-5. **`Provenance`+`Accessibility` entram em E3.6, junto de Metadata** —
-   correção desta versão: originalmente `ProvenanceRecord` estava
-   planejado apenas para o módulo de Knowledge Provenance Engine
-   (E3.9); a sequência canônica o atribui a E3.6, mais cedo, porque
-   metadata e proveniência compartilham o mesmo momento natural de
-   captura (na escrita/edição de um objeto).
+4. **`Relationship Engine` (E3.5) antes de Index/Search** — indexação e
+   busca devem operar sobre estruturas relacionais já existentes;
+   fazem mais sentido sobre um grafo de relações do que sobre objetos
+   isolados.
+5. **`Provenance`+`Accessibility` entram em E3.6** — correção desta
+   versão: originalmente `ProvenanceRecord` estava planejado apenas
+   para o módulo de Knowledge Provenance Engine (E3.9); a sequência
+   canônica o atribui a E3.6, mais cedo, porque proveniência e
+   acessibilidade compartilham o mesmo momento natural de captura (na
+   escrita/edição de um objeto). O termo `Metadata` no nome histórico
+   `LIB-06 Metadata Manager` é apenas o guarda-chuva documental
+   resolvido por `E3.6.2` — **não** designa primitiva cognitiva
+   persistente, entidade, tabela, campo ou serviço, e nada com esse
+   nome é capturado ou implementado em E3.6. O que E3.6 implementa é
+   `ProvenanceRecord` + `AccessibilityState`/`AccessibilityManager`
+   (ver `E3_6_2_METADATA_CONTRACT_RESOLUTION.md` e a nota de resolução
+   após a tabela de ownership acima).
 6. **`CausalHistory`/`CausalHistoryEvent` ficam em E3.9** — só fazem
    sentido pleno depois que provenance (E3.6) e relacionamento (E3.5)
    já existem para alimentar os eventos históricos.
