@@ -302,8 +302,9 @@ integração** (confirmado por `pytest tests/integration/cognitive/
   (`test_provenance_downgrade_safety.py`, 4): `PD1` (tabela
   vazia), `PD2`-`PD4` (tabela com dado, bloqueio + zero perda + schema
   preservado), `PD5` (ciclo completo, atravessando também a guarda de
-  `Relationship`), e (E3.6.1a) confirmação explícita de que a guarda
-  continua alcançável a partir de qualquer head futura.
+  `Relationship`), e confirmação explícita de que a guarda continua
+  sendo **ancestral da head atual** (E3.6.1a; asserção corrigida em
+  E3.6.1b — ver abaixo).
 - **Guarda de downgrade de Relationship, reativada**
   (`test_relationship_downgrade_safety.py`, 4): `D1`-`D5` (E3.5.2a,
   comportamento inalterado) + `M4`/`M5` (novos em E3.6.1, confirmam
@@ -348,6 +349,26 @@ continuaram executando e passando normalmente — depois removi essa
 migração de simulação (nunca fez parte do patch, nenhum rastro no
 diff). Prova direta de que a correção é genuinamente future-proof
 para migrações futuras de `E3.7+`.
+
+**Correção E3.6.1b (cleanup de asserção)**: a validação empírica acima
+provou que a *condição de skip* e as comparações de head são
+future-proof, mas o teste que carrega esse nome
+(`test_provenance_guard_still_reachable_from_current_head`) não
+codificava essa garantia. Ele asseverava apenas `_revision_exists(...)`,
+o que era (i) **tautológico** para `_PROVENANCE_GUARD_REVISION` — a
+própria condição de skip do módulo (`_guard_migration_available()`) já
+exige exatamente essa condição, de modo que a asserção não podia falhar
+quando o teste executa — e (ii) **mais fraco que o nome prometia**:
+"existe um arquivo com esse id na pasta de migrações" não implica "é
+alcançável a partir da head". Uma cadeia bifurcada em `E3.7+` (head
+paralela) é exatamente o cenário que este teste existe para detectar, e
+passaria silenciosamente. Corrigido com `_revision_in_head_ancestry()`
+(helper local novo, via `ScriptDirectory.iterate_revisions(head,
+"base")`), que percorre a ancestralidade real da head; as mensagens de
+asserção agora reportam a head observada. Nenhuma função de teste nova
+(35 de integração, mantido), nenhum código de produção, migração ou
+documento fora deste tocado. `_revision_exists()` permanece intocado —
+continua sendo a checagem correta para a *condição de skip*.
 
 819 passed, 35 skipped (sem `.env` local — mesmo padrão gracioso de
 sempre; todos os skips agora são genuinamente "requer Postgres real",

@@ -55,6 +55,27 @@ def _revision_exists(revision_id: str) -> bool:
         return False
 
 
+def _revision_in_head_ancestry(revision_id: str) -> bool:
+    """Confirma que `revision_id` é **ancestral da head atual** — isto
+    é, que qualquer `upgrade("head")` a partir de `base` passa por ela.
+
+    Estritamente mais forte que `_revision_exists()`, que só confirma
+    que existe um arquivo de migração com esse id na pasta: uma cadeia
+    bifurcada (head paralela criada por um módulo futuro) satisfaria
+    `_revision_exists()` sem que a guarda jamais fosse executada.
+    Deliberadamente sem `try/except`: aqui, ao contrário da condição
+    de skip, uma exceção do Alembic é informação diagnóstica e deve
+    falhar o teste em vez de virar um `False` silencioso."""
+    from alembic.script import ScriptDirectory
+
+    config = migrations.get_alembic_config()
+    script = ScriptDirectory.from_config(config)
+    return any(
+        rev.revision == revision_id
+        for rev in script.iterate_revisions(migrations.head_revision(), "base")
+    )
+
+
 def _guard_migration_available() -> bool:
     health = check_database_health()
     if not health.available:
@@ -192,10 +213,33 @@ def test_pd5_full_round_trip_compatible_with_empty_table():
 
 
 def test_provenance_guard_still_reachable_from_current_head():
-    """Confirma explicitamente que a guarda de `Provenance` (E3.6.1)
-    continua alcançável a partir da head atual, mesmo depois de
-    módulos posteriores estenderem a cadeia — mesmo espírito de
+    """Confirma que a guarda de `Provenance` (E3.6.1) continua sendo
+    **ancestral da head atual**, mesmo depois de módulos posteriores
+    (`E3.7+`) estenderem a cadeia — mesmo espírito de
     `test_m4_relationship_guard_still_reachable_from_current_head`
-    em `test_relationship_downgrade_safety.py`."""
-    assert _revision_exists(_PROVENANCE_GUARD_REVISION)
-    assert _revision_exists(_PRE_PROVENANCE_REVISION)
+    em `test_relationship_downgrade_safety.py`.
+
+    **Correção E3.6.1b (débito de asserção)**: a versão de E3.6.1a
+    asseverava apenas `_revision_exists(...)`. Dois problemas reais:
+
+    1. Para `_PROVENANCE_GUARD_REVISION` a asserção era *tautológica*
+       — `_guard_migration_available()` (condição de skip do módulo)
+       já exige exatamente `_revision_exists(_PROVENANCE_GUARD_REVISION)`,
+       logo a asserção não podia falhar quando o teste executa: ou o
+       módulo inteiro pula, ou a asserção passa por construção.
+    2. Para ambas as revisões, "existe na pasta de migrações" é mais
+       fraco que "é alcançável a partir da head" — o próprio nome do
+       teste (`still_reachable_from_current_head`) prometia o segundo
+       e verificava o primeiro. Uma cadeia bifurcada em `E3.7+` seria
+       exatamente o cenário que este teste existe para detectar, e
+       passaria silenciosamente.
+
+    A asserção agora percorre a ancestralidade real da head."""
+    head = migrations.head_revision()
+
+    assert _revision_in_head_ancestry(
+        _PROVENANCE_GUARD_REVISION
+    ), f"guarda {_PROVENANCE_GUARD_REVISION} não é ancestral da head {head}"
+    assert _revision_in_head_ancestry(
+        _PRE_PROVENANCE_REVISION
+    ), f"revisão {_PRE_PROVENANCE_REVISION} não é ancestral da head {head}"
