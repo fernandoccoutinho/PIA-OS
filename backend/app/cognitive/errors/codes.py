@@ -109,6 +109,18 @@ nenhum `CognitiveObject` existente (ativo ou soft-deleted — soft
 delete não invalida um endpoint de lineage, §33) — violação da FK
 traduzida para erro de domínio (E3.3/LIB-03, §32)."""
 
+PIA_8009_LINEAGE_EDGE_IMMUTABLE = ErrorCode(
+    code="PIA-8009",
+    default_message="lineage_edge_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de atualizar ou remover uma `LineageEdge` já persistida —
+`LineageEdge` é append-only por decisão de domínio (E3.3/LIB-03,
+correção E3.3.1, débito C2): nenhuma edge registrada pode ser mutada
+ou apagada via `LineageRepository`."""
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -118,6 +130,7 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8006_LINEAGE_SELF_LINK,
     PIA_8007_LINEAGE_DUPLICATE_EDGE,
     PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND,
+    PIA_8009_LINEAGE_EDGE_IMMUTABLE,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {

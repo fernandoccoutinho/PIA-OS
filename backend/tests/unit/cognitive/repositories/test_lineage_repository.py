@@ -340,3 +340,157 @@ def test_cy1_self_link_is_the_only_cycle_protection_enforced(objects, lineage, c
     )
     cognitive_session.commit()
     assert reverse_edge.id is not None
+
+
+# --- A1-A6: append-only (correção E3.3.1, débito C2) ---
+
+
+def test_a1_update_is_rejected(objects, lineage, cognitive_session):
+    from app.cognitive.errors.exceptions import LineageEdgeImmutableError
+
+    a = objects.add(CognitiveObject())
+    b = objects.add(CognitiveObject())
+    cognitive_session.commit()
+    edge = lineage.add_edge(
+        parent_coid=a.id, child_coid=b.id, relation_type=LineageRelation.DERIVED_FROM
+    )
+    cognitive_session.commit()
+
+    with pytest.raises(LineageEdgeImmutableError) as exc_info:
+        lineage.update(edge)
+    assert exc_info.value.code == "PIA-8009"
+
+
+def test_a2_delete_is_rejected(objects, lineage, cognitive_session):
+    from app.cognitive.errors.exceptions import LineageEdgeImmutableError
+
+    a = objects.add(CognitiveObject())
+    b = objects.add(CognitiveObject())
+    cognitive_session.commit()
+    edge = lineage.add_edge(
+        parent_coid=a.id, child_coid=b.id, relation_type=LineageRelation.DERIVED_FROM
+    )
+    cognitive_session.commit()
+
+    with pytest.raises(LineageEdgeImmutableError) as exc_info:
+        lineage.delete(edge)
+    assert exc_info.value.code == "PIA-8009"
+
+
+def test_a3_edge_remains_intact_after_update_attempt(objects, lineage, cognitive_session):
+    from app.cognitive.errors.exceptions import LineageEdgeImmutableError
+
+    a = objects.add(CognitiveObject())
+    b = objects.add(CognitiveObject())
+    cognitive_session.commit()
+    edge = lineage.add_edge(
+        parent_coid=a.id, child_coid=b.id, relation_type=LineageRelation.DERIVED_FROM
+    )
+    cognitive_session.commit()
+    original_id, original_parent, original_relation = edge.id, edge.parent_coid, edge.relation_type
+
+    with pytest.raises(LineageEdgeImmutableError):
+        lineage.update(edge)
+
+    reloaded = cognitive_session.get(type(edge), original_id)
+    assert reloaded is not None
+    assert reloaded.parent_coid == original_parent
+    assert reloaded.relation_type == original_relation
+
+
+def test_a3_edge_remains_intact_after_delete_attempt(objects, lineage, cognitive_session):
+    from app.cognitive.errors.exceptions import LineageEdgeImmutableError
+
+    a = objects.add(CognitiveObject())
+    b = objects.add(CognitiveObject())
+    cognitive_session.commit()
+    edge = lineage.add_edge(
+        parent_coid=a.id, child_coid=b.id, relation_type=LineageRelation.DERIVED_FROM
+    )
+    cognitive_session.commit()
+    edge_id = edge.id
+
+    with pytest.raises(LineageEdgeImmutableError):
+        lineage.delete(edge)
+
+    reloaded = cognitive_session.get(type(edge), edge_id)
+    assert reloaded is not None
+
+
+def test_a4_queries_continue_working_after_rejected_mutation_attempts(
+    objects, lineage, cognitive_session
+):
+    from app.cognitive.errors.exceptions import LineageEdgeImmutableError
+
+    a = objects.add(CognitiveObject())
+    b = objects.add(CognitiveObject())
+    cognitive_session.commit()
+    edge = lineage.add_edge(
+        parent_coid=a.id, child_coid=b.id, relation_type=LineageRelation.DERIVED_FROM
+    )
+    cognitive_session.commit()
+
+    for _ in range(3):
+        with pytest.raises(LineageEdgeImmutableError):
+            lineage.update(edge)
+        with pytest.raises(LineageEdgeImmutableError):
+            lineage.delete(edge)
+
+    assert len(lineage.list_children(a.id)) == 1
+    assert len(lineage.list_parents(b.id)) == 1
+
+
+def test_a5_soft_delete_of_cognitive_object_does_not_remove_lineage_edge(
+    objects, lineage, cognitive_session
+):
+    a = objects.add(CognitiveObject())
+    b = objects.add(CognitiveObject())
+    cognitive_session.commit()
+    edge = lineage.add_edge(
+        parent_coid=a.id, child_coid=b.id, relation_type=LineageRelation.DERIVED_FROM
+    )
+    cognitive_session.commit()
+
+    objects.soft_delete(a)
+    objects.soft_delete(b)
+    cognitive_session.commit()
+
+    reloaded = cognitive_session.get(type(edge), edge.id)
+    assert reloaded is not None
+    assert len(lineage.list_children(a.id)) == 1
+
+
+def test_a6_no_other_public_method_mutates_or_removes_an_edge():
+    """Nenhum método público de `LineageRepository` além de
+    `update`/`delete` (ambos rejeitados) muta ou remove uma edge —
+    inspeção do contrato público (§8/A6 do módulo E3.3.1)."""
+    import inspect
+
+    from app.cognitive.repositories.lineage_repository import LineageRepository
+
+    public_methods = {
+        name
+        for name, _ in inspect.getmembers(LineageRepository, predicate=inspect.isfunction)
+        if not name.startswith("_")
+    }
+    mutating_beyond_update_delete = public_methods - {
+        "update",
+        "delete",
+        "add",  # herdado — cria, não muta/remove existente
+        "create",  # herdado — alias de add(), idem
+        "refresh",  # herdado — apenas recarrega, não muta
+        "exists",  # herdado — apenas leitura
+        "add_edge",
+        "list_children",
+        "list_parents",
+        "edge_exists",
+        "list",
+        "paginate",
+        "count",
+        "exists_by",
+        "get_by_id",
+        "get_by_id_or_raise",
+    }
+    assert (
+        mutating_beyond_update_delete == set()
+    ), f"método público inesperado que poderia mutar/remover: {mutating_beyond_update_delete}"

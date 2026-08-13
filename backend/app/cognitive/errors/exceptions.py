@@ -16,6 +16,7 @@ from app.cognitive.errors.codes import (
     PIA_8006_LINEAGE_SELF_LINK,
     PIA_8007_LINEAGE_DUPLICATE_EDGE,
     PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND,
+    PIA_8009_LINEAGE_EDGE_IMMUTABLE,
 )
 from app.exceptions.base import PIAOSException
 
@@ -157,4 +158,20 @@ class LineageEndpointNotFoundError(PIAOSException):
         super().__init__(
             message=f"CognitiveObject {coid} não existe — não pode ser endpoint de LineageEdge.",
             detail={"coid": str(coid)},
+        )
+
+
+class LineageEdgeImmutableError(PIAOSException):
+    """Tentativa de atualizar ou remover uma `LineageEdge` já
+    persistida — `LineageEdge` é append-only por decisão de domínio
+    (E3.3/LIB-03, correção E3.3.1)."""
+
+    error_code = PIA_8009_LINEAGE_EDGE_IMMUTABLE
+
+    def __init__(self, edge_id: uuid.UUID, operation: str) -> None:
+        self.edge_id = edge_id
+        self.operation = operation
+        super().__init__(
+            message=(f"LineageEdge {edge_id} é append-only — operação '{operation}' rejeitada."),
+            detail={"edge_id": str(edge_id), "operation": operation},
         )

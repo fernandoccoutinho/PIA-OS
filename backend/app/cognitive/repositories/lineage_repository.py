@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.cognitive.errors.exceptions import (
     LineageDuplicateEdgeError,
+    LineageEdgeImmutableError,
     LineageEndpointNotFoundError,
     LineageSelfLinkError,
 )
@@ -71,6 +72,19 @@ class LineageRepository(BaseRepository[LineageEdge]):
     — mesma convenção de ordenação determinística de `ObjectRepository`
     (E3.1.2), para não repetir o débito já corrigido lá (§34 do módulo
     E3.3).
+
+    **Append-only garantido pelo contrato público** (correção E3.3.1,
+    débito C2): `update()`/`delete()` são sobrescritos abaixo e sempre
+    rejeitam (`LineageEdgeImmutableError`, `PIA-8009`) — nenhum outro
+    método deste repositório muta ou remove uma edge já registrada
+    (`add_edge`/`list_children`/`list_parents`/`edge_exists` são os
+    únicos métodos públicos além de `update`/`delete`, e nenhum deles
+    escreve sobre uma linha existente). Acesso direto à `Session`/ORM
+    por fora deste repositório está fora do contrato público — é a
+    mesma regra já em vigor para todo `app/repositories/` desde o
+    Módulo 2.3 da baseline ("nenhum componente fora de
+    app/repositories/ acessa SQLAlchemy diretamente"); este módulo não
+    introduz nenhum atalho que a burle.
     """
 
     def __init__(self, session: Session) -> None:
@@ -156,3 +170,20 @@ class LineageRepository(BaseRepository[LineageEdge]):
             LineageEdge.relation_type == relation_type,
         )
         return self._session.execute(stmt).first() is not None
+
+    def update(self, entity: LineageEdge) -> LineageEdge:
+        """Sempre rejeita — `LineageEdge` é append-only de verdade
+        (correção E3.3.1, débito C2). A versão original desta classe
+        não sobrescrevia `update()`/`delete()` herdados de
+        `BaseRepository` — a afirmação "append-only por construção" na
+        docstring do modelo era apenas documentação, não aplicada.
+        Corrigido: qualquer tentativa levanta `LineageEdgeImmutableError`
+        (`PIA-8009`) antes de tocar a sessão — nenhuma query é
+        executada.
+        """
+        raise LineageEdgeImmutableError(entity.id, operation="update")
+
+    def delete(self, entity: LineageEdge) -> None:
+        """Sempre rejeita — ver `update()` acima. Mesma correção
+        E3.3.1/C2."""
+        raise LineageEdgeImmutableError(entity.id, operation="delete")

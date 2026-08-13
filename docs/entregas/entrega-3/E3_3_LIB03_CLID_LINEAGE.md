@@ -92,7 +92,7 @@ usado para não implementar).
 | `app/cognitive/models/lineage_edge.py` | `LineageEdge` (ORM) |
 | `app/cognitive/repositories/lineage_repository.py` | `LineageRepository` |
 | `app/cognitive/services/clid_manager.py` | `ClidManager`, `ImportedClidStatus`, `ImportedClidValidation` |
-| `app/cognitive/errors/codes.py` | +`PIA-8005`..`PIA-8008` |
+| `app/cognitive/errors/codes.py` | +`PIA-8005`..`PIA-8009` |
 | `app/cognitive/errors/exceptions.py` | +`ClidInvalidError`, `LineageSelfLinkError`, `LineageDuplicateEdgeError`, `LineageEndpointNotFoundError` |
 | `alembic/versions/4f56e1a4936c_*.py` | Migração `lineage_edges` |
 | `tests/unit/cognitive/conftest.py` | +`LineageEdge` na fixture, `PRAGMA foreign_keys=ON` (necessário a partir de E3.3) |
@@ -106,6 +106,7 @@ usado para não implementar).
 | `PIA-8006` (novo) | Self-link (`parent_coid == child_coid`) |
 | `PIA-8007` (novo) | Edge duplicada (mesma tripla) |
 | `PIA-8008` (novo) | `parent_coid`/`child_coid` não corresponde a nenhum `CognitiveObject` (violação de FK traduzida) |
+| `PIA-8009` (novo, correção E3.3.1) | Tentativa de `update`/`delete` de uma `LineageEdge` já persistida |
 
 `PIA-8001`, `PIA-8003`, `PIA-8004` foram inspecionados e não se
 aplicam a nenhum caso novo deste módulo.
@@ -160,6 +161,84 @@ foi suficiente para o autogenerate enxergar o modelo novo.
 `created_at ASC, id ASC` — mesma convenção de E3.1.2, sem repetir o
 débito lá corrigido), `edge_exists`. Não substitui `BaseRepository`;
 `ObjectRepository` continua responsável por `CognitiveObject`.
+
+**Append-only garantido (correção E3.3.1, débito C2)**: a versão
+original desta seção afirmava "append-only por construção" apenas na
+documentação — na prática, `LineageRepository` herdava `update()`/
+`delete()` públicos de `BaseRepository` sem override, então a
+afirmação não era literalmente verdadeira. Corrigido:
+`LineageRepository.update()`/`.delete()` são sobrescritos e sempre
+levantam `LineageEdgeImmutableError` (`PIA-8009`) antes de tocar a
+sessão — nenhuma query é executada, a edge nunca é alcançada pelo
+banco. Testado (`A1`-`A6`): rejeição de `update`/`delete`, edge
+intacta após a tentativa, consultas (`list_children`/`list_parents`)
+continuam funcionando normalmente depois, soft delete de
+`CognitiveObject` não remove a `LineageEdge` associada (a FK aponta
+para a linha física, que soft delete não remove), e inspeção do
+contrato público confirma que nenhum outro método muta/remove uma
+edge existente.
+
+**Limitação residual documentada** (não corrigida nesta correção, fora
+do escopo de C1/C2): `LineageRepository.add()`/`.create()` (herdados
+de `BaseRepository`, `create` é alias de `add`) permitem criar uma
+`LineageEdge` **sem** passar pela validação de domínio de `add_edge()`
+(self-link, duplicata, endpoint inexistente) — só a proteção de nível
+de banco (`CHECK`/`UNIQUE`/FK) continuaria valendo nesse caminho, com
+mensagens de erro menos amigáveis (`PersistenceError` cru, não os
+erros cognitivos dedicados). Isso não é uma violação de append-only
+(ambos criam linhas novas, nunca mutam/removem existentes) — é uma
+lacuna de validação de domínio separada, fora do escopo desta correção
+(C1/C2 apenas). Registrado aqui para rastreabilidade, não implementado.
+
+## Concorrência (correção E3.3.1, débito C1)
+
+**Problema confirmado**: `ClidManager.assign()`/`inherit()` faziam
+leitura-decide-escreve em memória (Python), sem lock nem verificação
+otimista. Duas transações concorrentes podiam ambas ler
+`parent.clid IS NULL`, gerar CLIDs diferentes, e a segunda a commitar
+sobrescrevia silenciosamente o commit da primeira — o `UPDATE` gerado
+pelo SQLAlchemy é `WHERE id = :pk`, sem nenhuma condição sobre o valor
+anterior de `clid`.
+
+**Estratégia escolhida**: `SELECT ... FOR UPDATE` via
+`ObjectRepository.refresh_for_update()` (novo método — usa
+`Session.refresh(entity, with_for_update=True)`, mecanismo nativo do
+SQLAlchemy, nenhuma query manual). Escolhida em vez de controle
+otimista/`VersionMixin` porque `CognitiveObject` não usa
+`VersionMixin` hoje — adicioná-lo exigiria uma coluna nova
+(`version`), logo uma migração, e o próprio prompt corretivo pede
+`STOP CONDITION` antes de criar migração não estritamente necessária.
+`SELECT ... FOR UPDATE` não exige nenhuma mudança de schema.
+
+**Semântica de first-assignment**: `assign()` e `inherit()` bloqueiam
+e recarregam `entity`/`parent`/`child` (`refresh_for_update`) **antes**
+de decidir/mutar `clid`. Se outra transação já commitou um CLID
+enquanto a atual esperava o lock, o `refresh` traz esse valor
+committed para a memória, e `@validates("clid")` rejeita a tentativa
+de sobrescrevê-lo — exatamente a mesma proteção de imutabilidade já
+existente (E3.1.1), agora corretamente alimentada com o estado mais
+recente em vez de um estado potencialmente obsoleto.
+
+**Ausência de last-write-wins**: validado com um teste de concorrência
+genuína — duas *threads* Python, cada uma com sua própria `Session`/
+conexão, competindo de verdade (via `threading.Barrier`) para atribuir
+o primeiro CLID ao mesmo `CognitiveObject`, contra PostgreSQL real
+(não simulado com duas chamadas sequenciais na mesma `Session`, e não
+apenas contra SQLite — SQLite não suporta lock de linha real).
+Executado repetidamente (6+ vezes durante o desenvolvimento, incluindo
+a suíte automatizada): sempre exatamente 1 commit bem-sucedido, a
+outra transação sempre rejeitada por `CognitiveObjectClidAlreadySetError`
+— nunca dois CLIDs, em nenhuma ordem de execução observada.
+
+No SQLite (testes unitários), `FOR UPDATE` compila como no-op (SQLite
+não tem lock de linha) — o `refresh()` ainda funciona normalmente,
+mas sem a garantia real de serialização entre conexões distintas; por
+isso a prova de ausência de condição de corrida depende do teste de
+integração contra PostgreSQL, não dos testes unitários com SQLite.
+
+`inherit()` foi reestruturado para bloquear `parent`/`child` uma única
+vez cada (não delega mais a `self.assign()` internamente) — evita
+adquirir o mesmo lock duas vezes na mesma chamada.
 
 ## Transaction/rollback result
 
@@ -228,7 +307,7 @@ tocado foi `tests/unit/cognitive/conftest.py`, para adicionar
 `LineageEdge` à fixture e habilitar `PRAGMA foreign_keys=ON` no
 SQLite — sem isso, os testes de FK deste módulo não seriam realistas,
 já que PostgreSQL impõe FK por padrão mas SQLite não). Suíte completa:
-626 passed, 8 skipped (sem `.env` local — mesmo padrão gracioso de
+633 passed, 9 skipped (sem `.env` local — mesmo padrão gracioso de
 sempre), 97,04%.
 
 ## Decisões

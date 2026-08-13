@@ -227,3 +227,85 @@ def test_clid_immutability_against_real_database():
             if leftover is not None:
                 objs.delete(leftover)
             uow.commit()
+
+
+def test_c1_concurrent_first_clid_assignment_does_not_produce_two_clids():
+    """C1.1-C1.4 (correção E3.3.1): duas transações reais, cada uma com
+    sua própria conexão/sessão, competindo para atribuir o primeiro
+    CLID ao mesmo `CognitiveObject`. Usa threads + duas sessões
+    distintas de verdade — não duas chamadas sequenciais na mesma
+    Session (§4 do prompt corretivo é explícito sobre isso).
+
+    Esperado: exatamente uma transação commita; a outra bloqueia em
+    `SELECT ... FOR UPDATE` até a primeira liberar a linha e, ao
+    continuar, vê o CLID já commitado e é rejeitada por
+    `CognitiveObjectClidAlreadySetError` — nunca duas transações
+    commitam CLIDs diferentes (nenhum last-write-wins silencioso).
+    """
+    import threading
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.cognitive.errors.exceptions import CognitiveObjectClidAlreadySetError
+    from app.database.engine import engine
+
+    SessionFactory = sessionmaker(
+        bind=engine, autocommit=False, autoflush=False, expire_on_commit=False
+    )
+
+    with UnitOfWork() as uow:
+        objs = ObjectRepository(uow.session)
+        parent = objs.add(CognitiveObject())
+        uow.commit()
+        parent_id = parent.id
+
+    results: dict[str, tuple[str, object]] = {}
+    barrier = threading.Barrier(2)
+
+    def worker(name: str) -> None:
+        session = SessionFactory()
+        try:
+            objs_local = ObjectRepository(session)
+            lin_local = LineageRepository(session)
+            mgr_local = ClidManager(objs_local, lin_local)
+            p = objs_local.get_by_id(parent_id)
+            barrier.wait()  # as duas threads tentam exatamente ao mesmo tempo
+            candidate = mgr_local.generate()
+            mgr_local.assign(p, candidate)
+            session.commit()
+            results[name] = ("committed", p.clid)
+        except CognitiveObjectClidAlreadySetError:
+            session.rollback()
+            results[name] = ("rejected", None)
+        finally:
+            session.close()
+
+    try:
+        t1 = threading.Thread(target=worker, args=("T1",))
+        t2 = threading.Thread(target=worker, args=("T2",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        outcomes = [results.get("T1"), results.get("T2")]
+        committed = [o for o in outcomes if o is not None and o[0] == "committed"]
+        rejected = [o for o in outcomes if o is not None and o[0] == "rejected"]
+
+        # C1.1/C1.2: nunca duas transações commitam — nunca dois CLIDs
+        assert len(committed) == 1, f"esperado exatamente 1 commit, obtido: {outcomes}"
+        # C1.3: a outra operação é controlada (rejeitada), não ignorada
+        assert len(rejected) == 1, f"esperado exatamente 1 rejeição, obtido: {outcomes}"
+
+        with UnitOfWork() as uow:
+            objs = ObjectRepository(uow.session)
+            final = objs.get_by_id(parent_id)
+            # o CLID final no banco é exatamente o da transação que commitou
+            assert final.clid == committed[0][1]
+    finally:
+        with UnitOfWork() as uow:
+            objs = ObjectRepository(uow.session)
+            leftover = objs.get_by_id(parent_id, include_deleted=True)
+            if leftover is not None:
+                objs.delete(leftover)
+            uow.commit()

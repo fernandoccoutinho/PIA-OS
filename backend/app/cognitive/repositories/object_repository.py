@@ -129,6 +129,33 @@ class ObjectRepository(BaseRepository[CognitiveObject]):
             stmt = stmt.where(CognitiveObject.deleted_at.is_(None))
         return self._session.execute(stmt).scalar_one_or_none()
 
+    def refresh_for_update(self, entity: CognitiveObject) -> CognitiveObject:
+        """Bloqueia a linha (`SELECT ... FOR UPDATE`) e recarrega todos
+        os atributos de `entity` a partir do estado atual do banco —
+        correção E3.3.1 (débito C1).
+
+        Necessário porque, sem isso, o identity map do SQLAlchemy
+        manteria os valores já carregados em memória mesmo que outra
+        transação tenha commitado uma mudança nesta linha enquanto a
+        atual esperava o lock — usa `Session.refresh(...,
+        with_for_update=True)` (mecanismo nativo do SQLAlchemy, não
+        uma query manual). A linha permanece bloqueada até o fim da
+        transação (commit/rollback) da `UnitOfWork` chamadora.
+
+        No PostgreSQL real, isso serializa duas transações concorrentes
+        que tentem atribuir CLID ao mesmo `CognitiveObject` pela primeira
+        vez: a segunda transação bloqueia em `FOR UPDATE` até a primeira
+        commitar, e então enxerga o `clid` já definido pela primeira —
+        nunca um "last-write-wins" silencioso. No SQLite (usado nos
+        testes unitários), `FOR UPDATE` é compilado como no-op pelo
+        dialeto — o `refresh()` ainda funciona, mas sem a garantia real
+        de bloqueio entre conexões (SQLite não suporta lock de linha);
+        por isso a validação de concorrência real usa PostgreSQL
+        (`tests/integration/cognitive/`), não SQLite.
+        """
+        self._session.refresh(entity, with_for_update=True)
+        return entity
+
     def list(
         self,
         *,

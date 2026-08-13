@@ -111,9 +111,19 @@ class ClidManager:
         (`PIA-8002`) via o guard já existente no modelo (E3.1/E3.1.1)
         — nenhuma lógica de imutabilidade é duplicada aqui.
 
+        Correção E3.3.1 (débito C1): bloqueia e recarrega `entity`
+        (`ObjectRepository.refresh_for_update`) antes de decidir —
+        sem isso, duas transações concorrentes poderiam ambas ler
+        `clid IS NULL`, gerar valores diferentes e a segunda
+        sobrescreveria silenciosamente o commit da primeira
+        (last-write-wins). Com o lock, a segunda transação bloqueia até
+        a primeira commitar, e então enxerga o `clid` já definido —
+        `@validates("clid")` rejeita a tentativa de sobrescrever.
+
         Não persiste fora do `flush` implícito de
         `ObjectRepository.update()`; não commita.
         """
+        self._objects.refresh_for_update(entity)
         entity.clid = clid
         return self._objects.update(entity)
 
@@ -139,12 +149,26 @@ class ClidManager:
 
         `parent.coid`/`child.coid` nunca são copiados ou alterados —
         apenas `clid` é propagado (INH2).
+
+        Correção E3.3.1 (débito C1): `parent` e `child` são bloqueados
+        e recarregados (`ObjectRepository.refresh_for_update`) **antes**
+        de `resolved_clid` ser decidido — a decisão usa o estado mais
+        recente e travado, não o estado potencialmente obsoleto que o
+        chamador passou. As mutações abaixo usam `object_repository`
+        diretamente (não `self.assign()`) para não bloquear a mesma
+        linha duas vezes dentro da mesma chamada — o lock já foi
+        adquirido aqui e permanece válido até o fim da transação.
         """
+        self._objects.refresh_for_update(parent)
+        self._objects.refresh_for_update(child)
+
         resolved_clid = parent.clid if parent.clid is not None else self.generate()
 
         if parent.clid is None:
-            self.assign(parent, resolved_clid)
-        self.assign(child, resolved_clid)
+            parent.clid = resolved_clid
+            self._objects.update(parent)
+        child.clid = resolved_clid
+        self._objects.update(child)
 
         edge = self._lineage.add_edge(
             parent_coid=parent.id, child_coid=child.id, relation_type=relation_type
