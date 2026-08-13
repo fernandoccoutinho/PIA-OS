@@ -36,6 +36,44 @@ from app.cognitive.models.cognitive_object import CognitiveObject
 from app.repositories.base_repository import BaseRepository, Page
 from app.repositories.exceptions import PersistenceError
 
+# SQLSTATE padrão SQL (independente de driver) para unique_violation —
+# cobre tanto UNIQUE quanto PRIMARY KEY no PostgreSQL, já que PK é
+# implementada internamente como um índice único. Ver
+# https://www.postgresql.org/docs/current/errcodes-appendix.html
+_POSTGRES_UNIQUE_VIOLATION_SQLSTATE = "23505"
+
+# Nomes de erro estruturados do stdlib `sqlite3` (Python 3.11+,
+# `sqlite3.Error.sqlite_errorname`) para violação de PK/UNIQUE.
+_SQLITE_UNIQUE_OR_PK_ERROR_NAMES = frozenset(
+    {"SQLITE_CONSTRAINT_PRIMARYKEY", "SQLITE_CONSTRAINT_UNIQUE"}
+)
+
+
+def _is_unique_or_pk_violation(exc: PersistenceError) -> bool:
+    """Verifica, via sinal estruturado do driver — nunca por parsing de
+    mensagem —, se a causa original de um `PersistenceError` é uma
+    violação de unicidade/chave primária (correção E3.2.1, débito C1).
+
+    - **PostgreSQL** (`psycopg` 3, driver desta baseline —
+      `requirements/base.txt`): `orig.sqlstate == "23505"`.
+    - **SQLite** (usado nos testes unitários): `orig.sqlite_errorname`
+      em `SQLITE_CONSTRAINT_PRIMARYKEY`/`SQLITE_CONSTRAINT_UNIQUE`.
+
+    Ambos os sinais foram validados empiricamente contra os dois
+    backends antes desta implementação (PostgreSQL 16 real e SQLite em
+    memória). Nenhum outro backend é suportado hoje por
+    `app.database.engine` — se um novo backend for adicionado sem
+    sinal estruturado equivalente, esta função deve ser revisada
+    explicitamente, não contornada com parsing de mensagem (§2/§3 do
+    módulo E3.2.1).
+    """
+    orig = getattr(exc.__cause__, "orig", None)
+    if orig is None:
+        return False
+    if getattr(orig, "sqlstate", None) == _POSTGRES_UNIQUE_VIOLATION_SQLSTATE:
+        return True
+    return getattr(orig, "sqlite_errorname", None) in _SQLITE_UNIQUE_OR_PK_ERROR_NAMES
+
 
 class ObjectRepository(BaseRepository[CognitiveObject]):
     """Repositório de `CognitiveObject`.
@@ -62,21 +100,26 @@ class ObjectRepository(BaseRepository[CognitiveObject]):
     def add(self, entity: CognitiveObject) -> CognitiveObject:
         """Persiste um novo `CognitiveObject`.
 
-        Correção E3.2 (§18/§23 do módulo): traduz uma violação de
-        integridade do banco em `CoidCollisionError` — a autoridade
-        final de unicidade de COID é a constraint de PK, que cobre a
-        janela de corrida (TOCTOU) que uma pré-checagem isolada
-        (`CoidManager.assert_unique`) sozinha não cobre. `cognitive_objects`
-        não tem, hoje, nenhuma constraint de unicidade além da PK
-        (`id`) — qualquer `PersistenceError` em `add()` é, por
-        eliminação, uma colisão de COID; esta suposição deve ser
-        revisada se uma migração futura adicionar outra unique
-        constraint à tabela.
+        Correção E3.2.1 (C1): traduz `PersistenceError` para
+        `CoidCollisionError` **somente** quando a causa original for,
+        de fato, uma violação de unicidade/chave primária — não
+        qualquer `PersistenceError` (a versão de E3.2 fazia isso
+        incondicionalmente, o que classificava incorretamente qualquer
+        outro erro de persistência como colisão de COID). Outras
+        falhas de integridade continuam propagando como
+        `PersistenceError`, sem reinterpretação.
+
+        Cobre a janela de corrida (TOCTOU) que uma pré-checagem
+        isolada (`CoidManager.assert_unique`) sozinha não cobre — a
+        autoridade final de unicidade continua sendo a constraint de
+        PK do banco.
         """
         try:
             return super().add(entity)
         except PersistenceError as exc:
-            raise CoidCollisionError(entity.id) from exc
+            if _is_unique_or_pk_violation(exc):
+                raise CoidCollisionError(entity.id) from exc
+            raise
 
     def get_by_id(
         self, entity_id: object, *, include_deleted: bool = False

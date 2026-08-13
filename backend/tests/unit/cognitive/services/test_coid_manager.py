@@ -130,6 +130,62 @@ def test_generate_unique_raises_after_exhausting_attempts(monkeypatch, manager):
         manager.generate_unique(max_attempts=3)
 
 
+# --- M1-M4: validação de max_attempts (correção E3.2.1, débito C2) ---
+
+
+def test_m1_max_attempts_equal_one_works(manager):
+    coid = manager.generate_unique(max_attempts=1)
+    assert isinstance(coid, uuid.UUID)
+
+
+def test_m2_max_attempts_zero_rejected_immediately(manager):
+    with pytest.raises(ValueError, match="max_attempts deve ser >= 1"):
+        manager.generate_unique(max_attempts=0)
+
+
+def test_m3_max_attempts_negative_rejected_immediately(manager):
+    with pytest.raises(ValueError, match="max_attempts deve ser >= 1"):
+        manager.generate_unique(max_attempts=-1)
+
+
+def test_m3_max_attempts_very_negative_also_rejected(manager):
+    with pytest.raises(ValueError, match="max_attempts deve ser >= 1"):
+        manager.generate_unique(max_attempts=-100)
+
+
+def test_m4_no_generate_or_assert_unique_call_when_max_attempts_invalid(monkeypatch, manager):
+    """Nenhuma tentativa de `generate()`/`assert_unique()` ocorre
+    quando `max_attempts` é inválido — a validação é a primeira coisa
+    que `generate_unique()` faz."""
+    calls: list[str] = []
+    monkeypatch.setattr(manager, "generate", lambda: calls.append("generate") or uuid.uuid4())
+    monkeypatch.setattr(manager, "assert_unique", lambda coid: calls.append("assert_unique"))
+
+    for invalid in (0, -1, -50):
+        with pytest.raises(ValueError):
+            manager.generate_unique(max_attempts=invalid)
+
+    assert calls == []
+
+
+def test_generate_unique_never_raises_coid_collision_with_none(monkeypatch, manager):
+    """Correção E3.2.1 (C2): a versão anterior podia levantar
+    `CoidCollisionError(None)` quando `max_attempts <= 0` (loop nunca
+    executava, `last_candidate` permanecia `None`) — isso não
+    representa uma colisão real. Agora `max_attempts <= 0` é
+    `ValueError`, nunca `CoidCollisionError`."""
+    for invalid in (0, -1):
+        with pytest.raises(ValueError):
+            manager.generate_unique(max_attempts=invalid)
+        # nunca deve ser CoidCollisionError(None) especificamente
+        try:
+            manager.generate_unique(max_attempts=invalid)
+        except ValueError:
+            pass
+        except CoidCollisionError as e:
+            pytest.fail(f"não deveria levantar CoidCollisionError, levantou: {e!r}")
+
+
 # --- V1-V5: VALIDAÇÃO ---
 
 

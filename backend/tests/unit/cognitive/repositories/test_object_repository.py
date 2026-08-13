@@ -423,3 +423,166 @@ def test_d6_two_consecutive_executions_return_the_same_id_sequence(repo, cogniti
     run_3 = [o.id for o in repo.paginate(page=1, page_size=100).items]
 
     assert run_1 == run_2 == run_3
+
+
+# --- CLASSIFICAÇÃO DE COLISÃO (correção E3.2.1, débito C1) ---
+
+
+class _FakeDriverError:
+    """Stand-in mínimo para o objeto `.orig` de um driver — expõe só
+    os atributos que `_is_unique_or_pk_violation` inspeciona."""
+
+    def __init__(self, *, sqlstate: str | None = None, sqlite_errorname: str | None = None):
+        if sqlstate is not None:
+            self.sqlstate = sqlstate
+        if sqlite_errorname is not None:
+            self.sqlite_errorname = sqlite_errorname
+
+
+def test_is_unique_or_pk_violation_true_for_postgres_unique_sqlstate():
+    from app.cognitive.repositories.object_repository import _is_unique_or_pk_violation
+
+    exc = _build_cause_exc(_FakeDriverError(sqlstate="23505"))
+    assert _is_unique_or_pk_violation(exc) is True
+
+
+def test_is_unique_or_pk_violation_false_for_postgres_not_null_sqlstate():
+    """SQLSTATE 23502 = not_null_violation — não é unicidade (C1.2)."""
+    from app.cognitive.repositories.object_repository import _is_unique_or_pk_violation
+
+    exc = _build_cause_exc(_FakeDriverError(sqlstate="23502"))
+    assert _is_unique_or_pk_violation(exc) is False
+
+
+def test_is_unique_or_pk_violation_true_for_sqlite_primary_key():
+    from app.cognitive.repositories.object_repository import _is_unique_or_pk_violation
+
+    exc = _build_cause_exc(_FakeDriverError(sqlite_errorname="SQLITE_CONSTRAINT_PRIMARYKEY"))
+    assert _is_unique_or_pk_violation(exc) is True
+
+
+def test_is_unique_or_pk_violation_true_for_sqlite_unique():
+    from app.cognitive.repositories.object_repository import _is_unique_or_pk_violation
+
+    exc = _build_cause_exc(_FakeDriverError(sqlite_errorname="SQLITE_CONSTRAINT_UNIQUE"))
+    assert _is_unique_or_pk_violation(exc) is True
+
+
+def test_is_unique_or_pk_violation_false_for_sqlite_foreign_key():
+    """SQLITE_CONSTRAINT_FOREIGNKEY não é unicidade (C1.2)."""
+    from app.cognitive.repositories.object_repository import _is_unique_or_pk_violation
+
+    exc = _build_cause_exc(_FakeDriverError(sqlite_errorname="SQLITE_CONSTRAINT_FOREIGNKEY"))
+    assert _is_unique_or_pk_violation(exc) is False
+
+
+def test_is_unique_or_pk_violation_false_when_orig_is_none():
+    from app.cognitive.repositories.object_repository import _is_unique_or_pk_violation
+
+    exc = _build_cause_exc(None)
+    assert _is_unique_or_pk_violation(exc) is False
+
+
+def test_is_unique_or_pk_violation_false_when_no_cause_chain():
+    """`PersistenceError` sem `__cause__` (cenário hipotético,
+    não deve ocorrer via `BaseRepository`, mas a função não deve
+    quebrar)."""
+    from app.cognitive.repositories.object_repository import _is_unique_or_pk_violation
+    from app.repositories.exceptions import PersistenceError
+
+    exc = PersistenceError("sem causa")
+    assert _is_unique_or_pk_violation(exc) is False
+
+
+def _build_cause_exc(orig: object | None):
+    from app.repositories.exceptions import PersistenceError
+
+    cause = Exception()
+    if orig is not None:
+        cause.orig = orig  # type: ignore[attr-defined]
+    try:
+        raise PersistenceError("falha simulada") from cause
+    except PersistenceError as exc:
+        return exc
+
+
+def test_c1_1_pk_unique_collision_becomes_coid_collision_error(repo, cognitive_session):
+    from app.cognitive.errors.exceptions import CoidCollisionError
+
+    existing = repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    duplicate = CognitiveObject()
+    duplicate.id = existing.id
+    with pytest.raises(CoidCollisionError) as exc_info:
+        repo.add(duplicate)
+    assert exc_info.value.code == "PIA-8004"
+    cognitive_session.rollback()
+
+
+def test_c1_2_unrelated_persistence_error_is_not_reclassified(monkeypatch, repo):
+    """Simula, via monkeypatch de `BaseRepository.add`, um
+    `PersistenceError` cuja causa não é violação de unicidade — deve
+    continuar propagando como `PersistenceError`, nunca virar
+    `CoidCollisionError`. Não é possível construir esse cenário de
+    ponta a ponta contra o schema real de `cognitive_objects` hoje
+    (nenhuma constraint além da PK, e `default=` do SQLAlchemy
+    reaplica o valor mesmo quando um atributo NOT NULL é setado
+    explicitamente para `None` — confirmado empiricamente durante o
+    desenvolvimento desta correção) — a classificação em si já está
+    coberta isoladamente pelos testes `_is_unique_or_pk_violation`
+    acima; este teste cobre o caminho completo de `add()`."""
+    from app.cognitive.errors.exceptions import CoidCollisionError
+    from app.repositories.base_repository import BaseRepository
+    from app.repositories.exceptions import PersistenceError
+
+    fake_cause = Exception()
+    fake_cause.orig = _FakeDriverError(sqlstate="23502")  # not_null, não unicidade
+
+    def _raise_unrelated_persistence_error(self, entity):
+        raise PersistenceError("falha simulada não relacionada a unicidade") from fake_cause
+
+    monkeypatch.setattr(BaseRepository, "add", _raise_unrelated_persistence_error)
+
+    with pytest.raises(PersistenceError) as exc_info:
+        repo.add(CognitiveObject())
+    assert not isinstance(exc_info.value, CoidCollisionError)
+
+
+def test_c1_3_existing_object_is_not_altered_on_collision(repo, cognitive_session):
+    existing = repo.add(CognitiveObject())
+    cognitive_session.commit()
+    original_created_at = existing.created_at
+
+    duplicate = CognitiveObject()
+    duplicate.id = existing.id
+    from app.cognitive.errors.exceptions import CoidCollisionError
+
+    with pytest.raises(CoidCollisionError):
+        repo.add(duplicate)
+    cognitive_session.rollback()
+
+    reloaded = repo.get_by_id(existing.id)
+    assert reloaded is not None
+    assert reloaded.created_at == original_created_at
+
+
+def test_c1_4_rollback_remains_correct_after_collision(cognitive_sqlite_session_factory):
+    from app.cognitive.errors.exceptions import CoidCollisionError
+    from app.repositories.unit_of_work import UnitOfWork
+
+    with UnitOfWork(cognitive_sqlite_session_factory) as uow:
+        repo_uow = ObjectRepository(uow.session)
+        existing = repo_uow.add(CognitiveObject())
+        uow.commit()
+        existing_id = existing.id
+
+    with pytest.raises(CoidCollisionError), UnitOfWork(cognitive_sqlite_session_factory) as uow:
+        repo_uow = ObjectRepository(uow.session)
+        duplicate = CognitiveObject()
+        duplicate.id = existing_id
+        repo_uow.add(duplicate)
+
+    with UnitOfWork(cognitive_sqlite_session_factory) as uow:
+        repo_uow = ObjectRepository(uow.session)
+        assert len(repo_uow.list()) == 1

@@ -38,7 +38,14 @@ class CoidManager:
 - `generate_unique()` — gera + pré-checa unicidade, com retry limitado
   (defesa em profundidade; colisão real de UUID v4 é ~2^-122, o retry
   existe para não deixar comportamento indefinido, não porque seja
-  esperado).
+  esperado). **Correção E3.2.1 (débito C2)**: `max_attempts < 1` agora
+  levanta `ValueError` imediatamente, antes de qualquer chamada a
+  `generate()`/`assert_unique()` — a versão original podia levantar
+  `CoidCollisionError(None)` quando `max_attempts <= 0` (o laço nunca
+  executava), o que não representa uma colisão real. `ValueError`
+  reutiliza a mesma convenção já usada em
+  `ObjectRepository.paginate()` para argumento inválido — não é regra
+  de domínio, não justifica um `PIA-8xxx` novo.
 - `validate()` — aceita `uuid.UUID` ou `str` parseável; já retorna
   normalizado. Não existe `normalize()` separado — seria redundante.
 - `assert_unique()` — considera soft-deleted também (`include_deleted=True`)
@@ -56,16 +63,28 @@ Duas camadas, como exigido pelo módulo (§9-§10, §22-§23):
 
 1. **Pré-checagem** (`CoidManager.assert_unique`) — rápida, evita a
    maioria das tentativas de colisão antes de chegar ao banco.
-2. **Autoridade final**: a constraint de PK do PostgreSQL real.
-   `ObjectRepository.add()` foi estendido para traduzir uma
-   `PersistenceError` (violação de integridade) em `CoidCollisionError`
-   — cobre a janela de corrida (TOCTOU) que a pré-checagem sozinha não
-   cobre. `cognitive_objects` não tem, hoje, nenhuma unique constraint
-   além da PK (`id`) — por eliminação, qualquer `PersistenceError` em
-   `add()` é uma colisão de COID; esta suposição deve ser revisada se
-   uma migração futura adicionar outra unique constraint à tabela.
-   **Testado e confirmado contra PostgreSQL real** (não só SQLite) —
-   ver `tests/integration/cognitive/test_object_repository_integration.py::test_coid_collision_is_rejected_by_the_real_database_constraint`.
+2. **Autoridade final**: a constraint de PK do banco (PostgreSQL real
+   em produção, SQLite nos testes unitários). `ObjectRepository.add()`
+   traduz `PersistenceError` para `CoidCollisionError`, mas
+   **correção E3.2.1 (débito C1)**: a versão original de E3.2 fazia
+   essa tradução incondicionalmente — qualquer `PersistenceError`
+   virava `CoidCollisionError`, mesmo que a causa não fosse violação
+   de unicidade. Corrigido: `_is_unique_or_pk_violation()` inspeciona
+   `exc.__cause__.orig` (a exceção original do driver, preservada pela
+   cadeia `raise ... from exc` de `BaseRepository`) via **sinal
+   estruturado, nunca parsing de mensagem**:
+   - **PostgreSQL** (`psycopg` 3): `orig.sqlstate == "23505"`
+     (`unique_violation` — SQLSTATE padrão SQL, cobre PK e UNIQUE).
+   - **SQLite**: `orig.sqlite_errorname` em
+     `SQLITE_CONSTRAINT_PRIMARYKEY`/`SQLITE_CONSTRAINT_UNIQUE`
+     (atributo estruturado do stdlib `sqlite3`, disponível desde
+     Python 3.11 — não é parsing de string).
+   Ambos os sinais foram validados empiricamente contra os dois
+   backends reais antes da implementação (ver testes `test_is_unique_or_pk_violation_*`
+   e a integração contra PostgreSQL 16 real). Se a causa **não** for
+   unicidade/PK, o `PersistenceError` original é relançado
+   (`raise` sem argumentos, preserva o traceback) — nunca reinterpretado
+   como colisão de COID.
 
 Para import: `validate_imported_coid()` classifica como `COLLISION`
 sem nenhum auto-remap — um COID colidente nunca é silenciosamente
@@ -166,13 +185,16 @@ além do necessário) + 32 novos:
   constraint de PK do banco de fato rejeita e é traduzida
   corretamente para `CoidCollisionError`.
 
-Total: 32 testes novos, 100% de cobertura de linha em todo
+Total: 49 testes novos (32 do E3.2 original + 17 da correção E3.2.1:
+7 testes diretos de `_is_unique_or_pk_violation`, 4 testes C1.1-C1.4,
+6 testes M1-M4/variantes), 100% de cobertura de linha em todo
 `app/cognitive/` (incluindo o `services/` novo).
 
 ## Non-regression
 
-`E1/E2`: suíte completa 553 passed, 3 skipped, 96,77% (acima do
-threshold de 95%). `E3.1 FINAL`: os 66 testes de E3.1/E3.1.1/E3.1.2
+Correção E3.2.1: suíte completa 570 passed, 3 skipped, 96,79% (acima
+do threshold de 95%; era 553/96,77% antes da correção). `E1/E2`:
+intacto. `E3.1 FINAL`/`E3.2` original: os 98 testes anteriores
 continuam passando sem modificação de comportamento — a única mudança
 em arquivo pré-existente de E3 foi a extensão de `ObjectRepository.add()`,
 aditiva (novo `try/except` em torno da chamada já existente a

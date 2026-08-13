@@ -84,7 +84,21 @@ class CoidManager:
 
         Levanta `CoidCollisionError` se esgotar `max_attempts` — sinal
         de algo genuinamente anômalo, não de operação normal.
+
+        Levanta `ValueError` imediatamente se `max_attempts < 1`, antes
+        de qualquer chamada a `generate()`/`assert_unique()` — argumento
+        inválido não é colisão (correção E3.2.1, débito C2: a versão
+        anterior podia levantar `CoidCollisionError(None)` quando
+        `max_attempts <= 0`, o que não representa uma colisão real,
+        já que nenhuma tentativa sequer chegou a ocorrer). `ValueError`
+        reutiliza a mesma convenção já em uso em
+        `ObjectRepository.paginate()` para validação de argumento
+        simples — não é uma regra de domínio/negócio (não haveria
+        sentido em um `PIA-8xxx` para isso).
         """
+        if max_attempts < 1:
+            raise ValueError("max_attempts deve ser >= 1")
+
         last_candidate: uuid.UUID | None = None
         for _ in range(max_attempts):
             last_candidate = self.generate()
