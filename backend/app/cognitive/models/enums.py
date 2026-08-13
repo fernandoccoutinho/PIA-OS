@@ -96,3 +96,29 @@ class TransformationKind(StrEnum):
 
     REVISION = "revision"
     DERIVATION = "derivation"
+
+
+class RelationshipType(StrEnum):
+    """Tipos de relação semântica explícita entre `CognitiveObject`s
+    (`E3.5`/`LIB-05`) — distinta de `LineageRelation` (histórico de
+    derivação/continuidade). Taxonomia mínima justificável pelos
+    exemplos conceituais do próprio módulo E3.5 — não uma ontologia
+    extensa; `CAUSES` deliberadamente não incluído (nenhum requisito
+    explícito de causalidade declarada nesta fase).
+
+    Cada tipo tem direcionalidade fixa (ver
+    `RelationshipType.directionality`): todos são `DIRECTED`, exceto
+    `RELATED_TO`, que é `SYMMETRIC`.
+    """
+
+    RELATED_TO = "related_to"
+    REFERENCES = "references"
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    DEPENDS_ON = "depends_on"
+
+    @property
+    def is_symmetric(self) -> bool:
+        """`True` apenas para `RELATED_TO` — os demais são
+        direcionados (`A REFERENCES B` não implica `B REFERENCES A`)."""
+        return self is RelationshipType.RELATED_TO

@@ -20,6 +20,10 @@ from app.cognitive.errors.codes import (
     PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE,
     PIA_8011_REVISION_STATUS_INVALID_TRANSITION,
     PIA_8012_REVISION_CURRENT_UNIQUENESS_VIOLATION,
+    PIA_8013_RELATIONSHIP_SELF_LINK,
+    PIA_8014_RELATIONSHIP_DUPLICATE,
+    PIA_8015_RELATIONSHIP_ENDPOINT_NOT_FOUND,
+    PIA_8016_RELATIONSHIP_IMMUTABLE,
 )
 from app.exceptions.base import PIAOSException
 
@@ -244,4 +248,75 @@ class RevisionCurrentUniquenessViolationError(PIAOSException):
                     str(existing_current_coid) if existing_current_coid else None
                 ),
             },
+        )
+
+
+class RelationshipSelfLinkError(PIAOSException):
+    """Tentativa de criar `Relationship` com `source_coid == target_coid`
+    (E3.5/LIB-05)."""
+
+    error_code = PIA_8013_RELATIONSHIP_SELF_LINK
+
+    def __init__(self, coid: uuid.UUID) -> None:
+        self.coid = coid
+        super().__init__(
+            message=f"CognitiveObject {coid} não pode se relacionar consigo mesmo.",
+            detail={"coid": str(coid)},
+        )
+
+
+class RelationshipDuplicateError(PIAOSException):
+    """A relação já existe — tripla `(source, target, type)` para
+    tipos direcionados, ou par não ordenado para tipos simétricos
+    (E3.5/LIB-05)."""
+
+    error_code = PIA_8014_RELATIONSHIP_DUPLICATE
+
+    def __init__(
+        self, source_coid: uuid.UUID, target_coid: uuid.UUID, relationship_type: str
+    ) -> None:
+        self.source_coid = source_coid
+        self.target_coid = target_coid
+        self.relationship_type = relationship_type
+        super().__init__(
+            message=(
+                f"Relationship ({source_coid} -> {target_coid}, " f"{relationship_type}) já existe."
+            ),
+            detail={
+                "source_coid": str(source_coid),
+                "target_coid": str(target_coid),
+                "relationship_type": str(relationship_type),
+            },
+        )
+
+
+class RelationshipEndpointNotFoundError(PIAOSException):
+    """`source_coid` ou `target_coid` de uma `Relationship` não
+    corresponde a nenhum `CognitiveObject` existente (E3.5/LIB-05)."""
+
+    error_code = PIA_8015_RELATIONSHIP_ENDPOINT_NOT_FOUND
+
+    def __init__(self, coid: uuid.UUID) -> None:
+        self.coid = coid
+        super().__init__(
+            message=f"CognitiveObject {coid} não existe — não pode ser endpoint de Relationship.",
+            detail={"coid": str(coid)},
+        )
+
+
+class RelationshipImmutableError(PIAOSException):
+    """Tentativa de `update`/`delete` físico de uma `Relationship` já
+    persistida — histórico append-only (E3.5/LIB-05)."""
+
+    error_code = PIA_8016_RELATIONSHIP_IMMUTABLE
+
+    def __init__(self, relationship_id: uuid.UUID, operation: str) -> None:
+        self.relationship_id = relationship_id
+        self.operation = operation
+        super().__init__(
+            message=(
+                f"Relationship {relationship_id} é append-only — "
+                f"operação '{operation}' rejeitada."
+            ),
+            detail={"relationship_id": str(relationship_id), "operation": operation},
         )

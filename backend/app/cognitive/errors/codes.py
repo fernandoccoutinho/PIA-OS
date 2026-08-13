@@ -161,6 +161,54 @@ sujeita a TOCTOU) quanto pela tradução de violação do índice único
 parcial `uq_cognitive_objects_one_current_per_clid` (autoridade
 final, cobre concorrência real)."""
 
+PIA_8013_RELATIONSHIP_SELF_LINK = ErrorCode(
+    code="PIA-8013",
+    default_message="relationship_self_link",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de criar uma `Relationship` com `source_coid == target_coid`
+— proibido globalmente nesta fase para todos os tipos (E3.5/LIB-05,
+§11: nenhum dos 5 tipos tem caso de uso legítimo identificado para
+auto-relação)."""
+
+PIA_8014_RELATIONSHIP_DUPLICATE = ErrorCode(
+    code="PIA-8014",
+    default_message="relationship_duplicate",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de registrar novamente a mesma relação — para tipos
+`DIRECTED`, a tripla `(source_coid, target_coid, relationship_type)`;
+para tipos `SYMMETRIC`, o par não ordenado `{a, b}` com o mesmo tipo
+(E3.5/LIB-05, §10)."""
+
+PIA_8015_RELATIONSHIP_ENDPOINT_NOT_FOUND = ErrorCode(
+    code="PIA-8015",
+    default_message="relationship_endpoint_not_found",
+    category=ErrorCategory.VALIDATION,
+    http_status=404,
+    severity=ErrorSeverity.ERROR,
+)
+"""`source_coid` ou `target_coid` de uma `Relationship` não corresponde
+a nenhum `CognitiveObject` existente — violação de FK traduzida para
+erro de domínio (E3.5/LIB-05, §18, mesmo princípio de
+`LineageEndpointNotFoundError`/`PIA-8008`)."""
+
+PIA_8016_RELATIONSHIP_IMMUTABLE = ErrorCode(
+    code="PIA-8016",
+    default_message="relationship_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de `update`/`delete` físico de uma `Relationship` já
+persistida — histórico append-only (E3.5/LIB-05, §12: "alterar/remover
+uma relação não deve apagar um fato histórico"). "Remoção" lógica é
+`retire()` (marca `retired_at`), não delete físico."""
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -174,6 +222,10 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE,
     PIA_8011_REVISION_STATUS_INVALID_TRANSITION,
     PIA_8012_REVISION_CURRENT_UNIQUENESS_VIOLATION,
+    PIA_8013_RELATIONSHIP_SELF_LINK,
+    PIA_8014_RELATIONSHIP_DUPLICATE,
+    PIA_8015_RELATIONSHIP_ENDPOINT_NOT_FOUND,
+    PIA_8016_RELATIONSHIP_IMMUTABLE,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {

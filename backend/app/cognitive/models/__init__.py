@@ -10,10 +10,12 @@ from app.cognitive.models.cognitive_object import CognitiveObject
 from app.cognitive.models.enums import (
     AccessibilityState,
     LineageRelation,
+    RelationshipType,
     RevisionStatus,
     TransformationKind,
 )
 from app.cognitive.models.lineage_edge import LineageEdge
+from app.cognitive.models.relationship import Relationship
 from app.cognitive.models.transformation_record import TransformationRecord
 
 __all__ = [
@@ -21,6 +23,8 @@ __all__ = [
     "CognitiveObject",
     "LineageEdge",
     "LineageRelation",
+    "Relationship",
+    "RelationshipType",
     "RevisionStatus",
     "TransformationKind",
     "TransformationRecord",
