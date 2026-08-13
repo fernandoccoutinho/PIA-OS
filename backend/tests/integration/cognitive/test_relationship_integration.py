@@ -241,3 +241,57 @@ def test_pg5_concurrent_duplicate_creation_preserves_uniqueness():
                 if leftover is not None:
                     objs.delete(leftover)
             uow.commit()
+
+
+def test_u2_retire_and_redeclaration_cycle_against_real_database():
+    """U2/C1 (correção E3.5.1): `create` -> `retire` -> `create`
+    novamente contra PostgreSQL real — antes desta correção, a
+    `UniqueConstraint` incondicional teria rejeitado a segunda
+    criação mesmo com a primeira já retirada."""
+    with UnitOfWork() as uow:
+        objs, rels, engine = _make_managers(uow.session)
+        a = objs.add(CognitiveObject())
+        b = objs.add(CognitiveObject())
+        uow.commit()
+        a_id, b_id = a.id, b.id
+
+    try:
+        with UnitOfWork() as uow:
+            objs, rels, engine = _make_managers(uow.session)
+            old = engine.create(
+                source_coid=a_id, target_coid=b_id, relationship_type=RelationshipType.SUPPORTS
+            )
+            uow.commit()
+            old_id = old.id
+
+        with UnitOfWork() as uow:
+            objs, rels, engine = _make_managers(uow.session)
+            old_reloaded = rels.get_by_id(old_id)
+            engine.retire(old_reloaded)
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            objs, rels, engine = _make_managers(uow.session)
+            new = engine.create(
+                source_coid=a_id, target_coid=b_id, relationship_type=RelationshipType.SUPPORTS
+            )
+            uow.commit()  # não deve levantar contra o banco real
+            new_id = new.id
+
+        with UnitOfWork() as uow:
+            objs, rels, engine = _make_managers(uow.session)
+            reloaded_old = rels.get_by_id(old_id)
+            reloaded_new = rels.get_by_id(new_id)
+            assert reloaded_old.retired_at is not None
+            assert reloaded_new.retired_at is None
+    finally:
+        with UnitOfWork() as uow:
+            objs, rels, engine = _make_managers(uow.session)
+            uow.session.execute(
+                sa.text("DELETE FROM relationships WHERE source_coid = :a"), {"a": str(a_id)}
+            )
+            for coid in (a_id, b_id):
+                leftover = objs.get_by_id(coid, include_deleted=True)
+                if leftover is not None:
+                    objs.delete(leftover)
+            uow.commit()

@@ -38,7 +38,15 @@ def test_relationship_type_accepts_all_five_documented_values(cognitive_session)
     cognitive_session.commit()
 
     for rel_type, target in zip(RelationshipType, targets, strict=True):
-        rel = Relationship(source_coid=a.id, target_coid=target.id, relationship_type=rel_type)
+        # RELATED_TO exige ordem canônica (source_coid < target_coid)
+        # desde a correção E3.5.1 (CheckConstraint estrutural) — demais
+        # tipos são direcionados e aceitam qualquer ordem.
+        source, dest = (
+            (a.id, target.id)
+            if not rel_type.is_symmetric or str(a.id) < str(target.id)
+            else (target.id, a.id)
+        )
+        rel = Relationship(source_coid=source, target_coid=dest, relationship_type=rel_type)
         cognitive_session.add(rel)
     cognitive_session.commit()
 

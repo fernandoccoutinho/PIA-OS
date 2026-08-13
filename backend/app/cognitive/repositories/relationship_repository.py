@@ -89,17 +89,33 @@ class RelationshipRepository(BaseRepository[Relationship]):
         Para o tipo simétrico (`RelationshipType.RELATED_TO`), os
         endpoints são normalizados antes da escrita — o menor UUID
         (comparação lexicográfica de `str(uuid)`) sempre vira
-        `source_coid` — para que `(A,B)` e `(B,A)` colidam na mesma
-        `UniqueConstraint`, em vez de permitir duas linhas
-        representando o mesmo fato simétrico (§10 do módulo E3.5).
+        `source_coid` — para que `(A,B)` e `(B,A)` colidam no mesmo
+        índice único, em vez de permitir duas linhas representando o
+        mesmo fato simétrico (§10 do módulo E3.5). **Correção E3.5.1
+        (débito C2)**: essa normalização não é a única garantia — o
+        banco também impõe estruturalmente que uma linha `RELATED_TO`
+        só existe na forma canônica
+        (`ck_relationships_symmetric_canonical_order`), então mesmo um
+        bypass direto deste método não consegue armazenar as duas
+        formas simultaneamente. `SYMMETRIC_UNIQUENESS = DB_LEVEL`.
         Tipos direcionados preservam a ordem exatamente como
         declarada.
+
+        Unicidade vale apenas para relações **vigentes** (`retired_at
+        IS NULL` — correção E3.5.1, débito C1): um índice único
+        parcial, não uma `UniqueConstraint` incondicional — uma
+        relação retirada não bloqueia a criação de uma nova vigente
+        com os mesmos endpoints/tipo (ciclo "retirar a antiga, criar
+        uma nova").
 
         Traduz violação de integridade: unicidade →
         `RelationshipDuplicateError` (`PIA-8014`); chave estrangeira →
         `RelationshipEndpointNotFoundError` (`PIA-8015`). Qualquer
-        outra causa de `PersistenceError` é relançada sem
-        reinterpretação.
+        outra causa de `PersistenceError` — incluindo uma violação do
+        `CheckConstraint` de ordem canônica, que só pode ocorrer via
+        bypass deste método, já que a normalização acima sempre evita
+        isso no caminho sancionado — é relançada sem reinterpretação
+        (fora do contrato público, não precisa de tradução amigável).
         """
         if source_coid == target_coid:
             raise RelationshipSelfLinkError(source_coid)

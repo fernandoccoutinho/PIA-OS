@@ -26,7 +26,7 @@ score/ranking existe aqui, nem pode existir.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,9 +41,16 @@ class Relationship(BaseModel):
     tipos direcionados, a ordem dos endpoints é significativa e
     preservada como declarada. Para o único tipo simétrico
     (`RELATED_TO`), a ordem é normalizada na escrita (menor UUID
-    primeiro) — ver `RelationshipRepository.add_relationship` — para
-    que `(A,B)` e `(B,A)` colidam na mesma constraint de unicidade, em
-    vez de duplicar o mesmo fato sob duas linhas diferentes.
+    primeiro) — ver `RelationshipRepository.add_relationship` — **e
+    também garantida estruturalmente no banco** (correção E3.5.1,
+    débito C2): `ck_relationships_symmetric_canonical_order` rejeita
+    qualquer linha `RELATED_TO` onde `source_coid >= target_coid`,
+    independentemente do caminho de escrita — um bypass direto do
+    repositório (ORM/SQL cru) não consegue armazenar `(A,B,RELATED_TO)`
+    e `(B,A,RELATED_TO)` simultaneamente, porque a forma não-canônica
+    é sempre rejeitada antes mesmo de chegar à checagem de unicidade.
+    `SYMMETRIC_UNIQUENESS = DB_LEVEL` (não apenas por convenção do
+    caminho canônico do repositório).
 
     Append-only: `RelationshipRepository.update()`/`.delete()` sempre
     rejeitam (mesma disciplina de `LineageEdge`/`TransformationRecord`).
@@ -51,6 +58,14 @@ class Relationship(BaseModel):
     permanece um fato histórico auditável, nunca apagada (§12 do
     módulo E3.5: "alterar/remover uma relação não deve apagar um fato
     histórico").
+
+    Unicidade (correção E3.5.1, débito C1): vale apenas para relações
+    **vigentes** (`retired_at IS NULL`) — índice único parcial, não
+    `UniqueConstraint` incondicional. Isso permite exatamente o ciclo
+    de vida aprovado ("retirar a antiga, criar uma nova"):
+    `create(A,B,SUPPORTS)` → `retire(old)` → `create(A,B,SUPPORTS)`
+    novamente é permitido; a linha antiga continua na tabela,
+    auditável, apenas fora do escopo da constraint de unicidade.
     """
 
     __tablename__ = "relationships"
@@ -91,17 +106,37 @@ class Relationship(BaseModel):
 
     __table_args__ = (
         CheckConstraint("source_coid != target_coid", name="ck_relationships_no_self_link"),
-        UniqueConstraint(
+        CheckConstraint(
+            "relationship_type != 'related_to' OR source_coid < target_coid",
+            name="ck_relationships_symmetric_canonical_order",
+        ),
+        Index(
+            "uq_relationships_active_source_target_type",
             "source_coid",
             "target_coid",
             "relationship_type",
-            name="uq_relationships_source_target_type",
+            unique=True,
+            postgresql_where=text("retired_at IS NULL"),
+            sqlite_where=text("retired_at IS NULL"),
         ),
     )
-    """`CheckConstraint`: defesa em profundidade contra self-relation —
-    o guard de domínio (`RelationshipEngine.create`) já rejeita antes
-    de chegar ao banco. `UniqueConstraint`: a mesma tripla
-    `(source_coid, target_coid, relationship_type)` não pode ser
-    registrada duas vezes — para o tipo simétrico `RELATED_TO`, a
-    normalização de ordem na escrita faz esta mesma constraint também
-    cobrir `(B,A)` como duplicata de `(A,B)`."""
+    """`CheckConstraint` (self-link): defesa em profundidade — o guard
+    de domínio (`RelationshipEngine.create`) já rejeita antes de
+    chegar ao banco.
+
+    `CheckConstraint` (`ck_relationships_symmetric_canonical_order`,
+    novo em E3.5.1): garante estruturalmente que uma linha `RELATED_TO`
+    só pode existir na forma canônica (`source_coid < target_coid`) —
+    fecha o débito C2: a garantia de simetria deixa de depender
+    exclusivamente da normalização feita pelo repositório.
+
+    `Index` único parcial (`uq_relationships_active_source_target_type`,
+    substituiu a `UniqueConstraint` incondicional original em E3.5.1,
+    débito C1): a mesma tripla `(source_coid, target_coid,
+    relationship_type)` não pode ser registrada duas vezes **entre
+    relações vigentes** (`retired_at IS NULL`) — uma relação retirada
+    não bloqueia a criação de uma nova vigente com os mesmos
+    endpoints/tipo. Suportado nativamente por PostgreSQL
+    (`postgresql_where`) e SQLite (`sqlite_where`, usado nos testes
+    unitários).
+    """
