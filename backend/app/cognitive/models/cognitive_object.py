@@ -58,6 +58,32 @@ class CognitiveObject(BaseModel, SoftDeleteMixin):
             postgresql_where=text("revision_status = 'current'"),
             sqlite_where=text("revision_status = 'current'"),
         ),
+        # --- E3.7 / LIB-07 (Index Manager) — índices estruturais ---
+        # Puramente derivados: aceleram localização, não criam, alteram
+        # nem apagam distinção alguma. Declarados aqui (e não só na
+        # migração) para que `Base.metadata` permaneça sincronizado com
+        # o banco — caso contrário um `alembic revision --autogenerate`
+        # futuro emitiria `DROP INDEX` para eles.
+        Index(
+            "ix_cognitive_objects_clid",
+            "clid",
+            postgresql_where=text("clid IS NOT NULL"),
+            sqlite_where=text("clid IS NOT NULL"),
+        ),
+        Index(
+            "ix_cognitive_objects_accessibility_created_at_id",
+            "accessibility",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_cognitive_objects_revision_status_created_at_id",
+            "revision_status",
+            "created_at",
+            "id",
+            postgresql_where=text("revision_status IS NOT NULL"),
+            sqlite_where=text("revision_status IS NOT NULL"),
+        ),
     )
     """Correção E3.4.1 — fecha estruturalmente o invariante
     `COUNT(CURRENT) <= 1` por CLID (índice único parcial, aplicado

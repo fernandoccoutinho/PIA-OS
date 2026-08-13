@@ -46,7 +46,7 @@ rejeitam — mesma disciplina de `LineageEdge`/`TransformationRecord`/
 
 import uuid
 
-from sqlalchemy import JSON, ForeignKey, String
+from sqlalchemy import JSON, ForeignKey, Index, String, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -66,6 +66,22 @@ class ProvenanceRecord(BaseModel):
     """
 
     __tablename__ = "provenance_records"
+
+    __table_args__ = (
+        # --- E3.7 / LIB-07 (Index Manager) — índice estrutural ---
+        # `trace_id` é altamente seletivo e nullable: índice parcial,
+        # que só cobre as linhas onde o identificador foi de fato
+        # populado. Puramente derivado — localizar por `trace_id` não
+        # transforma `trace_id` em identidade cognitiva nem em
+        # entidade (E3.7 §11). Declarado aqui, e não só na migração,
+        # para manter `Base.metadata` sincronizado com o banco.
+        Index(
+            "ix_provenance_records_trace_id",
+            "trace_id",
+            postgresql_where=text("trace_id IS NOT NULL"),
+            sqlite_where=text("trace_id IS NOT NULL"),
+        ),
+    )
 
     coid: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("cognitive_objects.id"), nullable=False, index=True
