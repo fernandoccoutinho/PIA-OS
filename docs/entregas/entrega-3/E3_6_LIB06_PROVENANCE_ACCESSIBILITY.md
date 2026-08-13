@@ -67,6 +67,33 @@ nenhum inventado.
 `actor_type == AGENT` — nenhuma validação condicional foi
 implementada que os exija.
 
+## trace_id (correção E3.6.1)
+
+**Débito C1**: `trace_id` estava ausente do contrato persistido —
+`session_id`/`correlation_id` já existiam desde E3.6 original, mas
+`trace_id` não. Adicionado de forma mínima e provider-neutral:
+`String(255)` nullable (mesmo padrão de comprimento de `session_id`/
+`correlation_id`), nunca obrigatório, nenhum SDK ou mecanismo de
+tracing específico assumido.
+
+**Semântica distinta, documentada explicitamente** — os três nunca
+são impostos como iguais entre si, mesmo que um dado chamador escolha
+fazê-los coincidir:
+
+| Campo | Responde |
+|---|---|
+| `session_id` | contexto conversacional/sessão lógica |
+| `correlation_id` | correlação entre operações relacionadas |
+| `trace_id` | cadeia distribuída/operacional rastreável entre componentes |
+
+Testado (`T1`-`T6`): ausência é válida, persiste corretamente, os três
+coexistem distintos para o mesmo registro, múltiplos `ProvenanceRecord`s
+do mesmo COID podem usar `trace_id`s diferentes, Multi-IA pode
+compartilhar um `trace_id` mantendo proveniência separada (cada
+`ProvenanceRecord` continua sendo sua própria linha, `provenance_id`
+distinto), e nenhum transcript/payload é introduzido junto (inspeção
+estrutural das colunas).
+
 ## Provenance != Transcript
 
 Nenhum campo de conteúdo/payload/transcript existe no modelo —
@@ -157,18 +184,64 @@ DELETE CASCADE`), **sem** `UniqueConstraint` em `coid` isolado.
 Nenhuma migração de `AccessibilityState` foi necessária — o campo já
 existe desde E3.1.
 
-**Análise explícita SCHEMA REVERSIBILITY vs HISTORICAL PRESERVATION**
-(aplicando a COUT Data Preservation Rule de E3.5.2): o `downgrade()`
-desta migração remove a tabela inteira — diferente do caso de E3.5.1
-(constraint mais restritiva substituindo uma menos restritiva sobre
-tabela já existente), aqui não existe um "schema anterior" capaz de
-representar parcialmente os dados — a tabela simplesmente não existia
-antes desta migração. Isso é o comportamento padrão de qualquer
-migração introdutora de entidade — não é uma nova violação da regra
-de preservação. `MIGRATION_REVERSIBILITY = REVERSIBLE` (não
-condicional) — com a ressalva óbvia de que reverter remove os dados de
-proveniência registrados, mesmo comportamento de reverter qualquer
-outra migração de criação de tabela.
+**Correção E3.6.1 (débito C2) — revisão da classificação de
+reversibilidade**: a versão original deste documento (E3.6)
+classificava esta migração como `MIGRATION_REVERSIBILITY = REVERSIBLE`
+(não condicional), com o raciocínio de que "não existe um schema
+anterior capaz de representar os dados, então dropar a tabela inteira
+não é uma nova violação da regra de preservação". **Esse raciocínio
+estava incompleto** — a auditoria independente de E3.6.1 identificou
+corretamente o erro: a COUT Data Preservation Rule não trata apenas de
+"existe uma representação alternativa compatível?" — trata de "o
+downgrade destruiria fatos históricos já registrados?". A resposta
+para `provenance_records` é sim, assim que qualquer
+`ProvenanceRecord` existir — exatamente o mesmo princípio já aplicado
+a `relationships` em E3.5.2, apesar de a situação estrutural ser
+ligeiramente diferente (lá, uma constraint mais restritiva
+substituindo uma menos restritiva; aqui, uma tabela inteira sendo
+removida). Classificação corrigida:
+
+```
+MIGRATION_REVERSIBILITY = CONDITIONALLY_REVERSIBLE
+```
+
+- **CASO A** — `provenance_records` vazia: downgrade permitido
+  normalmente.
+- **CASO B** — `provenance_records` contém pelo menos um registro:
+  downgrade semanticamente bloqueado
+  (`PROVENANCE_DOWNGRADE_SEMANTICALLY_BLOCKED`).
+
+Fechado com uma **migração-guarda nova e aditiva**,
+`0460b6556563_guard_provenance_downgrade_safety_.py`, posicionada
+depois de `6bf0c0eb0c2e` (que adiciona `trace_id`, ver seção
+`trace_id` abaixo) na cadeia — `e2c89ee3aa59` **não foi editada**
+(já entregue em patch anterior, mesma disciplina seguida desde
+E3.1.1: nunca editar migração já publicada). `upgrade()` é no-op;
+`downgrade()` verifica `SELECT EXISTS (SELECT 1 FROM
+provenance_records LIMIT 1)` — checagem mínima e determinística, não
+precisa contar todas as linhas — e aborta com
+`ProvenanceDowngradeUnsafeError` antes de qualquer alteração
+estrutural se houver qualquer linha. Como a guarda está posicionada
+**depois** de `6bf0c0eb0c2e` e `e2c89ee3aa59` na cadeia, ela também
+protege contra a perda de `trace_id` populado (o `DROP COLUMN
+trace_id` do downgrade de `6bf0c0eb0c2e` nunca é alcançado se houver
+qualquer linha, populada ou não) — nenhuma guarda separada foi
+necessária para a coluna especificamente.
+
+Cadeia final de migrações desta correção:
+
+```
+e2c89ee3aa59 (E3.6, provenance_records — publicada, não editada)
+  → 6bf0c0eb0c2e (E3.6.1, +trace_id)
+    → 0460b6556563 (E3.6.1, guarda de downgrade — head atual)
+```
+
+Testado `upgrade → downgrade → upgrade` contra PostgreSQL 16 real nos
+dois casos (`PD1` vazio, `PD2`-`PD4` não-vazio) — ver seção Testes.
+`PD5` confirma o ciclo completo com tabela vazia, atravessando também
+a guarda de `Relationship` (E3.5.2) mais adiante na cadeia — as duas
+guardas coexistem sem se confundir (a ordem da cadeia Alembic já
+define a ordem de avaliação; nenhum "guard manager" foi necessário).
 
 Testado `upgrade → downgrade → upgrade` contra PostgreSQL 16 real —
 `cognitive_objects`, `lineage_edges`, `relationships` (incluindo os
@@ -194,7 +267,11 @@ proveniência.
 
 ## Testes
 
-91 testes novos (87 unitários + 4 de integração):
+**Correção E3.6.1**: 20 testes de integração novos (6 `T1`-`T6`, 3
+`PD1`-`PD5`, 2 `M4`/`M5`, e reativação genuína dos 4 testes de guarda
+de `Relationship` que estavam pulando permanentemente — ver seção
+"Non-Regression E3.5 reativada" abaixo) somados aos 91 de E3.6
+original (87 unitários + 4 de integração):
 
 - **Model** (`test_provenance_record.py`, 8): criação, campos
   opcionais, todos `source_type`×`actor_type`, `provider_id`/
@@ -205,24 +282,53 @@ proveniência.
 - **AccessibilityManager** (`test_accessibility_manager.py`, 15):
   `A1`-`A10`, idempotência, `assert_accessible`, não-commit.
 - **Integração contra PostgreSQL real**
-  (`test_provenance_accessibility_integration.py`, 4): round-trip com
-  múltiplos agentes, append-only real, transição real, e
-  **concorrência genuína de Accessibility**.
+  (`test_provenance_accessibility_integration.py`, 10): round-trip com
+  múltiplos agentes, append-only real, transição real, concorrência
+  genuína de Accessibility, e `T1`-`T6` (novo, `trace_id`).
+- **Guarda de downgrade de Provenance**
+  (`test_provenance_downgrade_safety.py`, 3, novo): `PD1` (tabela
+  vazia), `PD2`-`PD4` (tabela com dado, bloqueio + zero perda + schema
+  preservado), `PD5` (ciclo completo, atravessando também a guarda de
+  `Relationship`).
+- **Guarda de downgrade de Relationship, reativada**
+  (`test_relationship_downgrade_safety.py`, 4): `D1`-`D5` (E3.5.2a,
+  comportamento inalterado) + `M4`/`M5` (novos, confirmam
+  explicitamente que a guarda continua alcançável/executável a partir
+  da head atual).
 
 **100% de cobertura de linha em todo `app/cognitive/`** (364 testes
 unitários).
 
 ## Non-Regression
 
-819 passed, 25 skipped (sem `.env` local; inclui 2 skips permanentes
-esperados dos testes de guarda de downgrade de E3.5.2/E3.5.2a, que
-checam a head antiga `f11551e97026` — não é mais a head real após
-esta migração, skip correto, não regressão), 97,65% (acima do
-anterior, 97,54%). Nenhum arquivo protegido tocado;
-`TransformationRecord`, `Relationship`, `LineageEdge`,
+**Correção E3.6.1 (débito C3)**: os testes de guarda de downgrade de
+`Relationship` (E3.5.2/E3.5.2a) exigiam `head_revision() ==
+"f11551e97026"` para não pular — isso deixou de ser verdade assim que
+E3.6 estendeu a cadeia, fazendo os 4 testes pularem
+**permanentemente** sem revalidar nada (relatado, incorretamente, como
+"skip correto" na versão original deste documento — a auditoria
+independente de E3.6.1 identificou que isso não podia continuar sendo
+tratado como non-regression validada). Corrigido: a condição de skip
+agora verifica apenas que a revisão `f11551e97026` **existe na
+cadeia** (via `ScriptDirectory.get_revision()`), não que é a head
+global; as asserções de "voltou à head" usam `migrations.head_revision()`
+dinâmico. **Confirmado empiricamente**: os 4 testes voltaram a
+executar de verdade (zero skips) a partir da head atual
+(`0460b6556563`), atravessando a nova guarda de Provenance no caminho
+reverso — prova de que as duas guardas coexistem na cadeia sem se
+confundir, sem necessidade de um "guard manager" (a ordem da cadeia
+Alembic já define a ordem de avaliação).
+
+819 passed, 35 skipped (sem `.env` local — mesmo padrão gracioso de
+sempre; todos os skips agora são genuinamente "requer Postgres real",
+nenhum skip permanente por head desatualizada), 97,65% (mantido).
+**Com `.env`/Postgres real: 34/34 testes de integração passando, zero
+skips.** Nenhum arquivo protegido tocado; `TransformationRecord`,
+`Relationship` (semantics e lifecycle), `LineageEdge`,
 `VersionManager`, `RelationshipEngine`, `ClidManager`, `CoidManager`,
-`CognitiveObject` (incluindo `accessibility` — nenhuma coluna nova) —
-todos intocados nesta entrega.
+`CognitiveObject` (incluindo `accessibility` — nenhuma coluna nova,
+nenhuma mudança na matriz de transição), `e2c89ee3aa59` — todos
+intocados nesta correção (confirmado por `git diff --stat`).
 
 ## Deferred Items
 

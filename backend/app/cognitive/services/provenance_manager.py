@@ -46,6 +46,7 @@ class ProvenanceManager:
         model_id: str | None = None,
         session_id: str | None = None,
         correlation_id: str | None = None,
+        trace_id: str | None = None,
         evidence_refs: list[str] | None = None,
         orchestration_run_id: str | None = None,
         agent_role: str | None = None,
@@ -64,6 +65,13 @@ class ProvenanceManager:
         `ProvenanceManager` nunca os popula por lógica própria, apenas
         os aceita se o chamador os fornecer (§3, §11 do módulo E3.6).
 
+        `session_id`/`correlation_id`/`trace_id` (correção E3.6.1) são
+        semanticamente distintos — `session_id` é o contexto
+        conversacional/sessão lógica; `correlation_id` correlaciona
+        operações relacionadas; `trace_id` é a cadeia distribuída/
+        operacional rastreável entre componentes. Podem coincidir para
+        um dado chamador, mas nenhuma igualdade é imposta entre eles.
+
         Não commita — `flush()` implícito via `ProvenanceRepository.add()`;
         commit permanece do chamador via `UnitOfWork`.
         """
@@ -77,6 +85,7 @@ class ProvenanceManager:
             model_id=model_id,
             session_id=session_id,
             correlation_id=correlation_id,
+            trace_id=trace_id,
             evidence_refs=list(evidence_refs or []),
             orchestration_run_id=orchestration_run_id,
             agent_role=agent_role,

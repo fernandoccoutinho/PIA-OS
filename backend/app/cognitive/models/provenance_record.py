@@ -121,6 +121,21 @@ class ProvenanceRecord(BaseModel):
     exigem essa integração, apenas aceitam o valor se fornecido."""
 
     correlation_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    """Correlação entre operações relacionadas — não é o mesmo
+    identificador que `trace_id` (ver docstring de `trace_id` abaixo
+    para a distinção semântica; correção E3.6.1)."""
+
+    trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    """Cadeia distribuída/operacional rastreável entre componentes
+    (correção E3.6.1, débito C1). Comprimento consistente com
+    `session_id`/`correlation_id` (`String(255)`), nullable, nunca
+    obrigatório, provider-neutral — nenhum SDK/mecanismo de tracing
+    específico é assumido ou exigido.
+
+    Distinto de `session_id` (contexto conversacional/sessão lógica) e
+    `correlation_id` (correlação entre operações relacionadas) — os
+    três podem coincidir para um dado chamador, mas não são impostos
+    como iguais entre si; cada um responde a uma pergunta diferente."""
 
     evidence_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     """Lista de referências (nunca conteúdo bruto) — default vazio."""

@@ -7,8 +7,15 @@ o Alembic) para orquestrar `upgrade`/`downgrade` reais contra
 PostgreSQL — não simula em SQLite (o cenário depende de comandos
 Alembic reais, não apenas de SQLAlchemy ORM).
 
-Mesmo padrão gracioso dos demais arquivos de integração — pula se
-PostgreSQL/a migração `f11551e97026` não estiverem disponíveis.
+**Correção E3.6.1 (débito C3)**: a versão anterior deste arquivo
+exigia `migrations.head_revision() == "f11551e97026"` para não pular
+— isso deixou de ser verdade assim que qualquer módulo posterior (E3.6)
+adicionou novas migrações, fazendo os testes pularem permanentemente
+sem realmente revalidar nada. Corrigido: os testes agora começam na
+head ATUAL (seja ela qual for), fazem downgrade controlado até a
+região da cadeia onde `f11551e97026`/`63d205dec996`/`2826ce7fa4dc` são
+relevantes, executam os cenários `D1`-`D5`, e restauram a head atual
+no `finally` — nunca exigem que `f11551e97026` seja a head global.
 """
 
 import pytest
@@ -24,11 +31,27 @@ from app.database import migrations
 from app.database.health import check_database_health
 from app.repositories.unit_of_work import UnitOfWork
 
-# Nomenclatura explícita (correção E3.5.2a) — `_PREVIOUS_REVISION`
-# ocultava qual fronteira arquitetural cada constante representa.
-_GUARD_REVISION = "f11551e97026"  # migração-guarda (E3.5.2)
+# Nomenclatura explícita (correção E3.5.2a) — revisões específicas da
+# cadeia sendo exercitadas, não a head global (correção E3.6.1: a head
+# global muda a cada módulo novo; estas constantes continuam válidas
+# como pontos fixos da cadeia, não como "a head").
+_RELATIONSHIP_GUARD_REVISION = "f11551e97026"  # migração-guarda de Relationship (E3.5.2)
 _E3_5_1_REVISION = "63d205dec996"  # active uniqueness + symmetric guarantee (E3.5.1)
 _PRE_E3_5_1_REVISION = "2826ce7fa4dc"  # schema original de Relationship (E3.5), antes de E3.5.1
+
+
+def _revision_exists(revision_id: str) -> bool:
+    """Confirma que `revision_id` existe na cadeia de migrações
+    (não que é a head) — correção E3.6.1: a condição de skip não deve
+    depender de `revision_id` ser literalmente a head atual."""
+    from alembic.script import ScriptDirectory
+
+    config = migrations.get_alembic_config()
+    script = ScriptDirectory.from_config(config)
+    try:
+        return script.get_revision(revision_id) is not None
+    except Exception:
+        return False
 
 
 def _guard_migration_available() -> bool:
@@ -42,14 +65,15 @@ def _guard_migration_available() -> bool:
     tables = inspect(engine).get_table_names()
     if "relationships" not in tables:
         return False
-    return migrations.head_revision() == _GUARD_REVISION
+    return _revision_exists(_RELATIONSHIP_GUARD_REVISION)
 
 
 pytestmark = pytest.mark.skipif(
     not _guard_migration_available(),
     reason=(
-        "PostgreSQL real indisponível ou migração f11551e97026 "
-        "(guard de downgrade de relationships) não é a head neste ambiente."
+        "PostgreSQL real indisponível, tabela 'relationships' ausente, "
+        "ou migração f11551e97026 (guard de downgrade de relationships) "
+        "não existe na cadeia deste ambiente."
     ),
 )
 
@@ -87,8 +111,8 @@ def _relationships_indexes_and_constraints() -> dict[str, set[str]]:
 
 @pytest.fixture(autouse=True)
 def _ensure_head_before_and_after():
-    """Garante que cada teste começa e termina com o banco na head —
-    mesmo que um teste anterior tenha feito downgrade/upgrade."""
+    """Garante que cada teste começa e termina com o banco na head
+    ATUAL (seja ela qual for — correção E3.6.1, nunca hardcoded)."""
     migrations.upgrade("head")
     yield
     if migrations.current_revision() != migrations.head_revision():
@@ -97,12 +121,11 @@ def _ensure_head_before_and_after():
 
 def test_d1_compatible_downgrade_succeeds():
     """D1 — `FULL_COMPATIBLE_DOWNGRADE`: nenhum histórico incompatível
-    produzido. Prova o downgrade **completo** do estado compatível até
-    `2826ce7fa4dc` (o schema imediatamente anterior a E3.5.1) — não
-    apenas até `63d205dec996` (correção E3.5.2a: a versão anterior
-    deste teste executava só `f11551e97026 -> 63d205dec996`, o
-    downgrade da migração-guarda, sem nunca exercitar de fato o
-    downgrade de `63d205dec996`).
+    produzido. Prova o downgrade **completo**, a partir da head ATUAL,
+    até `2826ce7fa4dc` (o schema imediatamente anterior a E3.5.1) —
+    atravessando toda a cadeia posterior (incluindo, se presentes,
+    guardas/tabelas de módulos mais recentes que E3.5, como E3.6/
+    E3.6.1), não apenas o primeiro passo.
 
     Confirma estruturalmente, via introspecção real do PostgreSQL
     (não apenas `alembic current`):
@@ -115,8 +138,9 @@ def test_d1_compatible_downgrade_succeeds():
       (`uq_relationships_source_target_type`) voltou a existir;
     - os dados compatíveis continuam presentes e íntegros.
 
-    Depois, `upgrade("head")` e confirma que o schema E3.5.1/E3.5.2
-    volta corretamente (mesma introspecção, resultado invertido).
+    Depois, `upgrade("head")` e confirma que o schema atual volta
+    corretamente (mesma introspecção, resultado invertido) — e que a
+    head alcançada é a head REAL do ambiente, não um valor hardcoded.
     """
     with UnitOfWork() as uow:
         objs, rels, engine = _make_managers(uow.session)
@@ -133,8 +157,10 @@ def test_d1_compatible_downgrade_succeeds():
             )
             uow.commit()
 
-        # downgrade completo, atravessando f11551e97026 -> 63d205dec996
-        # -> 2826ce7fa4dc (não apenas o primeiro passo)
+        actual_head = migrations.head_revision()
+
+        # downgrade completo, a partir da head atual (qualquer que
+        # seja), até 2826ce7fa4dc
         migrations.downgrade(_PRE_E3_5_1_REVISION)
 
         # A: Alembic realmente chegou a 2826ce7fa4dc
@@ -168,10 +194,10 @@ def test_d1_compatible_downgrade_succeeds():
             assert row[2] == "supports"
             assert row[3] is None
 
-        # volta para a head e confirma que o schema E3.5.1/E3.5.2
-        # retorna corretamente
+        # volta para a head e confirma que o schema atual retorna
+        # corretamente — comparado contra a head REAL, não hardcoded
         migrations.upgrade("head")
-        assert migrations.current_revision() == _GUARD_REVISION
+        assert migrations.current_revision() == actual_head
 
         schema_after_upgrade = _relationships_indexes_and_constraints()
         assert "uq_relationships_active_source_target_type" in schema_after_upgrade["indexes"]
@@ -204,8 +230,10 @@ def test_d2_d3_d4_d5_incompatible_historical_downgrade_is_blocked_without_data_l
     """D2 (bloqueio), D3 (zero perda de dados), D4 (schema/Alembic
     preservados), D5 (nenhum downgrade parcial) — tudo em um único
     teste porque compartilham o mesmo cenário/setup caro (múltiplas
-    migrações reais). Comportamento inalterado pela correção E3.5.2a
-    — apenas a nomenclatura das constantes foi atualizada."""
+    migrações reais). Correção E3.6.1: a comparação "voltou à head"
+    usa `migrations.head_revision()` dinâmico, não mais uma constante
+    hardcoded que ficou desatualizada assim que E3.6 adicionou novas
+    migrações."""
     with UnitOfWork() as uow:
         objs, rels, engine = _make_managers(uow.session)
         a = objs.add(CognitiveObject())
@@ -214,6 +242,8 @@ def test_d2_d3_d4_d5_incompatible_historical_downgrade_is_blocked_without_data_l
         a_id, b_id = a.id, b.id
 
     try:
+        actual_head = migrations.head_revision()
+
         # setup: create -> retire -> create (duas gerações da mesma tripla)
         with UnitOfWork() as uow:
             objs, rels, engine = _make_managers(uow.session)
@@ -242,8 +272,11 @@ def test_d2_d3_d4_d5_incompatible_historical_downgrade_is_blocked_without_data_l
             migrations.downgrade(_PRE_E3_5_1_REVISION)
         assert "DOWNGRADE_SEMANTICALLY_BLOCKED" in str(exc_info.value)
 
-        # D4 (Alembic state): a revisão atual não retrocedeu
-        assert migrations.current_revision() == _GUARD_REVISION
+        # D4 (Alembic state): a revisão atual não retrocedeu — ainda
+        # na head real (o bloqueio ocorre na primeira guarda
+        # encontrada no caminho reverso, antes mesmo de alcançar a
+        # região de Relationship, se houver guardas mais recentes)
+        assert migrations.current_revision() == actual_head
 
         # D3: zero perda de dados — R0 e R1 continuam presentes com os
         # estados corretos
@@ -292,3 +325,24 @@ def test_d2_d3_d4_d5_incompatible_historical_downgrade_is_blocked_without_data_l
                 if leftover is not None:
                     objs.delete(leftover)
             uow.commit()
+
+
+def test_m4_relationship_guard_still_reachable_from_current_head():
+    """M4 do prompt corretivo E3.6.1 — confirma explicitamente que a
+    guarda de `Relationship` (E3.5.2) continua funcionando a partir da
+    head atual, mesmo depois de módulos posteriores (E3.6/E3.6.1)
+    terem estendido a cadeia."""
+    assert _revision_exists(_RELATIONSHIP_GUARD_REVISION)
+    assert _revision_exists(_E3_5_1_REVISION)
+    assert _revision_exists(_PRE_E3_5_1_REVISION)
+
+
+def test_m5_full_compatible_relationship_downgrade_remains_executable():
+    """M5 do prompt corretivo — o teste de downgrade totalmente
+    compatível de `Relationship` continua executável a partir da head
+    atual (não apenas quando `f11551e97026` era a head global)."""
+    actual_head = migrations.head_revision()
+    migrations.downgrade(_PRE_E3_5_1_REVISION)
+    assert migrations.current_revision() == _PRE_E3_5_1_REVISION
+    migrations.upgrade("head")
+    assert migrations.current_revision() == actual_head
