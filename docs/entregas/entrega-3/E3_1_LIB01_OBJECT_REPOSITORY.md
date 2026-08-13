@@ -74,16 +74,25 @@ reimplementar CRUD genérico. Adiciona apenas o que a base genuinamente
 não pode saber:
 
 - `get_by_id(entity_id, *, include_deleted=False)` — exclui soft
-  deleted por padrão.
-- `list(*, limit=None, offset=None, include_deleted=False)` — idem.
+  deleted por padrão, filtrado no SQL (`WHERE deleted_at IS NULL`).
+- `list(*, limit=None, offset=None, include_deleted=False)` — idem,
+  filtro aplicado antes de `LIMIT`/`OFFSET`.
 - `paginate(*, page=1, page_size=20, include_deleted=False, **filters)`
-  — idem (filtro de soft delete aplicado em memória após a query —
-  ver docstring no código para a limitação de performance aceita
-  nesta fase; um filtro no nível de SQL é candidato natural para
-  `LIB-07 Index Manager`).
+  — idem; reutiliza o mecanismo público `**filters` de
+  `BaseRepository.paginate()` (`deleted_at=None` → `IS NULL`, sem
+  nenhuma mudança em `BaseRepository`). `Page.total` reflete
+  corretamente apenas os itens ativos.
 - `soft_delete(entity)` — marca `deleted_at`, não remove a linha.
   `delete()` (físico, herdado) continua disponível, não é o caminho
   recomendado.
+
+**Correção E3.1.1 (débito C1)**: a versão original de E3.1 filtrava
+soft-deleted **em memória, depois** da consulta ao banco — bug real
+(`Page.total` contava soft-deleted; `LIMIT`/`OFFSET` operavam sobre a
+tabela inteira antes do filtro, podendo devolver páginas
+artificialmente curtas). Corrigido para filtrar no SQL, antes de
+`LIMIT`/`OFFSET`/`COUNT`, em todos os três métodos. Ver testes
+`SD1`–`SD7` na seção Testes.
 
 Não controla commit — quem decide é o chamador via `UnitOfWork`.
 
@@ -94,14 +103,27 @@ Não controla commit — quem decide é o chamador via `UnitOfWork`.
   listener de evento `before_update` do SQLAlchemy, que levanta
   `CognitiveObjectIdentityImmutableError` (`PIA-8001`) antes que o
   UPDATE chegue ao banco.
-- **CLID (`clid`)**: pode ser `None` → valor uma única vez. Uma
-  tentativa de sobrescrever um valor já definido para um valor
-  *diferente* é rejeitada por um `@validates` do SQLAlchemy, que
-  levanta `CognitiveObjectClidAlreadySetError` (`PIA-8002`).
-  Resetar para o **mesmo** valor é idempotente (não levanta).
+- **CLID (`clid`)**: pode ser `None` → valor uma única vez. Depois
+  disso, **imutável** — decisão canônica registrada em
+  `EDR_COUT_PIA_E3.md` (correção E3.1.1): nem um valor *diferente* nem
+  `None` são aceitos. Ambos os casos levantam
+  `CognitiveObjectClidAlreadySetError` (`PIA-8002`) via `@validates`
+  do SQLAlchemy. Resetar para o **mesmo** valor é idempotente (não
+  levanta). Uma transformação futura que representar mudança de
+  identidade causal suficiente para justificar outro CLID **não muta
+  este objeto** — cria um novo objeto/estado e relaciona os dois via
+  `LineageEdge`/`TransformationRecord` (E3.3/E3.4). A versão original
+  de E3.1 tinha duas lacunas aqui, corrigidas nesta versão: (a) o
+  guard não rejeitava `CLID_A → None`; (b) o comentário do código e o
+  parágrafo correspondente do `E3_DOMAIN_MODEL_DRAFT.md` sugeriam
+  ambiguamente que `TransformationRecord`/`LineageEdge` poderiam
+  futuramente mutar o CLID do *mesmo* objeto — corrigido para deixar
+  claro que essa relação vive entre dois objetos, nunca dentro de um
+  único registro. Ver testes `CL1`–`CL7`.
 
-Ambos os mecanismos foram validados empiricamente contra SQLite real
-antes de escrever os testes automatizados (ver seção Testes).
+Ambos os mecanismos foram validados empiricamente contra SQLite e
+PostgreSQL reais antes/depois de escrever os testes automatizados (ver
+seção Testes).
 
 ## Error codes criados
 
@@ -172,8 +194,40 @@ nascer neste módulo").
   **Executado e passou contra um PostgreSQL 16 real neste
   desenvolvimento.**
 
-Total: 49 testes novos em `app.cognitive` (100% de cobertura de linha
-nesse pacote) + 1 teste de integração.
+Total: 57 testes novos em `app.cognitive` (100% de cobertura de linha
+nesse pacote — 8 testes adicionados na correção E3.1.1: SD4-SD7, CL4-CL7)
++ 1 teste de integração.
+
+## Rastreabilidade de baseline (correção E3.1.1, débito C3)
+
+O relatório original de E3.1 declarou `BASELINE FILES MODIFIED = NONE`
+sem diferenciar "contrato público alterado" de "arquivo pré-existente
+tocado para integração" — impreciso. Classificação corrigida:
+
+```
+BASELINE_PUBLIC_CONTRACTS_MODIFIED = NO
+PRE_EXISTING_BASELINE_FILES_TOUCHED =
+  - backend/alembic/env.py
+  - backend/tests/unit/database/test_migrations.py
+CLASSIFICATION = MINIMAL_ADDITIVE_E3_INTEGRATION_TOUCHPOINTS
+```
+
+- **`alembic/env.py`**: recebeu 1 linha de import
+  (`import app.cognitive.models`) para que `CognitiveObject`
+  registrasse sua tabela em `Base.metadata` antes do autogenerate —
+  sem isso, `alembic revision --autogenerate` não veria nenhum modelo
+  de domínio. Nenhuma semântica existente foi alterada, nenhuma tabela
+  de E1/E2 foi tocada (nenhuma existe), nenhuma configuração quebrada
+  — estritamente aditivo. Classificado como **E3 INTEGRATION
+  TOUCHPOINT**, não mudança de contrato de baseline.
+- **`tests/unit/database/test_migrations.py`**: 1 teste (`test_head_revision_is_none_when_no_migrations_exist`)
+  assumia, pelo próprio comentário original, que nenhuma migração
+  jamais existiria — premissa que deixou de ser verdadeira porque
+  criar a primeira migração real é o objetivo declarado de E3.1.
+  Corrigido para testar o contrato real da função `head_revision()`
+  (ver seção seguinte). Nenhuma linha de `app/database/migrations.py`
+  (código de produção) foi tocada — apenas o teste. Classificado como
+  **E3 INTEGRATION TOUCHPOINT**.
 
 ## Correção em teste pré-existente (não-regressão)
 

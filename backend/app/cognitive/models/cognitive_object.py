@@ -52,9 +52,11 @@ class CognitiveObject(BaseModel, SoftDeleteMixin):
     clid: Mapped[uuid.UUID | None] = mapped_column(nullable=True, default=None)
     """Continuidade conceitual/linhagem — `None` até ser atribuído por
     `LIB-03 CLID Manager` (E3.3). Gravável de `None` para um valor uma
-    única vez; ver `_reject_clid_overwrite` abaixo. Este módulo (E3.1)
-    não implementa geração, unicidade nem semântica de branching/merge
-    de CLID — apenas preserva a coluna."""
+    única vez; depois de setado, é imutável (correção E3.1.1: nem
+    `CLID_B` diferente nem `None` são aceitos — ver
+    `_reject_clid_mutation` abaixo). Este módulo (E3.1) não implementa
+    geração, unicidade nem semântica de branching/merge de CLID —
+    apenas preserva a coluna e a regra de imutabilidade."""
 
     accessibility: Mapped[AccessibilityState] = mapped_column(
         SAEnum(
@@ -85,14 +87,23 @@ class CognitiveObject(BaseModel, SoftDeleteMixin):
         return self.id
 
     @validates("clid")
-    def _reject_clid_overwrite(self, key: str, value: uuid.UUID | None) -> uuid.UUID | None:
-        """Permite `None` → valor (primeira atribuição, tipicamente por
-        `LIB-03 CLID Manager`) e valor → mesmo valor (idempotente).
-        Rejeita valor → valor diferente — essa mudança só pode
-        acontecer via `TransformationRecord`/`LineageEdge` explícito
-        (E3.4/E3.3), que não existem ainda em E3.1.
+    def _reject_clid_mutation(self, key: str, value: uuid.UUID | None) -> uuid.UUID | None:
+        """CLID de um `CognitiveObject` persistido é imutável após a
+        primeira atribuição — decisão canônica (correção E3.1.1,
+        registrada em `EDR_COUT_PIA_E3.md`). Permite `None` → valor
+        (primeira atribuição, tipicamente por `LIB-03 CLID Manager`) e
+        valor → mesmo valor (idempotente, ex.: reload). Rejeita valor
+        → valor diferente **e** valor → `None`.
+
+        Uma transformação futura que representar mudança de identidade
+        causal/lógica suficiente para justificar outro CLID NÃO muta
+        este `CognitiveObject` — cria um novo objeto/estado e
+        relaciona os dois via `LineageEdge`/`TransformationRecord`
+        (E3.3/E3.4). Este guard não tem exceção para esse cenário
+        porque não há bypass real: a relação vive entre dois objetos,
+        nunca dentro de um único registro.
         """
-        if self.clid is not None and value is not None and value != self.clid:
+        if self.clid is not None and value != self.clid:
             raise CognitiveObjectClidAlreadySetError(
                 coid=self.id, current_clid=self.clid, attempted_clid=value
             )

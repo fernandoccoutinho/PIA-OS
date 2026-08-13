@@ -32,9 +32,17 @@ CognitiveObject
 
 Restrição de identidade: `coid` é atribuído uma única vez, na criação,
 e nunca é reatribuído. `clid` pode ser `None` na criação e populado
-depois (por `LIB-03 CLID Manager`), mas nunca substituído por outro
-valor não-`None` sem passar por `TransformationRecord`/`LineageEdge`
-explícito — CLID não é campo de conveniência editável livremente.
+depois (por `LIB-03 CLID Manager`) — uma única vez. **Correção
+E3.1.1**: uma vez que `clid` deixa de ser `None`, ele é imutável para
+aquele `CognitiveObject` — nem um valor diferente nem `None` são
+aceitos depois disso, sem exceção. Uma mudança de identidade causal
+suficiente para justificar outro CLID não muta este objeto: cria um
+novo objeto/estado e relaciona os dois via `TransformationRecord`/
+`LineageEdge` (E3.3/E3.4) — a formulação anterior deste parágrafo
+("nunca substituído... sem passar por TransformationRecord/LineageEdge
+explícito") sugeria ambiguamente que esses mecanismos poderiam mutar o
+CLID do mesmo objeto; não podem. CLID não é campo de conveniência
+editável livremente.
 
 ## 1. CognitiveDistinction
 

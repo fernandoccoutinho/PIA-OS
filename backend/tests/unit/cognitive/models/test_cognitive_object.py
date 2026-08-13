@@ -2,6 +2,7 @@
 Testes de `CognitiveObject` — §29 e §32 do módulo E3.1.
 """
 
+import contextlib
 import uuid
 from datetime import datetime
 
@@ -110,7 +111,10 @@ def test_identity_mutation_is_rejected_after_persistence(cognitive_session):
 # --- clid: primeira atribuição permitida, sobrescrita rejeitada ---
 
 
-def test_clid_can_be_set_once_from_none(cognitive_session):
+# --- CLID: imutabilidade após primeira atribuição (correção E3.1.1) ---
+
+
+def test_cl1_clid_can_be_set_once_from_none(cognitive_session):
     obj = CognitiveObject()
     cognitive_session.add(obj)
     cognitive_session.commit()
@@ -122,7 +126,19 @@ def test_clid_can_be_set_once_from_none(cognitive_session):
     assert obj.clid == new_clid
 
 
-def test_clid_overwrite_with_different_value_is_rejected(cognitive_session):
+def test_cl2_clid_reassignment_to_same_value_is_idempotent(cognitive_session):
+    obj = CognitiveObject()
+    same_clid = uuid.uuid4()
+    obj.clid = same_clid
+    cognitive_session.add(obj)
+    cognitive_session.commit()
+
+    obj.clid = same_clid  # não deve levantar
+    cognitive_session.commit()
+    assert obj.clid == same_clid
+
+
+def test_cl3_clid_overwrite_with_different_value_is_rejected(cognitive_session):
     obj = CognitiveObject()
     cognitive_session.add(obj)
     obj.clid = uuid.uuid4()
@@ -134,16 +150,67 @@ def test_clid_overwrite_with_different_value_is_rejected(cognitive_session):
     assert exc_info.value.code == "PIA-8002"
 
 
-def test_clid_reassignment_to_same_value_is_idempotent(cognitive_session):
+def test_cl4_clid_reset_to_none_is_rejected(cognitive_session):
+    """Correção E3.1.1 (C2): o guard original não rejeitava
+    `CLID_A -> None` — lacuna real, coberta explicitamente aqui."""
     obj = CognitiveObject()
-    same_clid = uuid.uuid4()
-    obj.clid = same_clid
     cognitive_session.add(obj)
+    obj.clid = uuid.uuid4()
     cognitive_session.commit()
 
-    obj.clid = same_clid  # não deve levantar
+    with pytest.raises(CognitiveObjectClidAlreadySetError) as exc_info:
+        obj.clid = None
+
+    assert exc_info.value.code == "PIA-8002"
+
+
+def test_cl5_update_via_repository_does_not_bypass_the_guard(cognitive_session):
+    """A proteção vive no modelo (`@validates`), não no schema/
+    repositório — tentar contornar via `repo.update()` também falha,
+    porque a mutação do atributo já foi rejeitada antes mesmo do
+    `update()` ser chamado."""
+    from app.cognitive.repositories.object_repository import ObjectRepository
+
+    repo = ObjectRepository(cognitive_session)
+    obj = repo.add(CognitiveObject())
+    obj.clid = uuid.uuid4()
     cognitive_session.commit()
-    assert obj.clid == same_clid
+
+    with pytest.raises(CognitiveObjectClidAlreadySetError):
+        obj.clid = uuid.uuid4()
+        repo.update(obj)
+
+
+def test_cl6_reload_after_invalid_attempt_preserves_original_clid(cognitive_session):
+    obj = CognitiveObject()
+    cognitive_session.add(obj)
+    original_clid = uuid.uuid4()
+    obj.clid = original_clid
+    cognitive_session.commit()
+
+    with contextlib.suppress(CognitiveObjectClidAlreadySetError):
+        obj.clid = uuid.uuid4()
+
+    cognitive_session.refresh(obj)
+    assert obj.clid == original_clid
+
+
+def test_cl7_rollback_after_invalid_clid_attempt_leaves_consistent_state(cognitive_session):
+    obj = CognitiveObject()
+    cognitive_session.add(obj)
+    original_clid = uuid.uuid4()
+    obj.clid = original_clid
+    cognitive_session.commit()
+
+    with contextlib.suppress(CognitiveObjectClidAlreadySetError):
+        obj.clid = uuid.uuid4()
+    cognitive_session.rollback()
+
+    # sessão continua utilizável após o rollback — nova operação funciona
+    other = CognitiveObject()
+    cognitive_session.add(other)
+    cognitive_session.commit()
+    assert other.id is not None
 
 
 # --- TEST C1: mesmo "conteúdo" (aqui, nenhum) não implica mesmo objeto ---

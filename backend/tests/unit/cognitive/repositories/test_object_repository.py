@@ -85,7 +85,7 @@ def test_update_persists_clid_change(repo, cognitive_session):
     assert fetched.clid == new_clid
 
 
-# --- SOFT DELETE ---
+# --- SOFT DELETE — §8 do módulo E3.1, correção E3.1.1 ---
 
 
 def test_soft_delete_marks_deleted_at_without_removing_row(repo, cognitive_session):
@@ -99,7 +99,7 @@ def test_soft_delete_marks_deleted_at_without_removing_row(repo, cognitive_sessi
     assert entity.is_deleted is True
 
 
-def test_soft_deleted_object_excluded_from_get_by_id_by_default(repo, cognitive_session):
+def test_sd1_soft_deleted_object_excluded_from_get_by_id_by_default(repo, cognitive_session):
     entity = repo.add(CognitiveObject())
     cognitive_session.commit()
     repo.soft_delete(entity)
@@ -109,7 +109,7 @@ def test_soft_deleted_object_excluded_from_get_by_id_by_default(repo, cognitive_
     assert repo.get_by_id(entity.id, include_deleted=True) is not None
 
 
-def test_soft_deleted_object_excluded_from_list_by_default(repo, cognitive_session):
+def test_sd2_soft_deleted_object_excluded_from_list_by_default(repo, cognitive_session):
     kept = repo.add(CognitiveObject())
     deleted = repo.add(CognitiveObject())
     cognitive_session.commit()
@@ -122,7 +122,7 @@ def test_soft_deleted_object_excluded_from_list_by_default(repo, cognitive_sessi
     assert len(repo.list(include_deleted=True)) == 2
 
 
-def test_soft_deleted_object_excluded_from_paginate_by_default(repo, cognitive_session):
+def test_sd3_soft_deleted_object_excluded_from_paginate_by_default(repo, cognitive_session):
     repo.add(CognitiveObject())
     deleted = repo.add(CognitiveObject())
     cognitive_session.commit()
@@ -134,6 +134,90 @@ def test_soft_deleted_object_excluded_from_paginate_by_default(repo, cognitive_s
 
     page_all = repo.paginate(page=1, page_size=10, include_deleted=True)
     assert len(page_all.items) == 2
+
+
+def test_sd4_page_total_excludes_soft_deleted(repo, cognitive_session):
+    """Correção E3.1.1 (C1): antes, `Page.total` refletia a contagem
+    SEM excluir soft-deleted — regressão coberta explicitamente aqui."""
+    for _ in range(3):
+        repo.add(CognitiveObject())
+    deleted = repo.add(CognitiveObject())
+    cognitive_session.commit()
+    repo.soft_delete(deleted)
+    cognitive_session.commit()
+
+    page = repo.paginate(page=1, page_size=2)
+    assert page.total == 3  # não 4
+
+    page_all = repo.paginate(page=1, page_size=2, include_deleted=True)
+    assert page_all.total == 4
+
+
+def test_sd5_limit_offset_operate_over_the_correct_active_set(repo, cognitive_session):
+    """`list(limit=, offset=)` deve operar sobre o conjunto de ativos
+    já filtrado no SQL — não sobre a tabela inteira seguida de corte
+    em memória (correção E3.1.1, C1)."""
+    objs = [repo.add(CognitiveObject()) for _ in range(6)]
+    cognitive_session.commit()
+    # soft-delete os 3 primeiros por created_at (não necessariamente os
+    # primeiros na ordem de retorno do banco, mas suficiente para o teste)
+    for o in objs[:3]:
+        repo.soft_delete(o)
+    cognitive_session.commit()
+
+    active_ids = {o.id for o in objs[3:]}
+    page1 = repo.list(limit=2, offset=0)
+    page2 = repo.list(limit=2, offset=2)
+    combined_ids = {o.id for o in page1} | {o.id for o in page2}
+
+    assert len(page1) == 2
+    assert len(page2) == 1  # só restam 3 ativos no total
+    assert combined_ids == active_ids
+
+
+def test_sd6_page_is_not_artificially_short_due_to_in_memory_filtering(repo, cognitive_session):
+    """Cenário exato do §4 do prompt corretivo: 20 registros
+    selecionados pelo banco, metade soft-deleted — uma página não deve
+    ficar artificialmente curta por filtragem posterior em memória.
+    Como o filtro agora é aplicado no SQL, `page_size` itens ativos são
+    sempre retornados enquanto houver ativos suficientes."""
+    objs = [repo.add(CognitiveObject()) for _ in range(20)]
+    cognitive_session.commit()
+    for o in objs[::2]:  # 10 soft-deleted, intercalados
+        repo.soft_delete(o)
+    cognitive_session.commit()
+
+    page = repo.paginate(page=1, page_size=10)
+    assert len(page.items) == 10  # todos os 10 ativos, não menos
+    assert page.total == 10
+    assert all(not item.is_deleted for item in page.items)
+
+
+def test_sd7_interleaved_deletions_do_not_corrupt_pagination(repo, cognitive_session):
+    """Objetos soft-deleted intercalados com ativos não corrompem a
+    paginação — cada página soma exatamente `page_size` (exceto a
+    última) e a união de todas as páginas é exatamente o conjunto
+    ativo, sem duplicatas nem lacunas."""
+    objs = [repo.add(CognitiveObject()) for _ in range(9)]
+    cognitive_session.commit()
+    for i in (0, 2, 4, 6, 8):  # 5 soft-deleted intercalados, 4 ativos
+        repo.soft_delete(objs[i])
+    cognitive_session.commit()
+
+    expected_active_ids = {objs[i].id for i in (1, 3, 5, 7)}
+
+    seen_ids: set = set()
+    page_number = 1
+    while True:
+        page = repo.paginate(page=page_number, page_size=3)
+        if not page.items:
+            break
+        seen_ids.update(o.id for o in page.items)
+        if not page.has_next:
+            break
+        page_number += 1
+
+    assert seen_ids == expected_active_ids
 
 
 def test_hard_delete_still_available_when_genuinely_needed(repo, cognitive_session):
