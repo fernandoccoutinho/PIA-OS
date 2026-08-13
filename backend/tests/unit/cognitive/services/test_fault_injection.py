@@ -141,22 +141,33 @@ def test_a4_revision_status_transition_failure_rolls_back_completely(
     cognitive_sqlite_session_factory, monkeypatch
 ):
     """Força a falha exatamente no ponto identificado e corrigido
-    durante o desenvolvimento desta correção: a segunda `update()`
-    dentro de `revise()` (onde `target` vira `CURRENT`)."""
+    durante o desenvolvimento de E3.4.1: a `update()` dentro de
+    `revise()` que seta `target.revision_status = CURRENT`.
+
+    Identifica a chamada certa por critério semântico
+    (`entity.revision_status == CURRENT`), não por posição/contagem —
+    mesmo princípio já usado em
+    `test_unrelated_persistence_error_during_current_update_is_not_reclassified`
+    (`test_current_uniqueness.py`): `inherit()` também chama `update()`
+    internamente para propagar CLID, e `revise()` chama `update()`
+    duas vezes mais (`source→SUPERSEDED`, `target→CURRENT`) — a
+    posição numérica de qual chamada é "a certa" não é estável entre
+    cenários (ex.: varia conforme `source.clid` já estar setado ou
+    não). O critério semântico é robusto independentemente de quantas
+    chamadas internas a `update()` ocorram antes.
+    """
     from app.repositories.base_repository import BaseRepository
 
     source_id = _setup_source(cognitive_sqlite_session_factory, current=True)
 
-    call_count = {"n": 0}
     original_update = BaseRepository.update
 
-    def _raise_on_second_update(self, entity):
-        call_count["n"] += 1
-        if call_count["n"] == 2:
+    def _raise_when_setting_current(self, entity):
+        if getattr(entity, "revision_status", None) == RevisionStatus.CURRENT:
             raise RuntimeError("falha simulada na transição de revision_status")
         return original_update(self, entity)
 
-    monkeypatch.setattr(BaseRepository, "update", _raise_on_second_update)
+    monkeypatch.setattr(BaseRepository, "update", _raise_when_setting_current)
 
     with pytest.raises(RuntimeError), UnitOfWork(cognitive_sqlite_session_factory) as uow:
         objs = ObjectRepository(uow.session)

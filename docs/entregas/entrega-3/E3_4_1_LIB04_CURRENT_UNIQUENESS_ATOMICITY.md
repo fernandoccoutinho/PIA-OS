@@ -206,7 +206,10 @@ ciclo.
 
 ## 11. Testes
 
-19 testes novos:
+19 testes unitários novos + 1 teste de integração PostgreSQL novo =
+**20 testes novos** no patch (correção E3.4.1a: contagem original
+desta seção somava só os 19 unitários, sem contar `U4`
+separadamente):
 
 - **Unicidade** (`test_current_uniqueness.py`, 12): `U1` (escopo é
   CLID, não global), `U2` (cenário adversarial exato do prompt, dois
@@ -218,8 +221,8 @@ ciclo.
   restringidos, re-raise de erro não relacionado não reclassificado.
 - **Fault injection** (`test_fault_injection.py`, 7): `A1`-`A7`
   completos.
-- **Integração contra PostgreSQL real**: `U4` (novo, concorrência mais
-  forte).
+- **Integração contra PostgreSQL real** (`test_version_transformation_integration.py`,
+  1 novo): `U4` (concorrência mais forte).
 
 Total após E3.4.1: 262 testes unitários (100% cobertura de linha em
 todo `app/cognitive/`) + 13 de integração.
@@ -289,3 +292,27 @@ Todos os 12 itens do §12 do prompt corretivo revalidados:
     `.commit()`).
 13. Migrations anteriores permanecem intactas — confirmado por
     `git diff --stat` e pelo ciclo `upgrade/downgrade/upgrade`.
+
+## 16. Micro-cleanup (E3.4.1a)
+
+Duas correções puramente documentais/de teste, sem tocar código de
+produção:
+
+1. **Contagem de testes corrigida** — seção 11 somava só os 19 testes
+   unitários, sem contar `U4` (integração) separadamente; corrigido
+   para "19 unitários + 1 integração = 20 testes novos".
+2. **`A4` robustecido** — identificava o ponto de fault injection por
+   posição/contagem de chamadas (`call_count == 2`), frágil a
+   mudanças na ordem interna de `update()` (ex.: quantas chamadas
+   `inherit()` faz para propagar CLID varia conforme `source.clid` já
+   estar setado ou não). Corrigido para identificação semântica
+   (`entity.revision_status == CURRENT`) — mesmo princípio já usado em
+   `test_unrelated_persistence_error_during_current_update_is_not_reclassified`
+   (`test_current_uniqueness.py`). Nenhuma mudança de comportamento —
+   `A4` continua forçando falha exatamente na transição
+   `target → CURRENT`, apenas de forma robusta à ordem interna de
+   chamadas, não à sua posição numérica.
+
+Nenhum código de produção, modelo, migration ou semântica de
+COID/CLID foi alterado nesta correção — apenas os dois arquivos acima
+(um de documentação, um de teste).
