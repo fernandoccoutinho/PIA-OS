@@ -78,10 +78,11 @@ não pode saber:
 - `list(*, limit=None, offset=None, include_deleted=False)` — idem,
   filtro aplicado antes de `LIMIT`/`OFFSET`.
 - `paginate(*, page=1, page_size=20, include_deleted=False, **filters)`
-  — idem; reutiliza o mecanismo público `**filters` de
-  `BaseRepository.paginate()` (`deleted_at=None` → `IS NULL`, sem
-  nenhuma mudança em `BaseRepository`). `Page.total` reflete
-  corretamente apenas os itens ativos.
+  — idem, ordenado (ver abaixo). A partir da correção E3.1.2, não
+  delega mais a `BaseRepository.paginate()` — constrói a própria
+  consulta (reutilizando `self._equality_clauses()`/`self.count()`
+  herdados) porque a base não expõe nenhum hook de `ORDER BY`.
+  `Page.total` reflete corretamente apenas os itens ativos.
 - `soft_delete(entity)` — marca `deleted_at`, não remove a linha.
   `delete()` (físico, herdado) continua disponível, não é o caminho
   recomendado.
@@ -93,6 +94,17 @@ tabela inteira antes do filtro, podendo devolver páginas
 artificialmente curtas). Corrigido para filtrar no SQL, antes de
 `LIMIT`/`OFFSET`/`COUNT`, em todos os três métodos. Ver testes
 `SD1`–`SD7` na seção Testes.
+
+**Correção E3.1.2 (hardening de ordenação determinística)**: nem
+`BaseRepository` nem a versão original de `ObjectRepository` ordenavam
+`list()`/`paginate()` — confirmado por inspeção, `SELECT` sem
+`ORDER BY` com `LIMIT`/`OFFSET` é comportamento não-determinístico por
+definição em SQL (a ordem de retorno sem `ORDER BY` não é garantida
+pelo padrão, mesmo que pareça estável na prática em um motor
+específico). Corrigido: `list()`/`paginate()` ordenam por
+`created_at ASC, id ASC` — `created_at` como critério primário, `id`
+(UUID) como desempate determinístico para timestamps coincidentes.
+Ver testes `D1`–`D6` na seção Testes.
 
 Não controla commit — quem decide é o chamador via `UnitOfWork`.
 
@@ -194,8 +206,10 @@ nascer neste módulo").
   **Executado e passou contra um PostgreSQL 16 real neste
   desenvolvimento.**
 
-Total: 57 testes novos em `app.cognitive` (100% de cobertura de linha
-nesse pacote — 8 testes adicionados na correção E3.1.1: SD4-SD7, CL4-CL7)
+Total: 66 testes novos em `app.cognitive` (100% de cobertura de linha
+nesse pacote — 8 testes adicionados na correção E3.1.1: SD4-SD7,
+CL4-CL7; 9 testes adicionados na correção E3.1.2: D1-D6 e 2 testes de
+validação de `page`/`page_size`)
 + 1 teste de integração.
 
 ## Rastreabilidade de baseline (correção E3.1.1, débito C3)

@@ -1,11 +1,13 @@
 """
 Testes de `ObjectRepository` — §30, §31, §32 (C4, C6), §33 do módulo
-E3.1.
+E3.1; §5 do módulo E3.1.2 (D1-D6, ordenação determinística).
 """
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import text
 
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.cognitive.repositories.object_repository import ObjectRepository
@@ -67,6 +69,21 @@ def test_paginate_returns_page_with_total(repo, cognitive_session):
     assert len(page.items) == 2
     assert page.total == 3
     assert page.has_next is True
+
+
+def test_paginate_rejects_page_below_one(repo):
+    """Validação preservada explicitamente (correção E3.1.2): desde que
+    `paginate()` parou de delegar a `BaseRepository.paginate()` para
+    poder ordenar deterministicamente, a validação de `page`/`page_size`
+    passou a ser responsabilidade própria de `ObjectRepository` — não
+    deve ser perdida silenciosamente."""
+    with pytest.raises(ValueError, match="page deve ser >= 1"):
+        repo.paginate(page=0)
+
+
+def test_paginate_rejects_page_size_below_one(repo):
+    with pytest.raises(ValueError, match="page_size deve ser >= 1"):
+        repo.paginate(page_size=0)
 
 
 # --- UPDATE ---
@@ -300,3 +317,109 @@ def test_no_ranking_or_winner_selection_method_exists_on_repository():
     }
     repo_methods = {name for name in dir(ObjectRepository) if not name.startswith("_")}
     assert repo_methods.isdisjoint(forbidden_method_names)
+
+
+# --- ORDENAÇÃO DETERMINÍSTICA (correção E3.1.2) ---
+
+
+def test_d1_multiple_objects_always_return_in_the_same_order(repo, cognitive_session):
+    for _ in range(10):
+        repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    first_call = [o.id for o in repo.list()]
+    second_call = [o.id for o in repo.list()]
+    assert first_call == second_call
+
+
+def test_d2_objects_with_same_created_at_are_tie_broken_by_id(repo, cognitive_session):
+    """Quando `created_at` coincide (ex.: dois objetos gravados na
+    mesma transação/mesmo instante), `id` desempata deterministicamente."""
+    a = repo.add(CognitiveObject())
+    b = repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    same_timestamp = datetime(2026, 1, 1, tzinfo=UTC)
+    cognitive_session.execute(
+        text("UPDATE cognitive_objects SET created_at = :ts"), {"ts": same_timestamp}
+    )
+    cognitive_session.commit()
+
+    ids = [o.id for o in repo.list()]
+    assert ids == sorted([a.id, b.id])
+
+
+def test_d3_pagination_across_pages_does_not_duplicate_objects(repo, cognitive_session):
+    for _ in range(9):
+        repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    page1 = repo.paginate(page=1, page_size=4)
+    page2 = repo.paginate(page=2, page_size=4)
+    page3 = repo.paginate(page=3, page_size=4)
+
+    all_ids = (
+        [o.id for o in page1.items] + [o.id for o in page2.items] + [o.id for o in page3.items]
+    )
+    assert len(all_ids) == len(set(all_ids))
+
+
+def test_d4_pagination_across_pages_does_not_lose_objects(repo, cognitive_session):
+    created = [repo.add(CognitiveObject()) for _ in range(9)]
+    cognitive_session.commit()
+
+    page1 = repo.paginate(page=1, page_size=4)
+    page2 = repo.paginate(page=2, page_size=4)
+    page3 = repo.paginate(page=3, page_size=4)
+
+    all_ids = (
+        {o.id for o in page1.items} | {o.id for o in page2.items} | {o.id for o in page3.items}
+    )
+    assert all_ids == {o.id for o in created}
+
+
+def test_d3_d4_pagination_sequence_matches_list_sequence_exactly(repo, cognitive_session):
+    """Junta D3+D4 numa comparação de sequência real (não `set`): a
+    concatenação das páginas deve ser EXATAMENTE igual à sequência de
+    `list()` — não apenas o mesmo conjunto (§6 do prompt: não mascarar
+    ordem com `set`/`sorted`)."""
+    for _ in range(9):
+        repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    full_sequence = [o.id for o in repo.list()]
+
+    paged_sequence: list = []
+    for page_number in (1, 2, 3):
+        page = repo.paginate(page=page_number, page_size=4)
+        paged_sequence.extend(o.id for o in page.items)
+
+    assert paged_sequence == full_sequence
+
+
+def test_d5_soft_deleted_objects_do_not_break_order_stability(repo, cognitive_session):
+    objs = [repo.add(CognitiveObject()) for _ in range(10)]
+    cognitive_session.commit()
+
+    full_sequence_before = [o.id for o in repo.list()]
+
+    for o in objs[::3]:  # soft-delete intercalado
+        repo.soft_delete(o)
+    cognitive_session.commit()
+
+    deleted_ids = {o.id for o in objs[::3]}
+    expected_sequence = [i for i in full_sequence_before if i not in deleted_ids]
+
+    assert [o.id for o in repo.list()] == expected_sequence
+
+
+def test_d6_two_consecutive_executions_return_the_same_id_sequence(repo, cognitive_session):
+    for _ in range(7):
+        repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    run_1 = [o.id for o in repo.list()]
+    run_2 = [o.id for o in repo.list()]
+    run_3 = [o.id for o in repo.paginate(page=1, page_size=100).items]
+
+    assert run_1 == run_2 == run_3

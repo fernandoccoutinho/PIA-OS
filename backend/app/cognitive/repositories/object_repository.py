@@ -5,18 +5,22 @@ Reutiliza `BaseRepository`/`Page`/`RepositoryProtocol` da baseline sem
 reimplementar CRUD genérico (§11 do módulo E3.1). O comportamento
 adicionado é o que `BaseRepository` genuinamente não pode saber:
 exclusão lógica (soft delete) específica de `CognitiveObject` — a base
-genérica não tem conhecimento de `SoftDeleteMixin`.
+genérica não tem conhecimento de `SoftDeleteMixin` — e, a partir da
+correção E3.1.2, ordenação determinística (`BaseRepository` não tem
+nenhuma convenção de `ORDER BY`, confirmado por inspeção: nem
+`list()` nem `paginate()` ordenam).
 
 Correção E3.1.1 (débito C1): o filtro de soft delete é aplicado **no
-SQL**, antes de LIMIT/OFFSET/COUNT — não mais em memória após a
-consulta. `paginate()` reutiliza o mecanismo público `**filters` de
-`BaseRepository` (`deleted_at=None` já é traduzido para `IS NULL` pelo
-SQLAlchemy via `_equality_clauses`, mecanismo já existente, nenhuma
-mudança na baseline). `get_by_id()`/`list()` não têm mecanismo público
-equivalente em `BaseRepository.list()` (que não aceita `**filters`) —
-constroem um `select()` próprio usando `self._session` (já herdado),
-mesma composição que `BaseRepository.list()` já faz, com o predicado
-adicional que só faz sentido para esta entidade.
+SQL**, antes de LIMIT/OFFSET/COUNT — não em memória após a consulta.
+
+Correção E3.1.2: `list()`/`paginate()` agora ordenam por
+`created_at ASC, id ASC` — `created_at` como critério primário,
+`id` (UUID) como desempate determinístico quando dois objetos têm o
+mesmo timestamp (ex.: criados na mesma transação/mesmo instante).
+`paginate()` deixa de delegar a `super().paginate()` (que não expõe
+nenhum hook de ordenação) e passa a construir sua própria consulta,
+reutilizando `self._equality_clauses()` e `self.count()` — herdados,
+não duplicados — para o filtro e a contagem total.
 
 Não controla commit — quem decide quando commitar é o chamador (via
 `UnitOfWork`), exatamente como `BaseRepository` (§12 do módulo E3.1).
@@ -43,6 +47,11 @@ class ObjectRepository(BaseRepository[CognitiveObject]):
     `include_deleted=True` explicitamente quando precisar enxergá-los
     (ex.: auditoria futura) — nenhum mecanismo administrativo além
     deste flag é criado nesta correção.
+
+    `list()`/`paginate()` são deterministicamente ordenados por
+    `created_at ASC, id ASC` (correção E3.1.2) — a mesma consulta
+    executada duas vezes retorna sempre a mesma sequência de IDs, e
+    paginação consecutiva nunca duplica nem perde itens.
     """
 
     def __init__(self, session: Session) -> None:
@@ -63,7 +72,9 @@ class ObjectRepository(BaseRepository[CognitiveObject]):
         offset: int | None = None,
         include_deleted: bool = False,
     ) -> list[CognitiveObject]:
-        stmt = select(CognitiveObject)
+        stmt = select(CognitiveObject).order_by(
+            CognitiveObject.created_at.asc(), CognitiveObject.id.asc()
+        )
         if not include_deleted:
             stmt = stmt.where(CognitiveObject.deleted_at.is_(None))
         if offset is not None:
@@ -80,23 +91,44 @@ class ObjectRepository(BaseRepository[CognitiveObject]):
         include_deleted: bool = False,
         **filters: object,
     ) -> Page[CognitiveObject]:
-        """Paginação com o filtro de soft delete aplicado no SQL.
+        """Paginação com filtro de soft delete e ordenação determinística
+        aplicados no SQL.
 
-        `deleted_at=None` é passado como mais um filtro de igualdade
-        para `BaseRepository.paginate()` — o mesmo mecanismo público
-        que qualquer chamador já usaria (`repo.paginate(status="x")`),
-        sem necessidade de tocar `BaseRepository`. `Page.total` reflete
-        corretamente a contagem de itens ativos (correção E3.1.1: antes
-        contava soft-deleted também).
+        Não delega mais a `BaseRepository.paginate()` (correção
+        E3.1.2): a base não expõe nenhum hook público de `ORDER BY`,
+        então a única forma de garantir ordenação canônica sem alterar
+        `BaseRepository` é construir a consulta aqui — reutilizando
+        `self._equality_clauses()` (helper herdado, já usado por
+        `BaseRepository.paginate()` internamente) e `self.count()`
+        (método público herdado) em vez de duplicar essa lógica.
 
         `filters` não deve incluir `deleted_at` — esse campo é
         gerenciado internamente por `include_deleted`, não exposto
         para filtragem arbitrária do chamador (evita ambiguidade entre
         os dois mecanismos).
         """
-        if include_deleted:
-            return super().paginate(page=page, page_size=page_size, **filters)
-        return super().paginate(page=page, page_size=page_size, deleted_at=None, **filters)
+        if page < 1:
+            raise ValueError("page deve ser >= 1")
+        if page_size < 1:
+            raise ValueError("page_size deve ser >= 1")
+
+        effective_filters: dict[str, object] = dict(filters)
+        if not include_deleted:
+            effective_filters["deleted_at"] = None
+
+        stmt = select(CognitiveObject).order_by(
+            CognitiveObject.created_at.asc(), CognitiveObject.id.asc()
+        )
+        if effective_filters:
+            stmt = stmt.where(*self._equality_clauses(effective_filters))
+
+        total = self.count(**effective_filters)
+        items = list(
+            self._session.execute(stmt.offset((page - 1) * page_size).limit(page_size))
+            .scalars()
+            .all()
+        )
+        return Page(items=items, total=total, page=page, page_size=page_size)
 
     def soft_delete(self, entity: CognitiveObject) -> CognitiveObject:
         """Exclusão lógica — marca `deleted_at`, nunca remove a linha.
