@@ -146,6 +146,21 @@ PIA_8011_REVISION_STATUS_INVALID_TRANSITION = ErrorCode(
 nunca volta a `None`. Usado tanto pelo guard do modelo quanto por
 `VersionManager.revise()` quando `source` já está `SUPERSEDED`."""
 
+PIA_8012_REVISION_CURRENT_UNIQUENESS_VIOLATION = ErrorCode(
+    code="PIA-8012",
+    default_message="revision_current_uniqueness_violation",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de tornar `CURRENT` um `CognitiveObject` quando outro
+objeto com o **mesmo CLID** já é `CURRENT` (correção E3.4.1) — viola
+o invariante `COUNT(CURRENT) <= 1` por CLID. Levantado tanto pela
+pré-checagem em `VersionManager.revise()` (defesa em profundidade,
+sujeita a TOCTOU) quanto pela tradução de violação do índice único
+parcial `uq_cognitive_objects_one_current_per_clid` (autoridade
+final, cobre concorrência real)."""
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -158,6 +173,7 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8009_LINEAGE_EDGE_IMMUTABLE,
     PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE,
     PIA_8011_REVISION_STATUS_INVALID_TRANSITION,
+    PIA_8012_REVISION_CURRENT_UNIQUENESS_VIOLATION,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {

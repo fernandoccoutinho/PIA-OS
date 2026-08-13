@@ -26,6 +26,7 @@ Não controla commit — quem decide quando commitar é o chamador (via
 `UnitOfWork`), exatamente como `BaseRepository` (§12 do módulo E3.1).
 """
 
+import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -33,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.cognitive.errors.exceptions import CoidCollisionError
 from app.cognitive.models.cognitive_object import CognitiveObject
+from app.cognitive.models.enums import RevisionStatus
 from app.repositories.base_repository import BaseRepository, Page
 from app.repositories.exceptions import PersistenceError
 
@@ -155,6 +157,25 @@ class ObjectRepository(BaseRepository[CognitiveObject]):
         """
         self._session.refresh(entity, with_for_update=True)
         return entity
+
+    def get_current_by_clid(self, clid: uuid.UUID) -> CognitiveObject | None:
+        """Retorna o `CognitiveObject` com `revision_status = CURRENT`
+        para este CLID, se existir (correção E3.4.1).
+
+        Usado por `VersionManager.revise()` como **pré-checagem**
+        (defesa em profundidade contra `source` incorreto passado pelo
+        chamador) — não é a autoridade final: sozinha, esta consulta
+        está sujeita a TOCTOU sob concorrência real. A garantia final
+        vem do índice único parcial `uq_cognitive_objects_one_current_per_clid`
+        (`CognitiveObject.__table_args__`), que rejeita no banco
+        qualquer tentativa de um segundo `CURRENT` para o mesmo CLID,
+        mesmo sob duas transações concorrentes.
+        """
+        stmt = select(CognitiveObject).where(
+            CognitiveObject.clid == clid,
+            CognitiveObject.revision_status == RevisionStatus.CURRENT,
+        )
+        return self._session.execute(stmt).scalar_one_or_none()
 
     def list(
         self,

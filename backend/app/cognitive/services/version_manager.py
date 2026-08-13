@@ -44,7 +44,10 @@ implementa provenance, não conhece provider/IA (§5, §12, §13 do
 módulo E3.4).
 """
 
-from app.cognitive.errors.exceptions import RevisionStatusInvalidTransitionError
+from app.cognitive.errors.exceptions import (
+    RevisionCurrentUniquenessViolationError,
+    RevisionStatusInvalidTransitionError,
+)
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.cognitive.models.enums import LineageRelation, RevisionStatus, TransformationKind
 from app.cognitive.models.lineage_edge import LineageEdge
@@ -52,9 +55,39 @@ from app.cognitive.models.transformation_record import TransformationRecord
 from app.cognitive.repositories.object_repository import ObjectRepository
 from app.cognitive.repositories.transformation_repository import TransformationRepository
 from app.cognitive.services.clid_manager import ClidManager
+from app.repositories.exceptions import PersistenceError
 from app.utils.logger import get_logger
 
 logger = get_logger("app.cognitive.services.version_manager")
+
+_POSTGRES_UNIQUE_VIOLATION_SQLSTATE = "23505"
+_SQLITE_UNIQUE_ERROR_NAME = "SQLITE_CONSTRAINT_UNIQUE"
+
+
+def _is_current_uniqueness_violation(exc: PersistenceError) -> bool:
+    """Verifica, via sinal estruturado do driver — nunca parsing de
+    mensagem —, se a causa original de um `PersistenceError` é uma
+    violação do índice único parcial
+    `uq_cognitive_objects_one_current_per_clid` (correção E3.4.1).
+
+    Seguro classificar QUALQUER violação de unicidade neste ponto
+    específico (dentro de `revise()`, no `update()` que seta
+    `target.revision_status = CURRENT`) como sendo desta constraint —
+    diferente da situação corrigida em E3.2.1 (`ObjectRepository.add()`,
+    que trata criações genéricas de qualquer chamador): aqui, `target`
+    acabou de ser criado nesta mesma chamada, com COID novo — nenhuma
+    violação de PK é fisicamente possível neste `UPDATE`, e nenhuma
+    outra unique constraint em `cognitive_objects` existe hoje. Mesmos
+    sinais estruturados já validados em E3.2.1/E3.3.1: PostgreSQL
+    (`orig.sqlstate == "23505"`), SQLite (`orig.sqlite_errorname ==
+    "SQLITE_CONSTRAINT_UNIQUE"`).
+    """
+    orig = getattr(exc.__cause__, "orig", None)
+    if orig is None:
+        return False
+    if getattr(orig, "sqlstate", None) == _POSTGRES_UNIQUE_VIOLATION_SQLSTATE:
+        return True
+    return getattr(orig, "sqlite_errorname", None) == _SQLITE_UNIQUE_ERROR_NAME
 
 
 class VersionManager:
@@ -195,6 +228,31 @@ class VersionManager:
         para a mesma continuidade, violando o invariante "no máximo um
         `CURRENT`").
 
+        **Correção E3.4.1**: a checagem acima, sozinha, provava apenas
+        que duas revisões concorrentes do MESMO objeto `source` não
+        produzem dois `CURRENT` — não provava o invariante mais amplo
+        `COUNT(CURRENT) <= 1` **por CLID**, porque confiava que o
+        chamador sempre passa o `CURRENT` correto daquele CLID. Se o
+        chamador passar um objeto **diferente** que compartilha o
+        mesmo CLID (ex.: um branch de `DERIVATION` com
+        `revision_status is None`), nada impedia que `revise()`
+        produzisse um segundo `CURRENT` para aquele CLID. Fechado em
+        duas camadas:
+
+        - **Pré-checagem** (`ObjectRepository.get_current_by_clid`):
+          se já existe um `CURRENT` diferente de `source` para
+          `source.clid`, rejeita imediatamente
+          (`RevisionCurrentUniquenessViolationError`, `PIA-8012`).
+          Sujeita a TOCTOU sozinha — só evita o caso comum sem round
+          trip adicional ao banco sob falha.
+        - **Autoridade final**: índice único parcial
+          `uq_cognitive_objects_one_current_per_clid`
+          (`CognitiveObject.__table_args__`) — rejeita no banco
+          qualquer tentativa de um segundo `CURRENT` para o mesmo
+          CLID, mesmo sob duas transações concorrentes que passem por
+          `source`s diferentes. A violação é traduzida para o mesmo
+          erro de domínio (`PIA-8012`) no passo 5 abaixo.
+
         `source` **não é apagado** — `SUPERSEDED != DELETED` (§17 do
         prompt corretivo): continua identificável, auditável,
         recuperável por COID, ligado por lineage e por
@@ -213,11 +271,15 @@ class VersionManager:
            `E3_4_LIB04_VERSION_TRANSFORMATION.md`, seção Concurrency,
            para o cenário testado contra PostgreSQL real).
         3. Se `source.revision_status == SUPERSEDED` pós-lock: rejeita.
-        4. `ClidManager.inherit(source, target, relation_type=...)` —
+        4. Pré-checagem de unicidade por CLID (ver acima).
+        5. `ClidManager.inherit(source, target, relation_type=...)` —
            CLID + `LineageEdge`, reaproveitado integralmente.
-        5. `target.revision_status = CURRENT`;
+        6. `target.revision_status = CURRENT` — se o índice único
+           parcial rejeitar (concorrência real, não capturada pela
+           pré-checagem), traduz para
+           `RevisionCurrentUniquenessViolationError`.
            `source.revision_status = SUPERSEDED`.
-        6. `TransformationRecord` é criado
+        7. `TransformationRecord` é criado
            (`transformation_kind=REVISION`).
 
         Levanta `ValueError` se `operation_type` for vazio (mesma
@@ -234,14 +296,35 @@ class VersionManager:
                 attempted=RevisionStatus.SUPERSEDED,
             )
 
+        if source.clid is not None:
+            existing_current = self._objects.get_current_by_clid(source.clid)
+            if existing_current is not None and existing_current.id != source.id:
+                raise RevisionCurrentUniquenessViolationError(
+                    clid=source.clid, existing_current_coid=existing_current.id
+                )
+
         target = self._objects.add(CognitiveObject())
 
         edge = self._clid.inherit(source, target, relation_type=relation_type)
 
-        target.revision_status = RevisionStatus.CURRENT
-        self._objects.update(target)
+        # Ordem crítica (corrigida em E3.4.1): `source` precisa ser
+        # SUPERSEDED **antes** de `target` virar CURRENT — se a ordem
+        # fosse invertida, source e target estariam ambos `CURRENT`
+        # para o mesmo CLID simultaneamente dentro da mesma transação
+        # (mesmo sem nunca chegar a commitar), o que o índice único
+        # parcial rejeitaria imediatamente no `flush()` do UPDATE de
+        # `target` — bug real encontrado e corrigido durante o
+        # desenvolvimento desta correção (validado empiricamente antes
+        # de formalizar em teste, `A4`).
         source.revision_status = RevisionStatus.SUPERSEDED
         self._objects.update(source)
+        target.revision_status = RevisionStatus.CURRENT
+        try:
+            self._objects.update(target)
+        except PersistenceError as exc:
+            if _is_current_uniqueness_violation(exc):
+                raise RevisionCurrentUniquenessViolationError(clid=target.clid) from exc
+            raise
 
         record = TransformationRecord(
             operation_type=operation_type,

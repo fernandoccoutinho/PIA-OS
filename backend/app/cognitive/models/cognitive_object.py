@@ -18,7 +18,7 @@ constroem.
 import uuid
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import event
+from sqlalchemy import Index, event, text
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
@@ -49,6 +49,27 @@ class CognitiveObject(BaseModel, SoftDeleteMixin):
     """
 
     __tablename__ = "cognitive_objects"
+
+    __table_args__ = (
+        Index(
+            "uq_cognitive_objects_one_current_per_clid",
+            "clid",
+            unique=True,
+            postgresql_where=text("revision_status = 'current'"),
+            sqlite_where=text("revision_status = 'current'"),
+        ),
+    )
+    """Correção E3.4.1 — fecha estruturalmente o invariante
+    `COUNT(CURRENT) <= 1` por CLID (índice único parcial, aplicado
+    apenas às linhas com `revision_status = 'current'` — nunca
+    restringe objetos de `DERIVATION`, que permanecem com
+    `revision_status = None` e portanto fora do escopo do índice).
+    Autoridade final contra concorrência real — a pré-checagem em
+    `VersionManager.revise()` é apenas defesa em profundidade,
+    sujeita a TOCTOU sem esta constraint. Suportado tanto por
+    PostgreSQL (`postgresql_where`) quanto por SQLite
+    (`sqlite_where`, disponível desde SQLite 3.8.0), usado nos testes
+    unitários."""
 
     clid: Mapped[uuid.UUID | None] = mapped_column(nullable=True, default=None)
     """Continuidade conceitual/linhagem — `None` até ser atribuído por

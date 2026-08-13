@@ -352,3 +352,115 @@ def test_rc_concurrent_revise_on_same_current_does_not_leave_two_current():
             if leftover_source is not None:
                 objs.delete(leftover_source)
             uow.commit()
+
+
+def test_u4_concurrent_revise_of_different_branches_same_clid_preserves_uniqueness():
+    """U4 (correção E3.4.1) — cenário mais forte que RC1-RC4: `branch_A`
+    e `branch_B` são objetos DIFERENTES (branches de `DERIVATION`,
+    revision_status=None), compartilhando o mesmo CLID, e **nenhum**
+    `CURRENT` foi estabelecido ainda para esse CLID. Duas threads
+    reais, duas sessões/conexões distintas, cada uma chamando
+    `revise()` sobre um branch diferente simultaneamente.
+
+    Diferente de `RC1`-`RC4` (mesmo `source`, protegido por
+    `refresh_for_update`), aqui `branch_A` e `branch_B` são linhas
+    FISICAMENTE DIFERENTES — o lock de linha não cria exclusão mútua
+    entre elas. A pré-checagem (`get_current_by_clid`) pode passar
+    para as duas threads simultaneamente (nenhum `CURRENT` existe
+    ainda quando ambas checam). É o índice único parcial no banco —
+    não o lock — que garante `COUNT(CURRENT) <= 1`: apenas um dos dois
+    `UPDATE`s finais pode ter sucesso; o outro é rejeitado pelo banco
+    e traduzido para `RevisionCurrentUniquenessViolationError`.
+    """
+    from app.database.engine import engine
+
+    SessionFactory = sessionmaker(
+        bind=engine, autocommit=False, autoflush=False, expire_on_commit=False
+    )
+
+    with UnitOfWork() as uow:
+        objs, lin, trans, clid, version = _make_managers(uow.session)
+        original = objs.add(CognitiveObject())
+        uow.commit()
+        original_id = original.id
+
+    with UnitOfWork() as uow:
+        objs, lin, trans, clid, version = _make_managers(uow.session)
+        orig = objs.get_by_id(original_id)
+        branch_a, _, _ = version.derive(orig, operation_type="branch_a")
+        branch_b, _, _ = version.derive(orig, operation_type="branch_b")
+        uow.commit()
+        branch_a_id, branch_b_id = branch_a.id, branch_b.id
+
+    results: dict[str, tuple[str, object]] = {}
+    barrier = threading.Barrier(2)
+
+    def worker(name: str, branch_id) -> None:
+        session = SessionFactory()
+        try:
+            objs_l = ObjectRepository(session)
+            lin_l = LineageRepository(session)
+            trans_l = TransformationRepository(session)
+            clid_l = ClidManager(objs_l, lin_l)
+            version_l = VersionManager(objs_l, clid_l, trans_l)
+
+            branch = objs_l.get_by_id(branch_id)
+            barrier.wait()
+            target, _, _ = version_l.revise(branch, operation_type="revise")
+            session.commit()
+            results[name] = ("committed", target.id)
+        except Exception as exc:
+            session.rollback()
+            results[name] = ("failed", type(exc).__name__)
+        finally:
+            session.close()
+
+    target_ids: list[uuid.UUID] = []
+    try:
+        t1 = threading.Thread(target=worker, args=("T1", branch_a_id))
+        t2 = threading.Thread(target=worker, args=("T2", branch_b_id))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        outcomes = [results.get("T1"), results.get("T2")]
+        committed = [o for o in outcomes if o is not None and o[0] == "committed"]
+
+        # U4/P3: nunca dois CURRENT no mesmo escopo (CLID), mesmo com
+        # branches diferentes e nenhum lock de linha compartilhado
+        assert len(committed) == 1, f"esperado exatamente 1 commit, obtido: {outcomes}"
+
+        rejected = [o for o in outcomes if o is not None and o[0] == "failed"]
+        assert len(rejected) == 1
+        assert rejected[0][1] == "RevisionCurrentUniquenessViolationError"
+
+        target_ids = [committed[0][1]]
+
+        with UnitOfWork() as uow:
+            objs, lin, trans, clid, version = _make_managers(uow.session)
+            all_related = [
+                objs.get_by_id(original_id),
+                objs.get_by_id(branch_a_id),
+                objs.get_by_id(branch_b_id),
+                objs.get_by_id(target_ids[0]),
+            ]
+            currents = [o for o in all_related if o is not None and o.revision_status == "current"]
+            assert len(currents) == 1
+            assert currents[0].id == target_ids[0]
+    finally:
+        with UnitOfWork() as uow:
+            objs, lin, trans, clid, version = _make_managers(uow.session)
+            uow.session.execute(
+                sa.text("DELETE FROM transformation_records WHERE input_refs::text LIKE :p"),
+                {"p": f"%{original_id}%"},
+            )
+            uow.session.execute(
+                sa.text("DELETE FROM lineage_edges WHERE parent_coid IN (:o, :a, :b)"),
+                {"o": str(original_id), "a": str(branch_a_id), "b": str(branch_b_id)},
+            )
+            for coid in [original_id, branch_a_id, branch_b_id, *target_ids]:
+                leftover = objs.get_by_id(coid, include_deleted=True)
+                if leftover is not None:
+                    objs.delete(leftover)
+            uow.commit()

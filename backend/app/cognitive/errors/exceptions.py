@@ -19,6 +19,7 @@ from app.cognitive.errors.codes import (
     PIA_8009_LINEAGE_EDGE_IMMUTABLE,
     PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE,
     PIA_8011_REVISION_STATUS_INVALID_TRANSITION,
+    PIA_8012_REVISION_CURRENT_UNIQUENESS_VIOLATION,
 )
 from app.exceptions.base import PIAOSException
 
@@ -214,4 +215,33 @@ class RevisionStatusInvalidTransitionError(PIAOSException):
                 f"'{current}' -> '{attempted}' não é permitida."
             ),
             detail={"coid": str(coid), "current": str(current), "attempted": str(attempted)},
+        )
+
+
+class RevisionCurrentUniquenessViolationError(PIAOSException):
+    """Tentativa de tornar `CURRENT` um `CognitiveObject` quando outro
+    objeto com o mesmo CLID já é `CURRENT` (correção E3.4.1) — viola
+    `COUNT(CURRENT) <= 1` por CLID."""
+
+    error_code = PIA_8012_REVISION_CURRENT_UNIQUENESS_VIOLATION
+
+    def __init__(
+        self, clid: uuid.UUID | None, existing_current_coid: uuid.UUID | None = None
+    ) -> None:
+        self.clid = clid
+        self.existing_current_coid = existing_current_coid
+        detail_suffix = (
+            f" (já ocupado por {existing_current_coid})" if existing_current_coid else ""
+        )
+        super().__init__(
+            message=(
+                f"CLID {clid} já possui um CognitiveObject CURRENT{detail_suffix} — "
+                "no máximo um CURRENT por CLID."
+            ),
+            detail={
+                "clid": str(clid),
+                "existing_current_coid": (
+                    str(existing_current_coid) if existing_current_coid else None
+                ),
+            },
         )
