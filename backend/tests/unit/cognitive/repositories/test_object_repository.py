@@ -1,0 +1,218 @@
+"""
+Testes de `ObjectRepository` — §30, §31, §32 (C4, C6), §33 do módulo
+E3.1.
+"""
+
+import uuid
+
+import pytest
+
+from app.cognitive.models.cognitive_object import CognitiveObject
+from app.cognitive.repositories.object_repository import ObjectRepository
+from app.repositories.exceptions import EntityNotFoundError
+from app.repositories.unit_of_work import UnitOfWork
+
+
+@pytest.fixture
+def repo(cognitive_session):
+    return ObjectRepository(cognitive_session)
+
+
+# --- CREATE / GET BY ID ---
+
+
+def test_create_and_get_by_id(repo, cognitive_session):
+    created = repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    fetched = repo.get_by_id(created.id)
+    assert fetched is not None
+    assert fetched.id == created.id
+
+
+def test_get_by_id_not_found_returns_none(repo):
+    assert repo.get_by_id(uuid.uuid4()) is None
+
+
+def test_get_by_id_or_raise_raises_entity_not_found(repo):
+    with pytest.raises(EntityNotFoundError):
+        repo.get_by_id_or_raise(uuid.uuid4())
+
+
+# --- LIST / PAGINATION ---
+
+
+def test_list_returns_created_objects(repo, cognitive_session):
+    repo.add(CognitiveObject())
+    repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    assert len(repo.list()) == 2
+
+
+def test_list_respects_limit_and_offset(repo, cognitive_session):
+    for _ in range(5):
+        repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    assert len(repo.list(limit=2, offset=1)) == 2
+
+
+def test_paginate_returns_page_with_total(repo, cognitive_session):
+    for _ in range(3):
+        repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    page = repo.paginate(page=1, page_size=2)
+    assert len(page.items) == 2
+    assert page.total == 3
+    assert page.has_next is True
+
+
+# --- UPDATE ---
+
+
+def test_update_persists_clid_change(repo, cognitive_session):
+    entity = repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    new_clid = uuid.uuid4()
+    entity.clid = new_clid
+    repo.update(entity)
+    cognitive_session.commit()
+
+    fetched = repo.get_by_id(entity.id)
+    assert fetched.clid == new_clid
+
+
+# --- SOFT DELETE ---
+
+
+def test_soft_delete_marks_deleted_at_without_removing_row(repo, cognitive_session):
+    entity = repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    repo.soft_delete(entity)
+    cognitive_session.commit()
+
+    assert entity.deleted_at is not None
+    assert entity.is_deleted is True
+
+
+def test_soft_deleted_object_excluded_from_get_by_id_by_default(repo, cognitive_session):
+    entity = repo.add(CognitiveObject())
+    cognitive_session.commit()
+    repo.soft_delete(entity)
+    cognitive_session.commit()
+
+    assert repo.get_by_id(entity.id) is None
+    assert repo.get_by_id(entity.id, include_deleted=True) is not None
+
+
+def test_soft_deleted_object_excluded_from_list_by_default(repo, cognitive_session):
+    kept = repo.add(CognitiveObject())
+    deleted = repo.add(CognitiveObject())
+    cognitive_session.commit()
+    repo.soft_delete(deleted)
+    cognitive_session.commit()
+
+    active_ids = {o.id for o in repo.list()}
+    assert kept.id in active_ids
+    assert deleted.id not in active_ids
+    assert len(repo.list(include_deleted=True)) == 2
+
+
+def test_soft_deleted_object_excluded_from_paginate_by_default(repo, cognitive_session):
+    repo.add(CognitiveObject())
+    deleted = repo.add(CognitiveObject())
+    cognitive_session.commit()
+    repo.soft_delete(deleted)
+    cognitive_session.commit()
+
+    page = repo.paginate(page=1, page_size=10)
+    assert len(page.items) == 1
+
+    page_all = repo.paginate(page=1, page_size=10, include_deleted=True)
+    assert len(page_all.items) == 2
+
+
+def test_hard_delete_still_available_when_genuinely_needed(repo, cognitive_session):
+    """`delete()` (herdado de BaseRepository) continua disponível — não
+    removido, apenas não é o caminho recomendado para CognitiveObject
+    (§14)."""
+    entity = repo.add(CognitiveObject())
+    cognitive_session.commit()
+    entity_id = entity.id
+
+    repo.delete(entity)
+    cognitive_session.commit()
+
+    assert repo.get_by_id(entity_id, include_deleted=True) is None
+
+
+# --- TRANSAÇÕES / ROLLBACK — repositório não commita indevidamente ---
+
+
+def test_repository_does_not_commit_implicitly(cognitive_session):
+    repo_local = ObjectRepository(cognitive_session)
+    repo_local.add(CognitiveObject())
+    cognitive_session.rollback()  # nunca commitado
+
+    assert cognitive_session.query(CognitiveObject).count() == 0
+
+
+def test_transaction_failure_rolls_back_via_unit_of_work(cognitive_sqlite_session_factory):
+    with pytest.raises(ValueError), UnitOfWork(cognitive_sqlite_session_factory) as uow:
+        repo_uow = ObjectRepository(uow.session)
+        repo_uow.add(CognitiveObject())
+        raise ValueError("falha simulada dentro da transação")
+
+    with UnitOfWork(cognitive_sqlite_session_factory) as uow:
+        repo_uow = ObjectRepository(uow.session)
+        assert len(repo_uow.list()) == 0
+
+
+def test_multiple_creates_share_one_transaction_via_unit_of_work(
+    cognitive_sqlite_session_factory,
+):
+    with UnitOfWork(cognitive_sqlite_session_factory) as uow:
+        repo_uow = ObjectRepository(uow.session)
+        repo_uow.add(CognitiveObject())
+        repo_uow.add(CognitiveObject())
+        uow.commit()
+
+    with UnitOfWork(cognitive_sqlite_session_factory) as uow:
+        repo_uow = ObjectRepository(uow.session)
+        assert len(repo_uow.list()) == 2
+
+
+# --- TEST C6: repositório preserva dois objetos independentes com
+#     payload idêntico (aqui, ausência de payload) ---
+
+
+def test_repository_preserves_two_independently_created_identical_objects(repo, cognitive_session):
+    a = repo.add(CognitiveObject())
+    b = repo.add(CognitiveObject())
+    cognitive_session.commit()
+
+    assert a.id != b.id
+    assert repo.get_by_id(a.id) is not None
+    assert repo.get_by_id(b.id) is not None
+    assert len(repo.list()) == 2
+
+
+# --- TEST C4: nenhum comportamento automático de vencedor/ranking ---
+
+
+def test_no_ranking_or_winner_selection_method_exists_on_repository():
+    """`ObjectRepository` não expõe nenhum método de ranking/seleção
+    automática de "melhor" objeto (§21, TEST C4)."""
+    forbidden_method_names = {
+        "best_object",
+        "rank",
+        "select_winner",
+        "cout_score",
+        "get_best",
+    }
+    repo_methods = {name for name in dir(ObjectRepository) if not name.startswith("_")}
+    assert repo_methods.isdisjoint(forbidden_method_names)
