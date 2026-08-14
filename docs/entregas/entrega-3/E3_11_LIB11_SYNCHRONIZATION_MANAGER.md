@@ -313,8 +313,49 @@ SOURCE CONTRACT COULD NOT HAVE PRODUCED
 TRANSMISSION != STRUCTURAL MUTATION
 ```
 
-Antes de qualquer escrita, o import monta o **grafo candidato**
-`destino ∪ pacote` e verifica aciclicidade. Global de propósito:
+### Precedência: conflito antes do preflight (E3.11.1a)
+
+```text
+IDENTITY_CONFLICT != CAUSAL_STRUCTURAL_INVALIDITY
+DIVERGENCE        != INVALIDITY
+```
+
+Ordem do import:
+
+```text
+1. validar envelope
+2. classificar ids existentes
+3. havendo conflito → relatório de conflito, zero escritas
+4. derivar SOMENTE os registros novos
+5. preflight causal sobre destino + novos elegíveis
+6. escrever atomicamente
+```
+
+A classificação precede o preflight, e isso não é detalhe de ordem: na
+primeira versão, uma representação divergente de um id já existente
+entrava no grafo hipotético e podia fechar um ciclo que **nunca seria
+aplicado** — o import devolvia `SYNC_PACKAGE_INVALID` quando o fato
+real era outro, duas histórias divergindo. Divergir não é estar
+corrompido:
+
+```text
+TWO HISTORIES MAY CONFLICT WITHOUT EITHER BEING DECLARED CAUSALLY INVALID
+detectar que duas representações divergem != declarar uma delas inválida
+```
+
+Formulação canônica do grafo:
+
+```text
+CANDIDATE_GRAPH = DESTINATION_ACCEPTED_STATE
+                + PACKAGE_RECORDS_ELIGIBLE_FOR_INSERT
+```
+
+Nunca o estado aceito do destino sobrescrito em memória pela versão
+conflitante do pacote. Registros idempotentes já são arestas do
+destino; registros conflitantes nem chegam ao preflight.
+
+Antes de qualquer escrita, o import monta o **grafo candidato** e
+verifica aciclicidade. Global de propósito:
 `CROSS_HISTORY_PREDECESSOR = ALLOWED` e
 `HISTORY_BOUNDARY != CAUSAL_BOUNDARY`, então auditar por história
 isolada perderia exatamente os elos que o contrato autoriza.

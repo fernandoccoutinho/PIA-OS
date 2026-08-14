@@ -490,3 +490,28 @@ A verificação é global — `HISTORY_BOUNDARY != CAUSAL_BOUNDARY` — e a
 rejeição não depende do banco. Pacote cíclico é pacote inválido:
 nenhum registro é aplicado, o destino permanece inalterado, e nada é
 resolvido silenciosamente.
+
+### Conflito não é corrupção (E3.11.1a)
+
+```text
+IDENTITY_CONFLICT != CAUSAL_STRUCTURAL_INVALIDITY
+DIVERGENCE        != INVALIDITY
+TWO HISTORIES MAY CONFLICT WITHOUT EITHER BEING DECLARED CAUSALLY INVALID
+SYNCHRONIZATION MUST PRESERVE THE DISTINCTION BETWEEN CONFLICT AND
+STRUCTURAL CORRUPTION
+```
+
+`IDENTITY_CONFLICT` é mesmo identificador com representação
+divergente. `CAUSAL_STRUCTURAL_INVALIDITY` é o conjunto realmente
+candidato a inserção formando ciclo com o estado do destino. São
+diagnósticos diferentes e não podem se mascarar: uma representação
+que não seria aplicada nunca forma aresta no grafo candidato.
+
+```text
+CANDIDATE_GRAPH = DESTINATION_ACCEPTED_STATE
+                + PACKAGE_RECORDS_ELIGIBLE_FOR_INSERT
+```
+
+Detectar que duas representações divergem não é declarar uma delas
+inválida — e continua sem vencedor automático: qualquer conflito
+aborta o import, com zero escritas.

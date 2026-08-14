@@ -113,11 +113,35 @@ class SynchronizationManager:
         nem destino, nem origem, nem "mais novo", nem prioridade de
         provider, nem score.
 
+        Ordem do fluxo (precedência corrigida em `E3.11.1a`):
+
+        ```text
+        1. validar envelope
+        2. classificar ids existentes
+        3. havendo conflito → relatório de conflito, zero escritas
+        4. derivar SOMENTE os registros novos
+        5. preflight causal sobre destino + novos elegíveis
+        6. escrever atomicamente
+        ```
+
+        A classificação vem **antes** do preflight de propósito:
+
+        ```text
+        IDENTITY_CONFLICT != CAUSAL_STRUCTURAL_INVALIDITY
+        DIVERGENCE        != INVALIDITY
+        ```
+
+        Uma representação divergente de um id já existente **não seria
+        aplicada**; deixá-la formar aresta num grafo hipotético faria o
+        sistema declarar o pacote estruturalmente inválido quando o
+        fato real é outro — duas histórias divergem. Divergir não é
+        estar corrompido, e detectar que duas representações divergem
+        não é declarar uma delas inválida.
+
         Não commita: quem chama controla a transação (`UnitOfWork`), e é
         isso que torna o rollback completo possível.
         """
         self._validate_envelope(package)
-        self._assert_causal_acyclicity(package)
 
         conflicts: list[SyncConflict] = []
         planned: list[tuple[sa.Table, list[dict[str, Any]]]] = []
@@ -142,6 +166,10 @@ class SynchronizationManager:
                 overwrite_count=0,
             )
 
+        self._assert_causal_acyclicity(
+            next(rows for table, rows in planned if table.name == "causal_history_events")
+        )
+
         applied: dict[str, int] = {}
         for table, rows in planned:
             if table.name == "causal_history_events":
@@ -153,9 +181,9 @@ class SynchronizationManager:
 
     # --- Preflight causal (E3.11.1) -----------------------------------
 
-    def _assert_causal_acyclicity(self, package: dict[str, Any]) -> None:
-        """Rejeita, **antes de qualquer escrita**, um pacote que
-        introduziria ciclo no grafo causal global.
+    def _assert_causal_acyclicity(self, new_events: list[dict[str, Any]]) -> None:
+        """Rejeita, **antes de qualquer escrita**, um conjunto de
+        eventos que introduziria ciclo no grafo causal global.
 
         Por que isto existe: `E3.9.1a` congelou
         `APPLICATION_STRUCTURAL_DAG = TRUE` porque, pelo caminho
@@ -172,7 +200,27 @@ class SynchronizationManager:
         TRANSMISSION != STRUCTURAL MUTATION
         ```
 
-        E **não** se apoia no banco para isso:
+        O grafo candidato é, exatamente (`E3.11.1a`):
+
+        ```text
+        CANDIDATE_GRAPH = DESTINATION_ACCEPTED_STATE
+                        + PACKAGE_RECORDS_ELIGIBLE_FOR_INSERT
+        ```
+
+        `new_events` traz **apenas** os registros cujo id não existe no
+        destino. Registros idempotentes já são arestas do destino;
+        registros conflitantes nunca chegam aqui, porque conflito
+        aborta antes — e uma representação que não seria aplicada não
+        pode formar aresta hipotética. O estado aceito do destino
+        **nunca** é sobrescrito em memória pela versão conflitante do
+        pacote.
+
+        Global de propósito: `CROSS_HISTORY_PREDECESSOR = ALLOWED` e
+        `HISTORY_BOUNDARY != CAUSAL_BOUNDARY`, então auditar por
+        história isolada perderia justamente os elos que o contrato
+        autoriza.
+
+        E **não** se apoia no banco:
 
         ```text
         DB_FK_GUARANTEE               = TRUE
@@ -181,24 +229,13 @@ class SynchronizationManager:
         FK + NO_SELF != GLOBAL_CYCLE_PROTECTION
         ```
 
-        O grafo candidato é `destino ∪ pacote`, montado **globalmente**
-        — nunca por história isolada, porque
-        `CROSS_HISTORY_PREDECESSOR = ALLOWED` e
-        `HISTORY_BOUNDARY != CAUSAL_BOUNDARY`. As arestas do pacote
-        sobrescrevem as homônimas do destino ao montar o candidato: se
-        houver divergência de representação isso também é conflito, e o
-        conflito aborta o import de qualquer modo — mas o candidato
-        precisa refletir o pior caso analisável.
-
-        Reutiliza o detector **puro** de `E3.10` (`find_cycle`,
-        DFS iterativo colorido, `O(V + E)`). Reutilizar a função não
-        acopla Sync ao `IntegrityManager` como serviço de decisão:
-        nenhum `IntegrityReport` é produzido nem consultado aqui.
+        Reutiliza o detector **puro** de `E3.10` (`find_cycle`, DFS
+        iterativo colorido, `O(V + E)`). Reutilizar a função não acopla
+        Sync ao `IntegrityManager` como serviço de decisão: nenhum
+        `IntegrityReport` é produzido nem consultado aqui.
         """
         edges: dict[str, str | None] = dict(self._repository.read_causal_edges())
-        for row in self._section_rows(package, SECTION_BY_TABLE["causal_history_events"]):
-            # `_section_rows` já rejeita registro sem `id`, com
-            # mensagem própria — aqui todo registro tem identificador.
+        for row in new_events:
             predecessor = row.get("predecessor_event_id")
             edges[str(row["id"])] = None if predecessor is None else str(predecessor)
 

@@ -18,7 +18,7 @@ import pytest
 import sqlalchemy as sa
 
 from app.cognitive.errors.exceptions import SyncPackageInvalidError
-from app.cognitive.models.causal_history import CausalHistoryEvent
+from app.cognitive.models.causal_history import CausalHistory, CausalHistoryEvent
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.cognitive.models.enums import AccessibilityState, CausalEventType, RevisionStatus
 from app.cognitive.repositories.sync_repository import (
@@ -347,13 +347,11 @@ def test_cd1_valid_causal_package_passes_preflight(manager):
     first, second, third = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
     manager._assert_causal_acyclicity(
-        _causal_package(
-            [
-                {"id": str(first), "predecessor_event_id": None},
-                {"id": str(second), "predecessor_event_id": str(first)},
-                {"id": str(third), "predecessor_event_id": str(second)},
-            ]
-        )
+        [
+            {"id": str(first), "predecessor_event_id": None},
+            {"id": str(second), "predecessor_event_id": str(first)},
+            {"id": str(third), "predecessor_event_id": str(second)},
+        ]
     )
 
 
@@ -363,14 +361,12 @@ def test_cd1b_branching_and_multiple_paths_pass_preflight(manager):
     origin, branch_a, branch_b, leaf = (uuid.uuid4() for _ in range(4))
 
     manager._assert_causal_acyclicity(
-        _causal_package(
-            [
-                {"id": str(origin), "predecessor_event_id": None},
-                {"id": str(branch_a), "predecessor_event_id": str(origin)},
-                {"id": str(branch_b), "predecessor_event_id": str(origin)},
-                {"id": str(leaf), "predecessor_event_id": str(branch_a)},
-            ]
-        )
+        [
+            {"id": str(origin), "predecessor_event_id": None},
+            {"id": str(branch_a), "predecessor_event_id": str(origin)},
+            {"id": str(branch_b), "predecessor_event_id": str(origin)},
+            {"id": str(leaf), "predecessor_event_id": str(branch_a)},
+        ]
     )
 
 
@@ -381,12 +377,10 @@ def test_cd2_two_event_cycle_in_the_package_is_rejected(manager):
 
     with pytest.raises(SyncPackageInvalidError) as exc:
         manager._assert_causal_acyclicity(
-            _causal_package(
-                [
-                    {"id": str(first), "predecessor_event_id": str(second)},
-                    {"id": str(second), "predecessor_event_id": str(first)},
-                ]
-            )
+            [
+                {"id": str(first), "predecessor_event_id": str(second)},
+                {"id": str(second), "predecessor_event_id": str(first)},
+            ]
         )
 
     assert exc.value.error_code.code == "PIA-8022"
@@ -399,13 +393,11 @@ def test_cd3_three_event_cycle_in_the_package_is_rejected(manager):
 
     with pytest.raises(SyncPackageInvalidError):
         manager._assert_causal_acyclicity(
-            _causal_package(
-                [
-                    {"id": str(first), "predecessor_event_id": str(second)},
-                    {"id": str(second), "predecessor_event_id": str(third)},
-                    {"id": str(third), "predecessor_event_id": str(first)},
-                ]
-            )
+            [
+                {"id": str(first), "predecessor_event_id": str(second)},
+                {"id": str(second), "predecessor_event_id": str(third)},
+                {"id": str(third), "predecessor_event_id": str(first)},
+            ]
         )
 
 
@@ -435,9 +427,7 @@ def test_cd4_cycle_closed_only_by_combining_destination_and_package(monkeypatch,
     # O pacote, sozinho, é acíclico: um único evento com predecessor externo.
     with pytest.raises(SyncPackageInvalidError):
         manager._assert_causal_acyclicity(
-            _causal_package(
-                [{"id": str(package_event), "predecessor_event_id": str(destination_event)}]
-            )
+            [{"id": str(package_event), "predecessor_event_id": str(destination_event)}]
         )
 
 
@@ -449,20 +439,18 @@ def test_cd5_cross_history_predecessor_passes_preflight(manager):
     origin, received = uuid.uuid4(), uuid.uuid4()
 
     manager._assert_causal_acyclicity(
-        _causal_package(
-            [
-                {
-                    "id": str(origin),
-                    "history_id": str(history_a),
-                    "predecessor_event_id": None,
-                },
-                {
-                    "id": str(received),
-                    "history_id": str(history_b),
-                    "predecessor_event_id": str(origin),
-                },
-            ]
-        )
+        [
+            {
+                "id": str(origin),
+                "history_id": str(history_a),
+                "predecessor_event_id": None,
+            },
+            {
+                "id": str(received),
+                "history_id": str(history_b),
+                "predecessor_event_id": str(origin),
+            },
+        ]
     )
 
 
@@ -473,9 +461,7 @@ def test_cd6_predecessor_already_in_destination_passes_preflight(monkeypatch, ma
     child = uuid.uuid4()
     monkeypatch.setattr(manager._repository, "read_causal_edges", lambda: {str(existing): None})
 
-    manager._assert_causal_acyclicity(
-        _causal_package([{"id": str(child), "predecessor_event_id": str(existing)}])
-    )
+    manager._assert_causal_acyclicity([{"id": str(child), "predecessor_event_id": str(existing)}])
 
 
 def test_cd8_malformed_event_id_does_not_break_the_preflight(manager):
@@ -484,9 +470,7 @@ def test_cd8_malformed_event_id_does_not_break_the_preflight(manager):
 
     O preflight verifica **aciclicidade**, não sintaxe.
     """
-    manager._assert_causal_acyclicity(
-        _causal_package([{"id": "não-é-uuid", "predecessor_event_id": None}])
-    )
+    manager._assert_causal_acyclicity([{"id": "não-é-uuid", "predecessor_event_id": None}])
 
     with pytest.raises(SyncPackageInvalidError):
         manager.import_package(
@@ -494,13 +478,14 @@ def test_cd8_malformed_event_id_does_not_break_the_preflight(manager):
         )
 
 
-def test_cd8b_event_without_id_is_rejected_by_the_preflight_path(manager):
-    """CD8 (complemento) — evento sem `id` é rejeitado já dentro do
-    preflight, pela mesma validação de envelope que cobre todas as
-    seções. Nada é escrito, e a mensagem é específica."""
-    with pytest.raises(SyncPackageInvalidError, match="sem 'id'"):
-        manager._assert_causal_acyclicity(_causal_package([{"predecessor_event_id": None}]))
+def test_cd8b_event_without_id_is_rejected_before_the_preflight(manager):
+    """CD8 (complemento) — evento sem `id` é rejeitado na validação de
+    envelope, **antes** de classificação e preflight.
 
+    Depois de `E3.11.1a` o preflight só recebe registros já
+    classificados como novos, logo todos com identificador: validar
+    sintaxe é etapa anterior, não trabalho dele.
+    """
     with pytest.raises(SyncPackageInvalidError, match="sem 'id'"):
         manager.import_package(_causal_package([{"predecessor_event_id": None}]))
 
@@ -513,12 +498,10 @@ def test_cd8c_uuid_instances_pass_through_the_preflight_unchanged(manager):
     first, second = uuid.uuid4(), uuid.uuid4()
 
     manager._assert_causal_acyclicity(
-        _causal_package(
-            [
-                {"id": first, "predecessor_event_id": None},
-                {"id": second, "predecessor_event_id": first},
-            ]
-        )
+        [
+            {"id": first, "predecessor_event_id": None},
+            {"id": second, "predecessor_event_id": first},
+        ]
     )
 
 
@@ -528,11 +511,152 @@ def test_cd8d_malformed_predecessor_is_ignored_by_the_preflight(manager):
     rejeição específica vem da decodificação."""
     event = uuid.uuid4()
 
-    manager._assert_causal_acyclicity(
-        _causal_package([{"id": str(event), "predecessor_event_id": "não-é-uuid"}])
-    )
+    manager._assert_causal_acyclicity([{"id": str(event), "predecessor_event_id": "não-é-uuid"}])
 
     with pytest.raises(SyncPackageInvalidError):
         manager.import_package(
             _causal_package([{"id": str(event), "predecessor_event_id": "não-é-uuid"}])
+        )
+
+
+def test_cp1_divergent_predecessor_is_a_conflict_not_an_invalid_package(manager, cognitive_session):
+    """CP1/CP12 (`E3.11.1a`) — o caso que motivou este corretivo.
+
+    Destino: `E1 → NULL`, `E2 → E1`. Pacote: `E1 → E2`, com o mesmo id
+    de `E1` e representação divergente.
+
+    Antes, o preflight rodava sobre `destino ∪ pacote` sem distinguir
+    o que seria realmente aplicado, montava o ciclo hipotético
+    `E1 ↔ E2` e devolvia `SYNC_PACKAGE_INVALID`. Mas `E1 → E2` **nunca
+    seria aplicado**: é conflito de identidade, e conflito aborta o
+    import.
+
+    ```text
+    IDENTITY_CONFLICT != CAUSAL_STRUCTURAL_INVALIDITY
+    DIVERGENCE        != INVALIDITY
+    ```
+
+    Duas histórias podem divergir sem que nenhuma seja declarada
+    causalmente inválida.
+    """
+    session = cognitive_session
+    subject = CognitiveObject()
+    session.add(subject)
+    session.flush()
+    history = CausalHistory(subject_coid=subject.id)
+    session.add(history)
+    session.flush()
+
+    first, second = uuid.uuid4(), uuid.uuid4()
+    session.add(
+        CausalHistoryEvent(id=first, history_id=history.id, event_type=CausalEventType.CREATED)
+    )
+    session.flush()
+    session.add(
+        CausalHistoryEvent(
+            id=second,
+            history_id=history.id,
+            event_type=CausalEventType.TRANSFORMED,
+            predecessor_event_id=first,
+        )
+    )
+    session.flush()
+
+    now = datetime.now(UTC).isoformat()
+    package = _causal_package(
+        [
+            {
+                "id": str(first),
+                "history_id": str(history.id),
+                "event_type": "created",
+                "actor_ref": None,
+                "payload_ref": None,
+                # divergente: no destino é NULL
+                "predecessor_event_id": str(second),
+                "occurred_at": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        ]
+    )
+
+    report = manager.import_package(package)
+
+    # CP1 — conflito explícito, não pacote inválido.
+    assert len(report.conflicts) == 1
+    (conflict,) = report.conflicts
+    assert conflict.entity_id == first
+    assert "predecessor_event_id" in conflict.differing_fields
+    # CP2 — as duas representações preservadas no diagnóstico.
+    assert conflict.existing["predecessor_event_id"] is None
+    assert conflict.incoming["predecessor_event_id"] == str(second)
+    # CP3 — zero escritas.
+    assert report.applied_count == 0
+    assert report.overwrite_count == 0
+
+
+def test_cp4_identical_representation_stays_idempotent(manager, cognitive_session):
+    """CP4 — mesmo id + mesma representação continua idempotente: sem
+    conflito, sem duplicata, e sem virar aresta nova no grafo
+    candidato (ela já é aresta do destino)."""
+    session = cognitive_session
+    subject = CognitiveObject()
+    session.add(subject)
+    session.flush()
+    history = CausalHistory(subject_coid=subject.id)
+    session.add(history)
+    session.flush()
+    event = CausalHistoryEvent(history_id=history.id, event_type=CausalEventType.CREATED)
+    session.add(event)
+    session.flush()
+
+    package = _causal_package(
+        [
+            {
+                "id": str(event.id),
+                "history_id": str(history.id),
+                "event_type": "created",
+                "actor_ref": None,
+                "payload_ref": None,
+                "predecessor_event_id": None,
+                "occurred_at": None,
+                "created_at": event.created_at.isoformat(),
+                "updated_at": event.updated_at.isoformat(),
+            }
+        ]
+    )
+
+    report = manager.import_package(package)
+
+    assert report.conflicts == ()
+    assert report.applied_count == 0
+    assert report.skipped_count == 1
+    assert session.query(CausalHistoryEvent).count() == 1
+
+
+def test_cp11_candidate_graph_never_uses_the_conflicting_representation(manager):
+    """CP11 — formulação canônica do grafo candidato:
+
+    ```text
+    CANDIDATE_GRAPH = DESTINATION_ACCEPTED_STATE
+                    + PACKAGE_RECORDS_ELIGIBLE_FOR_INSERT
+    ```
+
+    O preflight recebe **apenas** os registros elegíveis. Passar-lhe a
+    aresta que fecharia o ciclo com o destino ainda é detectado — o
+    que mudou é *quem* pode entrar no grafo, não a força da
+    verificação.
+    """
+    destination_event, package_event = uuid.uuid4(), uuid.uuid4()
+
+    # Sem registros elegíveis: nada a verificar além do destino.
+    manager._assert_causal_acyclicity([])
+
+    # Com um registro elegível que fecha ciclo contra o destino: rejeita.
+    manager._repository.read_causal_edges = lambda: {  # type: ignore[method-assign]
+        str(destination_event): str(package_event)
+    }
+    with pytest.raises(SyncPackageInvalidError):
+        manager._assert_causal_acyclicity(
+            [{"id": str(package_event), "predecessor_event_id": str(destination_event)}]
         )
