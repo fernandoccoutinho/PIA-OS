@@ -1,0 +1,653 @@
+"""
+E4.3 — testes de integração contra PostgreSQL real.
+
+Cobrem os requisitos que só o banco pode demonstrar: versionamento
+imutável, vigência determinística, concorrência real, ausência de
+escrita durante a avaliação, e a garantia de que nenhuma decisão toca
+patrimônio.
+"""
+
+import re
+import threading
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+import sqlalchemy as sa
+from sqlalchemy import event
+
+from app.cognitive.models.cognitive_object import CognitiveObject
+from app.cognitive.models.enums import (
+    AccessibilityState,
+    CausalEventType,
+    LineageRelation,
+    ProvenanceActorType,
+    ProvenanceSourceType,
+)
+from app.cognitive.repositories.causal_history_repository import CausalHistoryRepository
+from app.cognitive.repositories.lineage_repository import LineageRepository
+from app.cognitive.repositories.object_repository import ObjectRepository
+from app.cognitive.repositories.provenance_repository import ProvenanceRepository
+from app.cognitive.schemas.synchronization import SECTION_BY_TABLE
+from app.cognitive.services.accessibility_manager import AccessibilityManager
+from app.cognitive.services.causal_history_manager import CausalHistoryManager
+from app.cognitive.services.provenance_manager import ProvenanceManager
+from app.database import migrations
+from app.database.engine import engine
+from app.database.health import check_database_health
+from app.memory.errors.exceptions import GovernancePolicyVersionExistsError
+from app.memory.models.governance_enums import (
+    CognitiveOperation,
+    GovernanceEffect,
+    GovernanceOutcome,
+)
+from app.memory.repositories.governance_policy_repository import GovernancePolicyRepository
+from app.memory.repositories.memory_domain_membership_repository import (
+    MemoryDomainMembershipRepository,
+)
+from app.memory.repositories.memory_domain_repository import MemoryDomainRepository
+from app.memory.schemas.governance import GovernanceRule
+from app.memory.schemas.memory_context import MemoryContext
+from app.memory.services.governance_manager import GovernanceManager
+from app.repositories.unit_of_work import UnitOfWork
+
+_GOVERNANCE_TABLES = ("governance_policies",)
+_MEMORY_TABLES = ("memory_domain_memberships", "memory_domains")
+_COGNITIVE_TABLES = (
+    "causal_history_events",
+    "causal_histories",
+    "provenance_records",
+    "relationships",
+    "lineage_edges",
+    "transformation_records",
+    "cognitive_objects",
+)
+
+
+def _available() -> bool:
+    return check_database_health().available
+
+
+pytestmark = pytest.mark.skipif(
+    not _available(),
+    reason="PostgreSQL real indisponível — E4.3 valida constraints e concorrência reais.",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean():
+    migrations.upgrade("head")
+    _truncate()
+    yield
+    _truncate()
+
+
+def _truncate() -> None:
+    todas = _GOVERNANCE_TABLES + _MEMORY_TABLES + _COGNITIVE_TABLES
+    with engine.begin() as conn:
+        conn.execute(sa.text(f"TRUNCATE {', '.join(todas)} CASCADE"))
+
+
+def _census(tables: tuple[str, ...]) -> dict[str, list[tuple[Any, ...]]]:
+    snapshot: dict[str, list[tuple[Any, ...]]] = {}
+    with engine.connect() as conn:
+        for table in tables:
+            columns = sorted(sa.inspect(engine).get_columns(table), key=lambda c: c["name"])
+            names = ", ".join(f'"{c["name"]}"' for c in columns)
+            rows = conn.execute(sa.text(f"SELECT {names} FROM {table} ORDER BY id")).fetchall()
+            snapshot[table] = [tuple(row) for row in rows]
+    return snapshot
+
+
+def _manager(session) -> GovernanceManager:
+    return GovernanceManager(GovernancePolicyRepository(session))
+
+
+def _seed_patrimony() -> dict[str, uuid.UUID]:
+    """Patrimônio completo mais um domínio povoado."""
+    with UnitOfWork() as uow:
+        objects = ObjectRepository(uow.session)
+        prov = ProvenanceManager(ProvenanceRepository(uow.session))
+        causal = CausalHistoryManager(CausalHistoryRepository(uow.session))
+        lineage = LineageRepository(uow.session)
+        accessibility = AccessibilityManager(objects)
+
+        clid = uuid.uuid4()
+        o1 = objects.add(CognitiveObject(clid=clid))
+        o2 = objects.add(CognitiveObject(clid=clid))
+        o3 = objects.add(CognitiveObject())
+        uow.session.flush()
+        p = prov.record(
+            coid=o1.id,
+            source_type=ProvenanceSourceType.HUMAN,
+            actor_type=ProvenanceActorType.HUMAN,
+            trace_id="e43",
+        )
+        uow.session.flush()
+        lineage.add_edge(parent_coid=o1.id, child_coid=o2.id, relation_type=LineageRelation.BRANCH)
+        raiz = causal.record(subject_coid=o1.id, event_type=CausalEventType.CREATED, actor_ref=p.id)
+        causal.record(subject_coid=o2.id, event_type=CausalEventType.TRANSFORMED, predecessor=raiz)
+        accessibility.transition(o2, AccessibilityState.INACCESSIBLE)
+        accessibility.transition(o3, AccessibilityState.CAUSALLY_EXTINCT, reason="broken glass")
+
+        d1 = MemoryDomainRepository(uow.session).add_domain(name="D1")
+        uow.session.flush()
+        MemoryDomainMembershipRepository(uow.session).add_membership(domain_id=d1.id, coid=o1.id)
+        uow.commit()
+        return {"o1": o1.id, "o2": o2.id, "o3": o3.id, "d1": d1.id, "clid": clid}
+
+
+# ======================================================================
+# 1–3 — criação, versionamento e imutabilidade
+# ======================================================================
+
+
+def test_gi1_policy_is_created_and_retrieved():
+    """(1) Criação e recuperação, com regras tipadas preservadas."""
+    d1 = uuid.uuid4()
+    regra = GovernanceRule(
+        rule_id="ler-d1",
+        effect=GovernanceEffect.ADMIT,
+        operations=frozenset({CognitiveOperation.READ}),
+        domain_ids=frozenset({d1}),
+    )
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(policy_key="p", rules=(regra,))
+        uow.commit()
+
+    with UnitOfWork() as uow:
+        recuperada = _manager(uow.session).get_version("p", 1)
+        assert recuperada is not None
+        assert recuperada.policy_key == "p"
+        assert recuperada.version == 1
+        assert recuperada.typed_rules == (regra,)
+
+
+def test_gi2_new_version_is_explicit_and_previous_survives():
+    """(2) Nova versão é explícita; a anterior continua intacta.
+
+    É isso que permite responder, depois, sob qual versão algo foi
+    decidido.
+    """
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        manager.publish_version(
+            policy_key="p",
+            rules=(GovernanceRule(rule_id="v1", effect=GovernanceEffect.ADMIT),),
+        )
+        uow.commit()
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        manager.publish_version(
+            policy_key="p",
+            rules=(GovernanceRule(rule_id="v2", effect=GovernanceEffect.DENY),),
+        )
+        uow.commit()
+
+    with UnitOfWork() as uow:
+        versoes = _manager(uow.session).list_versions("p")
+        assert [v.version for v in versoes] == [1, 2]
+        assert versoes[0].typed_rules[0].rule_id == "v1"
+        assert versoes[0].typed_rules[0].effect is GovernanceEffect.ADMIT
+        assert versoes[1].typed_rules[0].rule_id == "v2"
+
+
+def test_gi3_existing_version_cannot_be_silently_overwritten():
+    """(3) Recriar versão publicada é recusado — nunca sobrescreve.
+
+    Verificado pelos dois lados: pela exceção de domínio e por
+    `INSERT` direto, que ignora o repositório e encontra a constraint.
+    """
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(
+            policy_key="p",
+            rules=(GovernanceRule(rule_id="original", effect=GovernanceEffect.ADMIT),),
+        )
+        uow.commit()
+
+    with UnitOfWork() as uow, pytest.raises(GovernancePolicyVersionExistsError) as exc:
+        _manager(uow.session).publish_version(
+            policy_key="p",
+            version=1,
+            rules=(GovernanceRule(rule_id="impostora", effect=GovernanceEffect.DENY),),
+        )
+    assert exc.value.error_code.code == "PIA-8027"
+
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO governance_policies "
+                "(id, policy_key, version, rules, created_at, updated_at) "
+                "VALUES (:i, 'p', 1, '[]', now(), now())"
+            ),
+            {"i": uuid.uuid4()},
+        )
+
+    with UnitOfWork() as uow:
+        versoes = _manager(uow.session).list_versions("p")
+        # Ler dentro da sessão: instâncias ORM não sobrevivem ao
+        # fechamento da UnitOfWork.
+        assert len(versoes) == 1
+        assert versoes[0].typed_rules[0].rule_id == "original"
+
+
+# ======================================================================
+# 4 — vigência
+# ======================================================================
+
+
+def test_gi4_temporal_effectiveness_is_deterministic():
+    """(4) Vigência `[from, until)`, com limite final exclusivo.
+
+    Exclusivo de propósito: com limite inclusivo, duas versões
+    contíguas se sobrepõem exatamente no instante da virada e "qual
+    valia?" passa a ter duas respostas.
+    """
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    t1 = datetime(2026, 6, 1, tzinfo=UTC)
+    t2 = datetime(2026, 12, 1, tzinfo=UTC)
+
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        manager.publish_version(policy_key="p", effective_from=t0, effective_until=t1)
+        uow.commit()
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        manager.publish_version(policy_key="p", effective_from=t1, effective_until=t2)
+        uow.commit()
+
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        assert manager.effective_version_at("p", t0).version == 1
+        assert manager.effective_version_at("p", t1 - timedelta(seconds=1)).version == 1
+        # No instante exato da virada, apenas a segunda vigora.
+        assert manager.effective_version_at("p", t1).version == 2
+        assert manager.effective_version_at("p", t2 - timedelta(seconds=1)).version == 2
+        assert manager.effective_version_at("p", t2) is None
+        assert manager.effective_version_at("p", t0 - timedelta(days=1)) is None
+
+
+def test_gi4b_invalid_effective_window_is_rejected_by_the_database():
+    """A janela incoerente é recusada pelo `CHECK`, não só pelo código."""
+    with UnitOfWork() as uow, pytest.raises(ValueError):
+        _manager(uow.session).publish_version(
+            policy_key="p",
+            effective_from=datetime(2026, 6, 1, tzinfo=UTC),
+            effective_until=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO governance_policies "
+                "(id, policy_key, version, rules, effective_from, effective_until, "
+                "created_at, updated_at) VALUES "
+                "(:i, 'x', 1, '[]', '2026-06-01', '2026-01-01', now(), now())"
+            ),
+            {"i": uuid.uuid4()},
+        )
+
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO governance_policies "
+                "(id, policy_key, version, rules, created_at, updated_at) "
+                "VALUES (:i, 'x', 0, '[]', now(), now())"
+            ),
+            {"i": uuid.uuid4()},
+        )
+
+
+# ======================================================================
+# 5–6 — aplicabilidade e ausência de concessão implícita
+# ======================================================================
+
+
+def test_gi5_applicability_uses_authorized_context_dimensions():
+    """(5) Aplicabilidade vem de `domain_ids`, `actor_ref` e `purpose`.
+
+    Exatamente as dimensões que o `MemoryContext` da E4.2 expõe —
+    nenhuma inventada, e `session_id` deliberadamente **não**
+    participa: sessão não é identidade nem autoridade.
+    """
+    refs = _seed_patrimony()
+    regra = GovernanceRule(
+        rule_id="revisao-d1",
+        effect=GovernanceEffect.ADMIT,
+        operations=frozenset({CognitiveOperation.READ}),
+        domain_ids=frozenset({refs["d1"]}),
+        actor_refs=frozenset({"ana"}),
+        purposes=frozenset({"revisão"}),
+    )
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(policy_key="p", rules=(regra,))
+        uow.commit()
+
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        policy = manager.get_version("p", 1)
+
+        casa = MemoryContext.build(
+            domain_ids=[refs["d1"]], actor_ref="ana", purpose="revisão", session_id="s1"
+        )
+        assert (
+            manager.evaluate(policy=policy, operation=CognitiveOperation.READ, context=casa).outcome
+            is GovernanceOutcome.ADMISSIBLE
+        )
+
+        # Sessão diferente, mesmas dimensões relevantes: mesmo resultado.
+        outra_sessao = casa.derive(session_id="s2")
+        assert (
+            manager.evaluate(
+                policy=policy, operation=CognitiveOperation.READ, context=outra_sessao
+            ).outcome
+            is GovernanceOutcome.ADMISSIBLE
+        )
+
+        for divergente in (
+            casa.derive(actor_ref="zoe"),
+            casa.derive(purpose="outro"),
+            casa.without_domains(),
+        ):
+            assert (
+                manager.evaluate(
+                    policy=policy, operation=CognitiveOperation.READ, context=divergente
+                ).outcome
+                is GovernanceOutcome.NOT_APPLICABLE
+            )
+
+
+def test_gi6_actor_without_applicable_rule_is_not_admissible():
+    """(6) Ator presente, nenhuma regra aplicável ⇒ não concede."""
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(
+            policy_key="p",
+            rules=(
+                GovernanceRule(
+                    rule_id="so-expose",
+                    effect=GovernanceEffect.ADMIT,
+                    operations=frozenset({CognitiveOperation.EXPOSE}),
+                ),
+            ),
+        )
+        uow.commit()
+
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        decisao = manager.evaluate(
+            policy=manager.get_version("p", 1),
+            operation=CognitiveOperation.READ,
+            context=MemoryContext.build(actor_ref="ana"),
+        )
+
+    assert decisao.outcome is GovernanceOutcome.NOT_APPLICABLE
+    assert decisao.is_admissible is False
+
+
+# ======================================================================
+# 11–12 — nenhuma decisão altera nada
+# ======================================================================
+
+
+def test_gi11_evaluation_is_read_only_and_changes_nothing():
+    """(11) Nenhuma decisão altera patrimônio, domínio, membership,
+    acessibilidade, proveniência ou história.
+
+    Censo das dez tabelas mais listener de cursor contando escritas —
+    a prova é o SQL emitido, não a intenção do código.
+    """
+    refs = _seed_patrimony()
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(
+            policy_key="p",
+            rules=(
+                GovernanceRule(rule_id="a", effect=GovernanceEffect.ADMIT),
+                GovernanceRule(
+                    rule_id="d",
+                    effect=GovernanceEffect.DENY,
+                    operations=frozenset({CognitiveOperation.EXPOSE}),
+                ),
+            ),
+        )
+        uow.commit()
+
+    todas = _COGNITIVE_TABLES + _MEMORY_TABLES + _GOVERNANCE_TABLES
+    censo_antes = _census(todas)
+
+    escritas = {"n": 0}
+    padrao = re.compile(r"^\s*(INSERT|UPDATE|DELETE|TRUNCATE)\b", re.IGNORECASE)
+
+    def _listen(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        if padrao.match(statement):
+            escritas["n"] += 1
+
+    event.listen(engine, "before_cursor_execute", _listen)
+    try:
+        with UnitOfWork() as uow:
+            manager = _manager(uow.session)
+            policy = manager.get_version("p", 1)
+            for operacao in CognitiveOperation:
+                manager.evaluate(
+                    policy=policy,
+                    operation=operacao,
+                    context=MemoryContext.build(
+                        domain_ids=[refs["d1"]], actor_ref="ana", purpose="p"
+                    ),
+                )
+    finally:
+        event.remove(engine, "before_cursor_execute", _listen)
+
+    assert escritas["n"] == 0, "DATABASE_WRITES_DURING_EVALUATION deve ser 0"
+    assert _census(todas) == censo_antes
+
+    # E o estado cognitivo continua exatamente o mesmo.
+    with UnitOfWork() as uow:
+        objects = ObjectRepository(uow.session)
+        assert objects.get_by_id(refs["o2"]).accessibility is AccessibilityState.INACCESSIBLE
+        assert objects.get_by_id(refs["o3"]).accessibility is AccessibilityState.CAUSALLY_EXTINCT
+        assert objects.get_by_id(refs["o1"]).clid == refs["clid"]
+
+
+def test_gi12_denial_does_not_produce_nonexistence():
+    """(12) `DENIED != NONEXISTENT`.
+
+    Depois de uma negativa, tudo continua existindo e recuperável — a
+    decisão restringiu a operação, não o patrimônio.
+    """
+    refs = _seed_patrimony()
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(
+            policy_key="p",
+            rules=(GovernanceRule(rule_id="nega-tudo", effect=GovernanceEffect.DENY),),
+        )
+        uow.commit()
+
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        decisao = manager.evaluate(
+            policy=manager.get_version("p", 1),
+            operation=CognitiveOperation.READ,
+            context=MemoryContext.build(domain_ids=[refs["d1"]], actor_ref="ana"),
+        )
+    assert decisao.outcome is GovernanceOutcome.INADMISSIBLE
+    assert decisao.implies_nonexistence is False
+
+    with UnitOfWork() as uow:
+        objects = ObjectRepository(uow.session)
+        for coid in (refs["o1"], refs["o2"], refs["o3"]):
+            assert objects.get_by_id(coid) is not None
+        memberships = MemoryDomainMembershipRepository(uow.session)
+        assert memberships.contains(domain_id=refs["d1"], coid=refs["o1"])
+        assert MemoryDomainRepository(uow.session).get_by_id(refs["d1"]) is not None
+
+
+# ======================================================================
+# 13 — sync
+# ======================================================================
+
+
+def test_gi13_policy_never_enters_the_e3_sync_envelope():
+    """(13) `GOVERNANCE_POLICY_SYNC = NONE`.
+
+    Autoridade não é transferível: uma policy importada produziria
+    objetos invisíveis no destino sem que ninguém ali tivesse
+    decidido isso.
+    """
+    assert set(SECTION_BY_TABLE) == set(_COGNITIVE_TABLES)
+    assert "governance_policies" not in SECTION_BY_TABLE
+    for tabela in _MEMORY_TABLES + _GOVERNANCE_TABLES:
+        assert tabela not in SECTION_BY_TABLE
+
+
+# ======================================================================
+# 14 — concorrência real
+# ======================================================================
+
+
+def test_gi14_concurrent_version_creation_yields_exactly_one():
+    """(14) Duas sessões publicando a mesma versão ⇒ exatamente uma.
+
+    A unicidade estrutural do banco basta; nenhum lock global foi
+    acrescentado — mesma disciplina de E3.4.1 e da E4.1.
+    """
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(policy_key="p")
+        uow.commit()
+
+    barreira = threading.Barrier(2)
+    resultados: list[str] = []
+    trava = threading.Lock()
+
+    def _publicar() -> None:
+        barreira.wait(timeout=10)
+        try:
+            with UnitOfWork() as uow:
+                _manager(uow.session).publish_version(policy_key="p", version=2)
+                uow.commit()
+            desfecho = "ok"
+        except GovernancePolicyVersionExistsError:
+            desfecho = "exists"
+        except Exception as exc:  # pragma: no cover - diagnóstico
+            desfecho = f"outro:{type(exc).__name__}"
+        with trava:
+            resultados.append(desfecho)
+
+    threads = [threading.Thread(target=_publicar) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    with engine.connect() as conn:
+        total = conn.execute(
+            sa.text("SELECT COUNT(*) FROM governance_policies WHERE policy_key='p' AND version=2")
+        ).scalar_one()
+
+    assert total == 1, f"exatamente uma versão 2 esperada; resultados={resultados}"
+    assert resultados.count("ok") == 1
+    assert all(r in ("ok", "exists") for r in resultados), resultados
+
+
+# ======================================================================
+# 15 — upgrade/downgrade
+# ======================================================================
+
+
+def test_gi15_downgrade_is_blocked_when_policies_exist():
+    """(15) `CONDITIONALLY_REVERSIBLE` com guarda desde a migração
+    inicial.
+
+    Vazio: ciclo `head → anterior → head` funciona. Com policies
+    publicadas: bloqueado, e nada é alterado.
+    """
+    anterior = "3799d45ff96d"
+
+    migrations.downgrade(anterior)
+    assert "governance_policies" not in sa.inspect(engine).get_table_names()
+    migrations.upgrade("head")
+    assert "governance_policies" in sa.inspect(engine).get_table_names()
+
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(
+            policy_key="p", rules=(GovernanceRule(rule_id="r", effect=GovernanceEffect.ADMIT),)
+        )
+        uow.commit()
+
+    with pytest.raises(Exception) as exc:
+        migrations.downgrade(anterior)
+    assert "GOVERNANCE_POLICY_DOWNGRADE_SEMANTICALLY_BLOCKED" in str(exc.value)
+
+    with engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM governance_policies")).scalar_one() == 1
+    assert "governance_policies" in sa.inspect(engine).get_table_names()
+
+
+def test_gi16_publishing_writes_only_to_its_own_table():
+    """Publicar escreve — e **apenas** na tabela de policies.
+
+    A distinção que o prompt exige: criação/versionamento podem
+    escrever nas suas próprias tabelas; avaliação é read-only.
+    """
+    refs = _seed_patrimony()
+    censo_alheio = _census(_COGNITIVE_TABLES + _MEMORY_TABLES)
+
+    with UnitOfWork() as uow:
+        _manager(uow.session).publish_version(
+            policy_key="p",
+            rules=(
+                GovernanceRule(
+                    rule_id="r",
+                    effect=GovernanceEffect.ADMIT,
+                    domain_ids=frozenset({refs["d1"]}),
+                ),
+            ),
+        )
+        uow.commit()
+
+    assert _census(_COGNITIVE_TABLES + _MEMORY_TABLES) == censo_alheio
+    with engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM governance_policies")).scalar_one() == 1
+
+
+def test_gi17_policy_references_domain_without_owning_it():
+    """A policy referencia `domain_id` **por valor**, sem FK.
+
+    `owner`/`policy_ref` não entram em `MemoryDomain`: governança não
+    é dona do domínio, e travar a evolução do domínio por causa de uma
+    regra seria incorporar governança onde ela não pertence.
+    """
+    fks = sa.inspect(engine).get_foreign_keys("governance_policies")
+    assert fks == [], "governance_policies não deve ter FK alguma"
+
+    colunas_dominio = {c["name"] for c in sa.inspect(engine).get_columns("memory_domains")}
+    assert colunas_dominio == {
+        "id",
+        "name",
+        "created_at",
+        "updated_at",
+    }, "E4_1_SEMANTICS_UNCHANGED: MemoryDomain não ganhou owner nem policy_ref"
+
+    # E uma regra pode citar um domínio que nem existe — governança
+    # informa; não valida patrimônio alheio nem o fabrica.
+    inexistente = uuid.uuid4()
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        manager.publish_version(
+            policy_key="p",
+            rules=(
+                GovernanceRule(
+                    rule_id="r",
+                    effect=GovernanceEffect.ADMIT,
+                    domain_ids=frozenset({inexistente}),
+                ),
+            ),
+        )
+        uow.commit()
+    with engine.connect() as conn:
+        assert (
+            conn.execute(
+                sa.text("SELECT COUNT(*) FROM memory_domains WHERE id = :d"), {"d": inexistente}
+            ).scalar_one()
+            == 0
+        )

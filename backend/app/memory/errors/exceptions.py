@@ -20,6 +20,7 @@ from app.memory.errors.codes import (
     PIA_8024_MEMORY_DOMAIN_MEMBERSHIP_DUPLICATE,
     PIA_8025_MEMORY_DOMAIN_MEMBERSHIP_OBJECT_NOT_FOUND,
     PIA_8026_CONTEXT_UNKNOWN_DOMAIN_REFERENCE,
+    PIA_8027_GOVERNANCE_POLICY_VERSION_EXISTS,
 )
 
 
@@ -87,4 +88,26 @@ class ContextUnknownDomainReferenceError(PIAOSException):
         super().__init__(
             message=f"MemoryContext referencia domínio(s) inexistente(s): {listados}.",
             detail={"unknown_domain_ids": [str(d) for d in self.unknown_domain_ids]},
+        )
+
+
+class GovernancePolicyVersionExistsError(PIAOSException):
+    """Tentativa de recriar uma versão já publicada (E4.3).
+
+    Versões são imutáveis. Sobrescrever apagaria em silêncio a policy
+    que fundamentou decisões passadas, e a pergunta "qual versão valia
+    quando isto foi decidido?" deixaria de ter resposta.
+    """
+
+    error_code = PIA_8027_GOVERNANCE_POLICY_VERSION_EXISTS
+
+    def __init__(self, policy_key: str, version: int) -> None:
+        self.policy_key = policy_key
+        self.version = version
+        super().__init__(
+            message=(
+                f"A versão {version} da policy '{policy_key}' já existe e é imutável — "
+                "crie uma versão nova."
+            ),
+            detail={"policy_key": policy_key, "version": version},
         )

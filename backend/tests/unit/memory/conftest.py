@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.database.base import Base
+from app.memory.models.governance_policy import GovernancePolicy
 from app.memory.models.memory_domain import MemoryDomain
 from app.memory.models.memory_domain_membership import MemoryDomainMembership
 
@@ -30,6 +31,7 @@ _MEMORY_TABLES = [
     CognitiveObject.__table__,
     MemoryDomain.__table__,
     MemoryDomainMembership.__table__,
+    GovernancePolicy.__table__,
 ]
 
 

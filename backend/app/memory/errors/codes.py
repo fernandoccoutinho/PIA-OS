@@ -75,3 +75,17 @@ descobrir N referências ruins. A exceção correspondente carrega o
 
 `DOMAIN NOT FOUND != COGNITIVE OBJECT NOT FOUND` — a distinção
 diagnóstica de E4.1 é preservada, não colapsada."""
+
+PIA_8027_GOVERNANCE_POLICY_VERSION_EXISTS = ErrorCode(
+    code="PIA-8027",
+    default_message="governance_policy_version_exists",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Já existe uma versão com este `(policy_key, version)`.
+
+Versões publicadas são imutáveis: mudança semântica cria versão nova.
+Aceitar a segunda escrita como atualização apagaria em silêncio a
+policy que fundamentou decisões passadas — e nenhuma delas poderia
+mais ser explicada."""
