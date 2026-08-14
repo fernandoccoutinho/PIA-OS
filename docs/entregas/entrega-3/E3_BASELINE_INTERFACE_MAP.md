@@ -63,3 +63,18 @@ deve fazer em torno dela.
 | `app.security.*` (CORS, CSRF, rate limit, trusted hosts, headers) | E2 | Infraestrutura transversal de borda HTTP — nada em E3.0 introduz endpoint novo; revisitar apenas quando LIB-01+ expuser rotas |
 | `app.middleware.*` | E2 | Idem — cross-cutting HTTP, não domínio cognitivo |
 | `app.docs.*` (OpenAPI metadata) | E2 | Só relevante quando existir endpoint de E3 a documentar |
+
+## Adendo E3.4.2 — interface pública acrescentada após o congelamento
+
+Registro mínimo e explícito da única interface pública que o corretivo
+`E3.4.2 — Multi-Input Cognitive Transformation` acrescenta. Nenhuma
+interface de E1/E2 listada acima foi modificada para produzi-lo.
+
+| Interface | Origem | Responsabilidade | Restrições | Proibido |
+|---|---|---|---|---|
+| `MultiInputTransformationManager.derive_many()` | `app.cognitive.services.multi_input_transformation_manager` | Deriva um `CognitiveObject` novo a partir de **N fontes**, criando N `LineageEdge(MERGE)`, exatamente um `TransformationRecord` `DERIVATION` multi-input e a história causal do alvo | Não commita — participa da `UnitOfWork` do chamador, como todos os managers desde E3.3; exige ao menos duas fontes distintas e `declared_losses` não vazio; escreve apenas via repositórios | Usar `ClidManager.inherit()` nesta operação (geraria e gravaria CLID na fonte); mutar qualquer fonte; ampliar `TransformationKind`, `LineageRelation` ou `CausalEventType`; inferir predecessor causal |
+| `MultiInputTransformationReceipt` | `app.cognitive.schemas.multi_input_transformation` | Recibo imutável da operação — apenas UUIDs e tuplas, nenhuma instância ORM | `frozen`, hashable, invariantes em `__post_init__`; consumível por `Protocol` estrutural definido do lado consumidor | Expor entidade ORM; importar qualquer coisa de `app.memory` |
+
+A direção da dependência permanece intacta: `app/cognitive` é o único
+dono do patrimônio cognitivo, e `app/memory` continua sem importar
+`app.cognitive` (`G17` e `MD6` preservados).

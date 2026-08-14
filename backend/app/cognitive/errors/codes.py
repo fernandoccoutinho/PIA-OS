@@ -299,6 +299,69 @@ estado divergente é resultado válido do contrato
 nunca como exceção."""
 
 
+PIA_8029_MULTI_INPUT_SOURCE_NOT_FOUND = ErrorCode(
+    code="PIA-8029",
+    default_message="multi_input_source_not_found",
+    category=ErrorCategory.VALIDATION,
+    http_status=404,
+    severity=ErrorSeverity.ERROR,
+)
+"""Um COID informado como fonte de uma transformação multi-input não
+corresponde a nenhum `CognitiveObject` (E3.4.2).
+
+A busca usa `include_deleted=True`: uma fonte com exclusão lógica
+**existe** e é fonte legítima (`SOFT_DELETED != NEVER EXISTED`), então
+este erro significa estritamente "não há linha com este COID" — nunca
+"o objeto foi apagado".
+
+Código próprio, e não reúso de `PIA-8008 LINEAGE_ENDPOINT_NOT_FOUND`:
+aquele é levantado **depois** de uma tentativa de escrita, por
+tradução de violação de FK, e reporta um COID por vez em regime de
+melhor esforço. Este é diagnóstico de **preflight** e carrega o
+conjunto completo de COIDs ausentes, evitando N tentativas para
+descobrir N referências ruins — mesmo raciocínio que levou a E4.2 a
+criar `PIA-8026` em vez de reusar `PIA-8023`.
+
+O código `PIA-8023`..`PIA-8028` pertence a `app/memory` (E4.1/E4.2/
+E4.3): a faixa `PIA-8xxx` é global ao projeto, e a numeração continua
+de onde o catálogo inteiro parou, não de onde a E3 havia parado."""
+
+
+PIA_8030_CAUSAL_PREDECESSOR_NOT_FOUND = ErrorCode(
+    code="PIA-8030",
+    default_message="causal_predecessor_not_found",
+    category=ErrorCategory.VALIDATION,
+    http_status=404,
+    severity=ErrorSeverity.ERROR,
+)
+"""Um `predecessor_event_id` declarado não corresponde a nenhum
+`CausalHistoryEvent` (E3.4.2).
+
+Predecessor causal é sempre **declarado explicitamente**: o mecanismo
+nunca o infere por `created_at`, por recência ou por "último evento"
+(`TEMPORAL PRECEDENCE != CAUSALITY`). Um predecessor inexistente é
+erro do chamador, e não autoriza cair para o caminho de evento-raiz —
+isso substituiria silenciosamente a história declarada por outra."""
+
+
+PIA_8031_CAUSAL_PREDECESSOR_SUBJECT_MISMATCH = ErrorCode(
+    code="PIA-8031",
+    default_message="causal_predecessor_subject_mismatch",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Um `predecessor_event_id` existe, mas pertence à história causal de
+um sujeito que **não** está entre as fontes informadas (E3.4.2).
+
+Aceitá-lo ligaria a história do alvo a um objeto que não participou da
+transformação — fabricação de causalidade
+(`MISSING EVIDENCE != AUTHORIZATION TO FABRICATE HISTORY`). Note que
+predecessor **cross-history** continua legítimo: o que se exige é que
+o sujeito da história de origem seja uma das fontes declaradas, não
+que todos os predecessores venham de uma única história."""
+
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -322,6 +385,9 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
     PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
     PIA_8022_SYNC_PACKAGE_INVALID,
+    PIA_8029_MULTI_INPUT_SOURCE_NOT_FOUND,
+    PIA_8030_CAUSAL_PREDECESSOR_NOT_FOUND,
+    PIA_8031_CAUSAL_PREDECESSOR_SUBJECT_MISMATCH,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {
