@@ -24,6 +24,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.cognitive.errors.exceptions import SyncPackageInvalidError
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.cognitive.models.enums import (
     AccessibilityState,
@@ -683,3 +684,106 @@ def test_sy12_malformed_packages_are_rejected_before_writing(instance_b):
         session.close()
 
     assert all(count == 0 for count in census.values())
+
+
+def _row_census(session: Session) -> dict[str, list[tuple]]:
+    """Censo linha a linha, para provar que a rejeição não escreveu
+    absolutamente nada."""
+    return {
+        table: [
+            tuple(row)
+            for row in session.execute(sa.text(f"SELECT * FROM {table} ORDER BY id")).all()
+        ]
+        for table in _ALL_TABLES
+    }
+
+
+def test_cd7_cyclic_package_is_rejected_leaving_the_destination_untouched(instance_b):
+    """CD7/§18 (`E3.11.1`) — gate forte do preflight causal, medido:
+
+    o destino tem patrimônio causal válido; o pacote traz eventos
+    individualmente plausíveis que, juntos, fecham um ciclo. O import
+    é rejeitado **antes da primeira escrita** e o destino permanece
+    linha a linha idêntico.
+
+    ```text
+    applied_count = 0   overwrite_count = 0   D_after == D_before
+    ```
+    """
+    _seed_full_patrimony()
+    with UnitOfWork() as uow:
+        package = SynchronizationManager(SyncRepository(uow.session)).export_package()
+
+    factory = instance_b
+    with factory() as session:
+        SynchronizationManager(SyncRepository(session)).import_package(package)
+        session.commit()
+        before = _row_census(session)
+
+    # Pacote novo: dois eventos que só existem aqui e se referenciam
+    # mutuamente. Cada um, isolado, seria plausível.
+    first, second = uuid.uuid4(), uuid.uuid4()
+    history_id = package["causal_events"][0]["history_id"]
+    now = datetime.now(UTC).isoformat()
+    cyclic = {
+        **package,
+        "causal_events": [
+            {
+                "id": str(first),
+                "history_id": history_id,
+                "event_type": "accessed",
+                "actor_ref": None,
+                "payload_ref": None,
+                "predecessor_event_id": str(second),
+                "occurred_at": None,
+                "created_at": now,
+                "updated_at": now,
+            },
+            {
+                "id": str(second),
+                "history_id": history_id,
+                "event_type": "accessed",
+                "actor_ref": None,
+                "payload_ref": None,
+                "predecessor_event_id": str(first),
+                "occurred_at": None,
+                "created_at": now,
+                "updated_at": now,
+            },
+        ],
+    }
+
+    with factory() as session:
+        manager = SynchronizationManager(SyncRepository(session))
+        with pytest.raises(SyncPackageInvalidError) as exc:
+            manager.import_package(cyclic)
+        session.rollback()
+
+    assert exc.value.error_code.code == "PIA-8022"
+    assert "ciclo" in str(exc.value)
+
+    with factory() as session:
+        assert _row_census(session) == before
+
+
+def test_cd12_integrity_still_passes_after_a_valid_import(instance_b):
+    """CD9-CD12 — o preflight não quebrou nada do que já passava: o
+    round-trip válido continua aplicando, e o `IntegrityManager` de
+    `E3.10` acusa patrimônio íntegro no destino — incluindo ausência de
+    ciclo causal, agora garantida também na entrada."""
+    _seed_full_patrimony()
+    with UnitOfWork() as uow:
+        package = SynchronizationManager(SyncRepository(uow.session)).export_package()
+
+    factory = instance_b
+    with factory() as session:
+        report = SynchronizationManager(SyncRepository(session)).import_package(package)
+        session.commit()
+
+    assert report.status is SyncStatus.APPLIED
+    assert report.applied_count > 0
+
+    with factory() as session:
+        audit = IntegrityManager(IntegrityRepository(session)).audit()
+
+    assert audit.status is IntegrityStatus.PASS, audit.findings

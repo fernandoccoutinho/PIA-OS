@@ -290,6 +290,70 @@ PIA_LEARNING_SOURCE = VALIDATED_EXPERIENCE
 Conflito é evidência de divergência, não aprendizado automático, e não
 é promovido ao Kernel.
 
+## Preflight causal (E3.11.1)
+
+```text
+CAUSAL_IMPORT_DAG_PREFLIGHT        = IMPLEMENTED
+APPLICATION_STRUCTURAL_DAG         = PRESERVED
+DB_LEVEL_GLOBAL_DAG_GUARANTEE      = FALSE
+SYNC_LEVEL_CAUSAL_CYCLE_PROTECTION = PREFLIGHT_BEFORE_WRITE
+```
+
+`E3.9.1a` congelou `APPLICATION_STRUCTURAL_DAG = TRUE` porque, pelo
+caminho autorizado original, todo predecessor já estava persistido, o
+evento novo era append e nenhuma operação legítima redirecionava
+aresta antiga. **`E3.11` abriu um caminho autorizado novo** — import
+direto em tabela — e um caminho novo não pode enfraquecer o invariante
+anterior:
+
+```text
+SYNCHRONIZATION_IMPORT MUST PRESERVE APPLICATION_STRUCTURAL_DAG
+SYNCHRONIZATION MUST NOT CREATE A CAUSAL HISTORY THAT THE AUTHORIZED
+SOURCE CONTRACT COULD NOT HAVE PRODUCED
+TRANSMISSION != STRUCTURAL MUTATION
+```
+
+Antes de qualquer escrita, o import monta o **grafo candidato**
+`destino ∪ pacote` e verifica aciclicidade. Global de propósito:
+`CROSS_HISTORY_PREDECESSOR = ALLOWED` e
+`HISTORY_BOUNDARY != CAUSAL_BOUNDARY`, então auditar por história
+isolada perderia exatamente os elos que o contrato autoriza.
+
+Reutiliza o detector **puro** de `E3.10` (`find_cycle`, DFS iterativo
+colorido, `O(V + E)`). Reutilizar a função não acopla Sync ao
+`IntegrityManager` como serviço de decisão — nenhum `IntegrityReport`
+é produzido nem consultado.
+
+Pacote cíclico → `SyncPackageInvalidError` (`PIA-8022`), nenhum código
+novo criado:
+
+```text
+applied_count = 0   overwrite_count = 0   destination_unchanged = TRUE
+PREFLIGHT_DOMAIN_WRITE_COUNT = 0
+```
+
+**E não se apoia no banco.** O PostgreSQL garante validade de FK e
+rejeição de auto-predecessor, e nada além disso — `FK + NO_SELF !=
+GLOBAL_CYCLE_PROTECTION`. Qualquer afirmação anterior de que "o banco
+recusaria o ciclo de qualquer forma" foi corrigida:
+`ORDERING != VALIDATION`, e `topologically_ordered_events()` terminar
+diante de um ciclo é robustez daquela função, nunca garantia de
+integridade causal.
+
+**Escopo.** Trata somente `CausalHistory`, porque é `E3.9.1a` que
+promete `APPLICATION_STRUCTURAL_DAG`. `Lineage` mantém o que foi
+congelado: `CYCLE_PROTECTION = SELF_ONLY` em `E3.3` e `FULL_DAG` de
+**auditoria** em `E3.10` — nenhuma regra nova foi estendida a ele.
+
+**Nota honesta de alcançabilidade.** Por importação *insert-only*, com
+conflito abortando tudo, uma aresta do destino apontando para um
+evento ainda inexistente é impedida pela própria FK — não consegui
+construir, pelo caminho autorizado atual, uma composição
+destino+pacote que feche ciclo sem passar por conflito. O grafo
+candidato é montado globalmente mesmo assim, e `CD4` prova que a
+verificação é global forjando o lado do destino. A propriedade
+protegida é a do contrato, não apenas a do caminho de hoje.
+
 ## Testes
 
 - **Unitários**

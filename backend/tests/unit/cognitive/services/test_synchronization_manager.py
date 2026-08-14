@@ -153,9 +153,16 @@ def test_events_with_external_predecessor_are_not_postponed():
 
 def test_event_ordering_terminates_even_with_a_cyclic_package():
     """Um pacote corrompido com ciclo causal não trava a ordenação: ela
-    termina e devolve todos os registros. Detectar ciclo é do
-    `IntegrityManager` (`E3.10`), não desta função — e o banco recusa a
-    inserção de qualquer forma."""
+    termina e devolve todos os registros.
+
+    **`ORDERING != VALIDATION`** (`E3.11.1`): esta função ordena, não
+    valida. Quem rejeita ciclo é o preflight causal do
+    `SynchronizationManager`, **antes** de qualquer escrita — e a
+    rejeição não é delegada ao PostgreSQL, que garante FK e
+    auto-predecessor mas **não** aciclicidade global
+    (`DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE`). Terminar diante de um
+    ciclo é robustez desta função, nunca garantia de integridade
+    causal."""
     first, second = uuid.uuid4(), uuid.uuid4()
     rows = [
         {"id": first, "predecessor_event_id": second},
@@ -320,3 +327,212 @@ def test_causal_event_table_is_the_only_one_needing_topological_order():
 
     assert self_referencing == [CausalHistoryEvent.__tablename__]
     assert CausalEventType is not None  # vocabulário fechado permanece em uso
+
+
+# ---------------------------------------------------------------------
+# E3.11.1 — preflight causal: o novo caminho autorizado de escrita não
+# pode enfraquecer APPLICATION_STRUCTURAL_DAG.
+# ---------------------------------------------------------------------
+
+
+def _causal_package(events: list[dict[str, object]]) -> dict[str, object]:
+    package = _empty_package()
+    package["causal_events"] = events
+    return package
+
+
+def test_cd1_valid_causal_package_passes_preflight(manager):
+    """CD1 — cadeia simples `E3 → E2 → E1` passa: o preflight rejeita
+    ciclo, não profundidade."""
+    first, second, third = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+    manager._assert_causal_acyclicity(
+        _causal_package(
+            [
+                {"id": str(first), "predecessor_event_id": None},
+                {"id": str(second), "predecessor_event_id": str(first)},
+                {"id": str(third), "predecessor_event_id": str(second)},
+            ]
+        )
+    )
+
+
+def test_cd1b_branching_and_multiple_paths_pass_preflight(manager):
+    """CD2/CD3 — ramificação (`E2 → E1`, `E3 → E1`) e múltiplos
+    caminhos causais não são ciclo. Nenhuma trajetória é colapsada."""
+    origin, branch_a, branch_b, leaf = (uuid.uuid4() for _ in range(4))
+
+    manager._assert_causal_acyclicity(
+        _causal_package(
+            [
+                {"id": str(origin), "predecessor_event_id": None},
+                {"id": str(branch_a), "predecessor_event_id": str(origin)},
+                {"id": str(branch_b), "predecessor_event_id": str(origin)},
+                {"id": str(leaf), "predecessor_event_id": str(branch_a)},
+            ]
+        )
+    )
+
+
+def test_cd2_two_event_cycle_in_the_package_is_rejected(manager):
+    """CD2 — ciclo de dois eventos dentro do pacote é rejeitado com
+    `PIA-8022`, antes de qualquer escrita."""
+    first, second = uuid.uuid4(), uuid.uuid4()
+
+    with pytest.raises(SyncPackageInvalidError) as exc:
+        manager._assert_causal_acyclicity(
+            _causal_package(
+                [
+                    {"id": str(first), "predecessor_event_id": str(second)},
+                    {"id": str(second), "predecessor_event_id": str(first)},
+                ]
+            )
+        )
+
+    assert exc.value.error_code.code == "PIA-8022"
+    assert "ciclo" in str(exc.value)
+
+
+def test_cd3_three_event_cycle_in_the_package_is_rejected(manager):
+    """CD3 — ciclo de três eventos também é rejeitado."""
+    first, second, third = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+    with pytest.raises(SyncPackageInvalidError):
+        manager._assert_causal_acyclicity(
+            _causal_package(
+                [
+                    {"id": str(first), "predecessor_event_id": str(second)},
+                    {"id": str(second), "predecessor_event_id": str(third)},
+                    {"id": str(third), "predecessor_event_id": str(first)},
+                ]
+            )
+        )
+
+
+def test_cd4_cycle_closed_only_by_combining_destination_and_package(monkeypatch, manager):
+    """CD4 — o grafo candidato é `destino ∪ pacote`, não só o pacote.
+
+    Cenário construído para que **cada metade seja acíclica sozinha** e
+    o ciclo só apareça na composição: o destino contém `D → P`, o
+    pacote contém `P → D`. O preflight enxerga porque monta o grafo
+    global.
+
+    Nota honesta de alcançabilidade: por importação *insert-only*, com
+    conflito abortando tudo, uma aresta do destino apontando para um
+    evento que ainda não existe é impedida pela própria FK — então este
+    cenário exige forjar o lado do destino. O teste prova que a
+    verificação é **global**, que é a propriedade que protege caminhos
+    de escrita futuros; não afirma que a composição seja alcançável
+    hoje pelo import.
+    """
+    destination_event, package_event = uuid.uuid4(), uuid.uuid4()
+    monkeypatch.setattr(
+        manager._repository,
+        "read_causal_edges",
+        lambda: {str(destination_event): str(package_event)},
+    )
+
+    # O pacote, sozinho, é acíclico: um único evento com predecessor externo.
+    with pytest.raises(SyncPackageInvalidError):
+        manager._assert_causal_acyclicity(
+            _causal_package(
+                [{"id": str(package_event), "predecessor_event_id": str(destination_event)}]
+            )
+        )
+
+
+def test_cd5_cross_history_predecessor_passes_preflight(manager):
+    """CD5 — predecessor entre histórias continua válido: o preflight é
+    global de propósito (`HISTORY_BOUNDARY != CAUSAL_BOUNDARY`) e não
+    marca elo entre histórias como corrupção."""
+    history_a, history_b = uuid.uuid4(), uuid.uuid4()
+    origin, received = uuid.uuid4(), uuid.uuid4()
+
+    manager._assert_causal_acyclicity(
+        _causal_package(
+            [
+                {
+                    "id": str(origin),
+                    "history_id": str(history_a),
+                    "predecessor_event_id": None,
+                },
+                {
+                    "id": str(received),
+                    "history_id": str(history_b),
+                    "predecessor_event_id": str(origin),
+                },
+            ]
+        )
+    )
+
+
+def test_cd6_predecessor_already_in_destination_passes_preflight(monkeypatch, manager):
+    """CD6 — predecessor já presente no destino, filho novo no pacote:
+    o caso normal de sincronização incremental. Passa."""
+    existing = uuid.uuid4()
+    child = uuid.uuid4()
+    monkeypatch.setattr(manager._repository, "read_causal_edges", lambda: {str(existing): None})
+
+    manager._assert_causal_acyclicity(
+        _causal_package([{"id": str(child), "predecessor_event_id": str(existing)}])
+    )
+
+
+def test_cd8_malformed_event_id_does_not_break_the_preflight(manager):
+    """CD8 — id malformado não derruba o preflight: ele não entra no
+    grafo e a rejeição específica vem depois, na decodificação.
+
+    O preflight verifica **aciclicidade**, não sintaxe.
+    """
+    manager._assert_causal_acyclicity(
+        _causal_package([{"id": "não-é-uuid", "predecessor_event_id": None}])
+    )
+
+    with pytest.raises(SyncPackageInvalidError):
+        manager.import_package(
+            _causal_package([{"id": "não-é-uuid", "predecessor_event_id": None}])
+        )
+
+
+def test_cd8b_event_without_id_is_rejected_by_the_preflight_path(manager):
+    """CD8 (complemento) — evento sem `id` é rejeitado já dentro do
+    preflight, pela mesma validação de envelope que cobre todas as
+    seções. Nada é escrito, e a mensagem é específica."""
+    with pytest.raises(SyncPackageInvalidError, match="sem 'id'"):
+        manager._assert_causal_acyclicity(_causal_package([{"predecessor_event_id": None}]))
+
+    with pytest.raises(SyncPackageInvalidError, match="sem 'id'"):
+        manager.import_package(_causal_package([{"predecessor_event_id": None}]))
+
+
+def test_cd8c_uuid_instances_pass_through_the_preflight_unchanged(manager):
+    """Um pacote já decodificado (ids como `UUID`, não strings) é
+    aceito: o grafo candidato normaliza identificadores por `str()`,
+    então texto do pacote e `UUID` do destino convivem sem
+    ambiguidade."""
+    first, second = uuid.uuid4(), uuid.uuid4()
+
+    manager._assert_causal_acyclicity(
+        _causal_package(
+            [
+                {"id": first, "predecessor_event_id": None},
+                {"id": second, "predecessor_event_id": first},
+            ]
+        )
+    )
+
+
+def test_cd8d_malformed_predecessor_is_ignored_by_the_preflight(manager):
+    """CD8 (complemento) — predecessor malformado também não participa
+    do grafo: o preflight não confunde sintaxe com aciclicidade. A
+    rejeição específica vem da decodificação."""
+    event = uuid.uuid4()
+
+    manager._assert_causal_acyclicity(
+        _causal_package([{"id": str(event), "predecessor_event_id": "não-é-uuid"}])
+    )
+
+    with pytest.raises(SyncPackageInvalidError):
+        manager.import_package(
+            _causal_package([{"id": str(event), "predecessor_event_id": "não-é-uuid"}])
+        )

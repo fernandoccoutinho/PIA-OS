@@ -67,6 +67,7 @@ from app.cognitive.schemas.synchronization import (
     SyncReport,
     decode_value,
 )
+from app.cognitive.services.integrity_manager import find_cycle
 
 
 class SynchronizationManager:
@@ -116,6 +117,7 @@ class SynchronizationManager:
         isso que torna o rollback completo possível.
         """
         self._validate_envelope(package)
+        self._assert_causal_acyclicity(package)
 
         conflicts: list[SyncConflict] = []
         planned: list[tuple[sa.Table, list[dict[str, Any]]]] = []
@@ -148,6 +150,76 @@ class SynchronizationManager:
             if count:
                 applied[SECTION_BY_TABLE[table.name]] = count
         return SyncReport(conflicts=(), applied=applied, skipped=dict(skipped), overwrite_count=0)
+
+    # --- Preflight causal (E3.11.1) -----------------------------------
+
+    def _assert_causal_acyclicity(self, package: dict[str, Any]) -> None:
+        """Rejeita, **antes de qualquer escrita**, um pacote que
+        introduziria ciclo no grafo causal global.
+
+        Por que isto existe: `E3.9.1a` congelou
+        `APPLICATION_STRUCTURAL_DAG = TRUE` porque, pelo caminho
+        autorizado original, todo predecessor já estava persistido e
+        nenhuma operação legítima redirecionava aresta antiga. `E3.11`
+        abriu um **novo caminho autorizado de escrita** (import direto
+        em tabela), e um caminho novo não pode enfraquecer o invariante
+        anterior:
+
+        ```text
+        SYNCHRONIZATION_IMPORT MUST PRESERVE APPLICATION_STRUCTURAL_DAG
+        SYNCHRONIZATION MUST NOT CREATE A CAUSAL HISTORY THAT THE
+        AUTHORIZED SOURCE CONTRACT COULD NOT HAVE PRODUCED
+        TRANSMISSION != STRUCTURAL MUTATION
+        ```
+
+        E **não** se apoia no banco para isso:
+
+        ```text
+        DB_FK_GUARANTEE               = TRUE
+        DB_SELF_PREDECESSOR_GUARANTEE = TRUE
+        DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE
+        FK + NO_SELF != GLOBAL_CYCLE_PROTECTION
+        ```
+
+        O grafo candidato é `destino ∪ pacote`, montado **globalmente**
+        — nunca por história isolada, porque
+        `CROSS_HISTORY_PREDECESSOR = ALLOWED` e
+        `HISTORY_BOUNDARY != CAUSAL_BOUNDARY`. As arestas do pacote
+        sobrescrevem as homônimas do destino ao montar o candidato: se
+        houver divergência de representação isso também é conflito, e o
+        conflito aborta o import de qualquer modo — mas o candidato
+        precisa refletir o pior caso analisável.
+
+        Reutiliza o detector **puro** de `E3.10` (`find_cycle`,
+        DFS iterativo colorido, `O(V + E)`). Reutilizar a função não
+        acopla Sync ao `IntegrityManager` como serviço de decisão:
+        nenhum `IntegrityReport` é produzido nem consultado aqui.
+        """
+        edges: dict[str, str | None] = dict(self._repository.read_causal_edges())
+        for row in self._section_rows(package, SECTION_BY_TABLE["causal_history_events"]):
+            # `_section_rows` já rejeita registro sem `id`, com
+            # mensagem própria — aqui todo registro tem identificador.
+            predecessor = row.get("predecessor_event_id")
+            edges[str(row["id"])] = None if predecessor is None else str(predecessor)
+
+        adjacency: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for event_id, predecessor in edges.items():
+            node = _as_uuid(event_id)
+            if node is None:
+                continue
+            adjacency.setdefault(node, [])
+            parent = _as_uuid(predecessor) if predecessor is not None else None
+            if parent is not None:
+                adjacency.setdefault(parent, [])
+                adjacency[node].append(parent)
+
+        cycle = find_cycle(adjacency)
+        if cycle is not None:
+            raise SyncPackageInvalidError(
+                "o pacote introduziria ciclo no grafo causal global "
+                f"({' -> '.join(str(event_id) for event_id in cycle)}); nenhum "
+                "registro foi aplicado"
+            )
 
     # --- Internals ----------------------------------------------------
 
@@ -243,3 +315,21 @@ class SynchronizationManager:
                     f"valor inválido para '{key}' na seção {section}: {exc}"
                 ) from exc
         return decoded
+
+
+def _as_uuid(value: str) -> uuid.UUID | None:
+    """Converte um identificador em `UUID`, ou devolve `None` quando
+    não é conversível.
+
+    Recebe sempre `str`: o grafo candidato é montado com identificadores
+    normalizados por `str()`, venham eles do pacote (texto) ou do
+    destino (`UUID`).
+
+    Identificador malformado não derruba o preflight — ele apenas não
+    participa do grafo, e a rejeição específica vem depois, de
+    `_decode_row`. O preflight verifica **aciclicidade**, não sintaxe.
+    """
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None

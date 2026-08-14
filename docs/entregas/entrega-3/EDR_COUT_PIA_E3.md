@@ -464,3 +464,29 @@ identidade cognitiva pertence ao PIA, não ao provider
 SYNCHRONIZATION_IS_LEARNING/GOVERNANCE/REPAIR = FALSE
 ARTIFACT_STORAGE = DEFERRED
 ```
+
+### Transmissão preserva estrutura causal válida (E3.11.1)
+
+```text
+TRANSMISSION MUST PRESERVE VALID CAUSAL STRUCTURE
+SYNCHRONIZATION MUST NOT CREATE A CAUSAL HISTORY THAT THE AUTHORIZED
+SOURCE CONTRACT COULD NOT HAVE PRODUCED
+TRANSMISSION != STRUCTURAL MUTATION
+```
+
+Todo caminho autorizado de escrita novo herda os invariantes dos
+anteriores. `E3.11` abriu um (import direto em tabela), e por isso o
+import verifica, **antes de qualquer escrita**, se o grafo candidato
+`destino ∪ pacote` permanece acíclico:
+
+```text
+CAUSAL_IMPORT_DAG_PREFLIGHT   = IMPLEMENTED
+APPLICATION_STRUCTURAL_DAG    = PRESERVED
+DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE
+FK + NO_SELF != GLOBAL_CYCLE_PROTECTION
+```
+
+A verificação é global — `HISTORY_BOUNDARY != CAUSAL_BOUNDARY` — e a
+rejeição não depende do banco. Pacote cíclico é pacote inválido:
+nenhum registro é aplicado, o destino permanece inalterado, e nada é
+resolvido silenciosamente.

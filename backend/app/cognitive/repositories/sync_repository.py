@@ -110,6 +110,24 @@ class SyncRepository:
             str(row._mapping["id"]): encode_row(row) for row in self._session.execute(stmt).all()
         }
 
+    def read_causal_edges(self) -> dict[str, str | None]:
+        """Arestas causais já presentes no destino: `id → predecessor`.
+
+        Lê **globalmente**, sem filtrar por história:
+        `HISTORY_BOUNDARY != CAUSAL_BOUNDARY` (`E3.9.1`), e um
+        predecessor legítimo pode estar na história de outro sujeito.
+        Auditar por história perderia exatamente esses elos.
+
+        Somente leitura — o preflight analisa, não altera nada
+        (`PREFLIGHT_DOMAIN_WRITE_COUNT = 0`).
+        """
+        events = Base.metadata.tables["causal_history_events"]
+        stmt = sa.select(events.c.id, events.c.predecessor_event_id)
+        return {
+            str(row[0]): (None if row[1] is None else str(row[1]))
+            for row in self._session.execute(stmt).all()
+        }
+
     # --- Import -------------------------------------------------------
 
     def insert_rows(self, table: sa.Table, rows: list[dict[str, Any]]) -> int:
