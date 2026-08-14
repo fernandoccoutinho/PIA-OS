@@ -283,6 +283,22 @@ mesmo (E3.9/LIB-09) — mesma classe de erro de `LineageSelfLinkError`
 e `RelationshipSelfLinkError`."""
 
 
+PIA_8022_SYNC_PACKAGE_INVALID = ErrorCode(
+    code="PIA-8022",
+    default_message="sync_package_invalid",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Pacote de sincronização malformado, com formato/versão não
+suportados, ou com seção/referência inválida (E3.11/LIB-11).
+
+Deliberadamente **não** cobre conflito: colisão de identidade com
+estado divergente é resultado válido do contrato
+(`CONFLICT DETECTION != CONFLICT RESOLUTION`) e volta em `SyncReport`,
+nunca como exceção."""
+
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -305,6 +321,7 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8019_SEARCH_CRITERIA_INVALID,
     PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
     PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
+    PIA_8022_SYNC_PACKAGE_INVALID,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {

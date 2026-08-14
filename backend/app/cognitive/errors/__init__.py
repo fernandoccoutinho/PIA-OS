@@ -21,6 +21,7 @@ from app.cognitive.errors.codes import (
     PIA_8019_SEARCH_CRITERIA_INVALID,
     PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
     PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
+    PIA_8022_SYNC_PACKAGE_INVALID,
 )
 from app.cognitive.errors.exceptions import (
     AccessibilityInvalidTransitionError,
@@ -43,6 +44,7 @@ from app.cognitive.errors.exceptions import (
     RevisionCurrentUniquenessViolationError,
     RevisionStatusInvalidTransitionError,
     SearchCriteriaError,
+    SyncPackageInvalidError,
     TransformationRecordImmutableError,
 )
 
@@ -69,6 +71,7 @@ __all__ = [
     "PIA_8019_SEARCH_CRITERIA_INVALID",
     "PIA_8020_CAUSAL_HISTORY_IMMUTABLE",
     "PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR",
+    "PIA_8022_SYNC_PACKAGE_INVALID",
     "AccessibilityInvalidTransitionError",
     "CausalEventSelfPredecessorError",
     "CausalHistoryImmutableError",
@@ -87,6 +90,7 @@ __all__ = [
     "RelationshipImmutableError",
     "RelationshipSelfLinkError",
     "RevisionCurrentUniquenessViolationError",
+    "SyncPackageInvalidError",
     "SearchCriteriaError",
     "RevisionStatusInvalidTransitionError",
     "TransformationRecordImmutableError",

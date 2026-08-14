@@ -29,6 +29,7 @@ from app.cognitive.errors.codes import (
     PIA_8019_SEARCH_CRITERIA_INVALID,
     PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
     PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
+    PIA_8022_SYNC_PACKAGE_INVALID,
 )
 from app.exceptions.base import PIAOSException
 
@@ -428,4 +429,22 @@ class CausalEventSelfPredecessorError(PIAOSException):
         super().__init__(
             message=f"CausalHistoryEvent {event_id} não pode ser predecessor de si mesmo.",
             detail={"event_id": str(event_id)},
+        )
+
+
+class SyncPackageInvalidError(PIAOSException):
+    """Pacote de sincronização inutilizável (E3.11/LIB-11).
+
+    Levantada **antes** de qualquer escrita: um pacote malformado não
+    deve conseguir aplicar nada, nem parcialmente. Conflito de
+    identidade não passa por aqui — é resultado, não erro.
+    """
+
+    error_code = PIA_8022_SYNC_PACKAGE_INVALID
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            message=f"Pacote de sincronização inválido: {reason}",
+            detail={"reason": reason},
         )

@@ -429,3 +429,38 @@ automaticamente regra, política, contrato ou Kernel.
 exige experiência validada mais reprodutibilidade, evidência
 suficiente, generalizabilidade e aprovação de governança. Nunca
 `INCIDENT → KERNEL CHANGE`.
+
+### Transmissão entre instâncias (E3.11)
+
+```text
+SYNCHRONIZATION = COGNITIVE_PATRIMONY_TRANSMISSION
+TRANSMISSION       != OVERWRITE
+CONFLICT_DETECTION != CONFLICT_RESOLUTION
+SAME_CURRENT_STATE != SAME_CAUSAL_HISTORY
+IMPORT MUST NOT REGENERATE COGNITIVE IDENTITY
+```
+
+Sincronizar é transmitir patrimônio — identidade e história —, não
+copiar as linhas atuais. Por isso todo identificador persistente
+atravessa a fronteira intacto: depois do round-trip, o destino tem *o
+mesmo* patrimônio, não objetos equivalentes novos.
+
+Colisão de identidade com estado divergente é **conflito explícito**,
+nunca resolução silenciosa. Não existe destino que vence, origem que
+vence, last-write-wins, timestamp mais novo, prioridade de provider ou
+score. Um conflito pode permanecer sem resolução, e o relatório
+preserva as duas representações — nenhum dos lados desaparece do
+diagnóstico. Resolver divergência é decisão, e decisão pertence à
+governança (`E4`).
+
+Havendo conflito, **nada** é aplicado: import parcial deixaria
+linhagem incompleta, provenance pela metade ou eventos causais órfãos.
+
+```text
+ausência no pacote != CAUSALLY_EXTINCT
+NO TRACE != AUTHORIZATION TO FABRICATE HISTORY
+equivalência != autorização para deduplicação destrutiva
+identidade cognitiva pertence ao PIA, não ao provider
+SYNCHRONIZATION_IS_LEARNING/GOVERNANCE/REPAIR = FALSE
+ARTIFACT_STORAGE = DEFERRED
+```
