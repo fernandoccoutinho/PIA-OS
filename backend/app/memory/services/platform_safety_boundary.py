@@ -37,6 +37,14 @@ from app.memory.models.governance_enums import (
     CriticalCapability,
     GovernanceOutcome,
 )
+from app.memory.schemas.governance import (
+    _canonical_capabilities,
+    _canonical_text_tuple,
+    _optional_text,
+    _required_text,
+    _validated_member,
+    _validated_version,
+)
 
 PLATFORM_SAFETY_BOUNDARY_VERSION = 1
 """Versão da fronteira, citada em toda resolução.
@@ -153,6 +161,53 @@ class SafetyAssessment:
     admissible_alternatives: tuple[str, ...] = ()
     preserved_intent: str | None = None
     rationale: str = ""
+
+    def __post_init__(self) -> None:
+        """Mesma disciplina de `GovernanceResolution` (E4.3.2).
+
+        A auditoria apontou o defeito na resolução; ele estava aqui
+        também — listas externas entravam, mutá-las alterava a
+        avaliação, e o objeto ficava não hashable. Corrigir só um dos
+        dois deixaria a metade errada no caminho pelo qual o outro é
+        construído.
+        """
+        object.__setattr__(
+            self, "outcome", _validated_member("outcome", self.outcome, GovernanceOutcome)
+        )
+        object.__setattr__(
+            self, "boundary_version", _validated_version("boundary_version", self.boundary_version)
+        )
+        object.__setattr__(
+            self,
+            "blocked_capabilities",
+            _canonical_capabilities("blocked_capabilities", self.blocked_capabilities),
+        )
+        object.__setattr__(
+            self,
+            "admissible_alternatives",
+            _canonical_text_tuple("admissible_alternatives", self.admissible_alternatives),
+        )
+        object.__setattr__(
+            self, "preserved_intent", _optional_text("preserved_intent", self.preserved_intent)
+        )
+        object.__setattr__(self, "rationale", _required_text("rationale", self.rationale))
+
+        if self.outcome not in (GovernanceOutcome.PROHIBITED, GovernanceOutcome.NOT_APPLICABLE):
+            raise ValueError(
+                f"a fronteira nunca produz '{self.outcome.value}' — ela proíbe ou se cala; "
+                "um piso de segurança que concedesse permissão seria autoridade "
+                "concorrente da policy local"
+            )
+        if self.outcome is GovernanceOutcome.PROHIBITED and not self.blocked_capabilities:
+            raise ValueError(
+                "PROHIBITED exige ao menos uma capacidade bloqueada — uma recusa que "
+                "não diz o que bloqueou é irrecorrível"
+            )
+        if self.outcome is GovernanceOutcome.NOT_APPLICABLE and self.blocked_capabilities:
+            raise ValueError(
+                "NOT_APPLICABLE não bloqueia capacidade alguma — a fronteira ou "
+                "proíbe e diz o quê, ou se cala"
+            )
 
     @property
     def prohibits(self) -> bool:

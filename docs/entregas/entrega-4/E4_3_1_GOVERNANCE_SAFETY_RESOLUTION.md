@@ -347,3 +347,124 @@ E4_3_1_IMPLEMENTATION = COMPLETE
 E4_3_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
 READY_FOR_E4_4        = FALSE
 ```
+
+---
+
+# E4.3.2 — Corretivo dos invariantes de `GovernanceResolution`
+
+Correção mínima sobre o patch 42. Nada de E4.3/E4.3.1 foi
+reconstruído.
+
+## 8. O defeito, e o fato de eu já ter sido corrigido nele
+
+`GovernanceResolution` foi declarada `frozen` e parou aí. `frozen=True`
+protege a **referência**, não o **conteúdo** — que é exatamente o que
+a `E4.2.1` já havia corrigido em `MemoryContext`, com a mesma
+explicação, três patches antes. Repeti o erro num value object que
+decide autorização.
+
+Reproduzido antes de qualquer correção:
+
+| # | Sintoma |
+|---|---|
+| 1 | `frozen=True` aceitava lista externa em `blocked_capabilities` |
+| 2 | mutar a lista original **alterava a resolução construída** (1 → 2 capacidades) |
+| 3 | com lista dentro, `hash()` levantava `TypeError` |
+| 4 | estados contraditórios aceitos |
+
+E o pior caso do item 4:
+
+```
+outcome = ADMISSIBLE
+blocked_capabilities = (CHILD_SEXUAL_EXPLOITATION,)
+execution_authorized = True
+```
+
+Uma autorização que carrega a prova da própria recusa. Numa camada
+cuja função é autorizar ou recusar, isso não é inconsistência
+cosmética.
+
+`SafetyAssessment` tinha os mesmos defeitos — verificado na mesma
+reprodução. Corrigir só a resolução deixaria a metade errada
+exatamente no caminho pelo qual a outra é construída.
+
+## 9. Correção
+
+Invariantes em `__post_init__`, valendo em toda construção pública, em
+ambos os value objects.
+
+**Tipos e canonicalização**
+
+```
+blocked_capabilities   tuple[Any, ...] → tuple[CriticalCapability, ...]
+                       ordenada, desduplicada, realmente imutável
+coleções textuais      tupla, ordem preservada (é curada), sem repetição,
+                       sem entrada em branco
+outcome / operation    exige o membro do enum, não a string equivalente
+versões                int >= 1; `bool` recusado apesar de ser subclasse de int
+```
+
+O detalhe do enum merece nota: `StrEnum` compara igual à sua string,
+então aceitar `"admissible"` passaria despercebido em quase todo teste
+de comportamento e só quebraria num `is`. O tipo é a garantia.
+
+**Coerência**
+
+```
+PROHIBITED                    exige ≥ 1 capacidade bloqueada
+demais resultados             não carregam capacidade bloqueada
+ADMISSIBLE / INADMISSIBLE     exigem proveniência local completa
+PROHIBITED                    não carrega proveniência local nenhuma
+identidade de policy          tudo-ou-nada
+matched_rule_id               exige identidade de policy
+NOT_APPLICABLE                não cita regra
+```
+
+Cada uma protege algo concreto. `PROHIBITED` sem capacidade bloqueada é
+uma recusa irrecorrível — não há como auditar nem propor alternativa.
+`PROHIBITED` com proveniência local é consulta fabricada, porque quando
+a fronteira proíbe a policy **sequer é consultada** (E4.3.1).
+Proveniência parcial é pior que ausente, porque parece proveniência.
+
+`INADMISSIBLE` foi incluído na exigência de proveniência completa
+embora o corretivo só pedisse `ADMISSIBLE`: ele sempre nasce de uma
+regra `DENY` que casou, e deixá-lo de fora seria arbitrário — é o
+mesmo invariante.
+
+`execution_authorized` continua **derivada** e nunca armazenada; o que
+mudou é que agora ela só pode ser `True` sobre um estado válido,
+porque o inválido não chega a existir.
+
+## 10. Testes
+
+31 testes novos. **30 falham contra o patch 42** e passam no
+corrigido. O trigésimo primeiro —
+`test_e432_resolutions_from_resolve_remain_valid` — passa nos dois, e
+isso é correto: ele é o guarda de regressão pedido ("resoluções
+produzidas por `resolve()` continuam válidas"), não um provador de
+defeito.
+
+Cobertura de `app/memory` de volta a 100%; três ramos de validação
+descobertos foram fechados com casos (`None` explícito em coleção,
+`policy_id` não-UUID, `str` como coleção).
+
+## 11. Resultados
+
+```
+FULL_SUITE = 1243 passed / 1 skipped / 0 failed
+E3_REGRESSION_DELTA   = 0   (598/598)
+E4_1_REGRESSION_DELTA = 0   (40/40)
+E4_2_REGRESSION_DELTA = 0   (42/42)
+E4.3 + E4.3.1 existentes = 47/47 integração + unit; 72/72 no conjunto
+
+GLOBAL_COVERAGE = 98,73%   APP_MEMORY = 100%   APP_COGNITIVE = 100%
+RUFF = PASS   BLACK = PASS   MYPY_NEW_ERRORS = 0   git diff --check = limpo
+MIGRATION_HEAD = 4ca61776b982 (inalterada)   SCHEMA_ORM_DRIFT = 0
+
+ciclo de imports preservado (4 ordens verificadas por sr13)
+E3_UNCHANGED = TRUE   E4_1_UNCHANGED = TRUE   E4_2_UNCHANGED = TRUE
+
+E4_3_2_IMPLEMENTATION = COMPLETE
+E4_3_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
+READY_FOR_E4_4        = FALSE
+```

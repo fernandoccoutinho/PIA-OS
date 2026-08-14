@@ -641,3 +641,320 @@ def test_sb9_preserved_intent_appears_in_a_prohibited_resolution(memory_session)
     assert any("proteção de vítimas" in p for p in resolucao.declared_preservations)
     assert resolucao.declared_losses
     assert resolucao.execution_authorized is False
+
+
+# ======================================================================
+# E4.3.2 — invariantes de GovernanceResolution e SafetyAssessment
+#
+# Mesma classe de defeito que a E4.2.1 corrigiu em `MemoryContext`, e
+# que eu repeti aqui: `frozen=True` protege a referência, não o
+# conteúdo, e o construtor aceitava estados contraditórios.
+# ======================================================================
+
+
+def _valid_prohibited(**kw) -> GovernanceResolution:
+    base = {
+        "outcome": GovernanceOutcome.PROHIBITED,
+        "operation": CognitiveOperation.READ,
+        "safety_boundary_version": PLATFORM_SAFETY_BOUNDARY_VERSION,
+        "blocked_capabilities": (CriticalCapability.CHILD_SEXUAL_EXPLOITATION,),
+    }
+    base.update(kw)
+    return GovernanceResolution(**base)
+
+
+def _valid_admissible(**kw) -> GovernanceResolution:
+    base = {
+        "outcome": GovernanceOutcome.ADMISSIBLE,
+        "operation": CognitiveOperation.READ,
+        "safety_boundary_version": PLATFORM_SAFETY_BOUNDARY_VERSION,
+        "policy_key": "p",
+        "policy_version": 1,
+        "policy_id": uuid.uuid4(),
+        "matched_rule_id": "r",
+    }
+    base.update(kw)
+    return GovernanceResolution(**base)
+
+
+def test_e432_mutating_the_original_list_does_not_alter_the_resolution():
+    """O sintoma mais grave: um objeto declarado imutável mudava de
+    conteúdo pelas costas de quem o segurava."""
+    origem = [CriticalCapability.CHILD_SEXUAL_EXPLOITATION]
+    resolucao = _valid_prohibited(blocked_capabilities=origem)
+
+    origem.append(CriticalCapability.CATASTROPHIC_HARM_ENABLEMENT)
+    origem.clear()
+
+    assert resolucao.blocked_capabilities == (CriticalCapability.CHILD_SEXUAL_EXPLOITATION,)
+    assert isinstance(resolucao.blocked_capabilities, tuple)
+
+
+def test_e432_resolution_is_hashable():
+    """Com uma lista dentro, `hash()` levantava `TypeError` — e a
+    igualdade estrutural é o que torna a resolução comparável."""
+    a = _valid_prohibited(blocked_capabilities=[CriticalCapability.CHILD_SEXUAL_EXPLOITATION])
+    b = _valid_prohibited(blocked_capabilities={CriticalCapability.CHILD_SEXUAL_EXPLOITATION})
+
+    assert isinstance(hash(a), int)
+    assert a == b
+    assert hash(a) == hash(b)
+    assert len({a, b}) == 1
+
+
+def test_e432_lists_and_sets_become_canonical_tuples():
+    """Listas, conjuntos e geradores viram tuplas canônicas.
+
+    Capacidades são ordenadas e desduplicadas; coleções textuais
+    preservam a ordem (curada, carrega intenção) removendo repetição.
+    """
+    resolucao = _valid_prohibited(
+        blocked_capabilities=[
+            CriticalCapability.WEAPON_OF_MASS_DESTRUCTION_ENABLEMENT,
+            CriticalCapability.CHILD_SEXUAL_EXPLOITATION,
+            CriticalCapability.CHILD_SEXUAL_EXPLOITATION,
+        ],
+        admissible_alternatives=["prevenção", "denúncia", "prevenção"],
+        constraints={"única"},
+        declared_preservations=(x for x in ("a", "b")),
+        declared_losses=["a capacidade solicitada"],
+    )
+
+    assert resolucao.blocked_capabilities == (
+        CriticalCapability.CHILD_SEXUAL_EXPLOITATION,
+        CriticalCapability.WEAPON_OF_MASS_DESTRUCTION_ENABLEMENT,
+    )
+    assert resolucao.admissible_alternatives == ("prevenção", "denúncia")
+    for campo in (
+        "blocked_capabilities",
+        "admissible_alternatives",
+        "constraints",
+        "declared_preservations",
+        "declared_losses",
+    ):
+        assert isinstance(getattr(resolucao, campo), tuple)
+    assert isinstance(hash(resolucao), int)
+
+
+@pytest.mark.parametrize(
+    "kwargs,exc",
+    [
+        ({"outcome": "prohibited"}, TypeError),
+        ({"operation": "read"}, TypeError),
+        ({"safety_boundary_version": "um"}, TypeError),
+        ({"safety_boundary_version": True}, TypeError),
+        ({"safety_boundary_version": 0}, ValueError),
+        ({"blocked_capabilities": ("texto",)}, TypeError),
+        ({"blocked_capabilities": "csae"}, TypeError),
+        ({"admissible_alternatives": ("",)}, ValueError),
+        ({"admissible_alternatives": ("   ",)}, ValueError),
+        ({"admissible_alternatives": (1,)}, TypeError),
+        ({"constraints": None}, TypeError),
+        ({"preserved_intent": "  "}, ValueError),
+        ({"preserved_intent": 42}, TypeError),
+        ({"safety_rationale": None}, TypeError),
+        # `None` explícito numa coleção: o default é `()` e o campo é
+        # anotado como tupla, então `None` ali contradiz a anotação.
+        # Aceitá-lo como "vazio" repetiria a leniência que gerou o
+        # defeito (mesma lição de E4.2.1).
+        ({"blocked_capabilities": None}, TypeError),
+        ({"declared_losses": None}, TypeError),
+        ({"policy_id": "nao-e-uuid"}, TypeError),
+        # Uma str é iterável, mas iterar caractere a caractere é
+        # sempre engano do chamador — rejeitada como tipo, nunca
+        # expandida em silêncio.
+        ({"constraints": "restrição única"}, TypeError),
+        ({"declared_preservations": 123}, TypeError),
+    ],
+)
+def test_e432_invalid_types_and_values_are_rejected(kwargs, exc):
+    """Tipo inválido é `TypeError`; valor inválido é `ValueError`.
+
+    `StrEnum` compara igual à sua string, então aceitar `"prohibited"`
+    passaria despercebido em quase todo teste de comportamento — o
+    tipo é a garantia.
+    """
+    with pytest.raises(exc):
+        _valid_prohibited(**kwargs)
+
+
+def test_e432_admissible_cannot_carry_blocked_capabilities():
+    """O estado mais alarmante do defeito: uma autorização que carrega
+    a prova da própria recusa."""
+    with pytest.raises(ValueError, match="capacidades bloqueadas"):
+        _valid_admissible(blocked_capabilities=(CriticalCapability.CHILD_SEXUAL_EXPLOITATION,))
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [GovernanceOutcome.INADMISSIBLE, GovernanceOutcome.NOT_APPLICABLE],
+)
+def test_e432_non_prohibited_outcomes_carry_no_blocked_capabilities(outcome):
+    """Capacidade bloqueada é a marca da fronteira; num resultado de
+    policy local seria proveniência falsa."""
+    kw = {
+        "outcome": outcome,
+        "operation": CognitiveOperation.READ,
+        "safety_boundary_version": 1,
+        "blocked_capabilities": (CriticalCapability.CHILD_SEXUAL_EXPLOITATION,),
+    }
+    if outcome is GovernanceOutcome.INADMISSIBLE:
+        kw |= {
+            "policy_key": "p",
+            "policy_version": 1,
+            "policy_id": uuid.uuid4(),
+            "matched_rule_id": "r",
+        }
+    with pytest.raises(ValueError, match="capacidades bloqueadas"):
+        GovernanceResolution(**kw)
+
+
+def test_e432_prohibited_requires_at_least_one_blocked_capability():
+    """Uma recusa que não diz o que bloqueou é irrecorrível: não há
+    como auditar nem propor alternativa."""
+    with pytest.raises(ValueError, match="ao menos uma capacidade"):
+        GovernanceResolution(
+            outcome=GovernanceOutcome.PROHIBITED,
+            operation=CognitiveOperation.READ,
+            safety_boundary_version=1,
+        )
+
+
+@pytest.mark.parametrize(
+    "faltando",
+    ["policy_key", "policy_version", "policy_id", "matched_rule_id"],
+)
+def test_e432_admissible_requires_complete_local_provenance(faltando):
+    """Sem proveniência completa não se pode dizer sob qual regra a
+    decisão foi tomada — e proveniência incompleta é pior que ausente,
+    porque parece proveniência."""
+    with pytest.raises(ValueError):
+        _valid_admissible(**{faltando: None})
+
+
+def test_e432_prohibited_cannot_fabricate_local_provenance():
+    """Quando a fronteira proíbe, a policy local **sequer é
+    consultada** (E4.3.1) — citá-la seria fabricar consulta que não
+    houve."""
+    with pytest.raises(ValueError, match="não pode carregar proveniência"):
+        _valid_prohibited(policy_key="p", policy_version=1, policy_id=uuid.uuid4())
+    with pytest.raises(ValueError):
+        _valid_prohibited(matched_rule_id="inventada")
+
+
+def test_e432_partial_policy_identity_is_rejected():
+    """Identidade de policy é tudo-ou-nada, e regra exige identidade."""
+    with pytest.raises(ValueError, match="incompleta"):
+        GovernanceResolution(
+            outcome=GovernanceOutcome.NOT_APPLICABLE,
+            operation=CognitiveOperation.READ,
+            safety_boundary_version=1,
+            policy_key="p",
+        )
+    with pytest.raises(ValueError, match="sem identidade de policy"):
+        GovernanceResolution(
+            outcome=GovernanceOutcome.NOT_APPLICABLE,
+            operation=CognitiveOperation.READ,
+            safety_boundary_version=1,
+            matched_rule_id="r",
+        )
+
+
+def test_e432_not_applicable_cites_no_rule():
+    """Se nenhuma regra se aplicou, não há regra a citar."""
+    with pytest.raises(ValueError, match="não cita regra"):
+        GovernanceResolution(
+            outcome=GovernanceOutcome.NOT_APPLICABLE,
+            operation=CognitiveOperation.READ,
+            safety_boundary_version=1,
+            policy_key="p",
+            policy_version=1,
+            policy_id=uuid.uuid4(),
+            matched_rule_id="r",
+        )
+
+
+def test_e432_execution_authorized_only_over_a_structurally_valid_state():
+    """`execution_authorized` continua derivada — e agora só pode ser
+    `True` sobre um estado válido, porque o inválido não chega a
+    existir."""
+    assert _valid_admissible().execution_authorized is True
+    assert _valid_prohibited().execution_authorized is False
+
+    with pytest.raises(ValueError):
+        _valid_admissible(blocked_capabilities=[CriticalCapability.CHILD_SEXUAL_EXPLOITATION])
+
+
+def test_e432_safety_assessment_has_the_same_discipline():
+    """`SafetyAssessment` tinha os mesmos defeitos.
+
+    Corrigir só a resolução deixaria a metade errada exatamente no
+    caminho pelo qual a outra é construída.
+    """
+    from app.memory.services.platform_safety_boundary import SafetyAssessment
+
+    origem = [CriticalCapability.CHILD_SEXUAL_EXPLOITATION]
+    avaliacao = SafetyAssessment(
+        outcome=GovernanceOutcome.PROHIBITED, boundary_version=1, blocked_capabilities=origem
+    )
+    origem.append(CriticalCapability.CATASTROPHIC_HARM_ENABLEMENT)
+
+    assert avaliacao.blocked_capabilities == (CriticalCapability.CHILD_SEXUAL_EXPLOITATION,)
+    assert isinstance(hash(avaliacao), int)
+
+    with pytest.raises(ValueError, match="ao menos uma capacidade"):
+        SafetyAssessment(outcome=GovernanceOutcome.PROHIBITED, boundary_version=1)
+    with pytest.raises(ValueError, match="não bloqueia capacidade"):
+        SafetyAssessment(
+            outcome=GovernanceOutcome.NOT_APPLICABLE,
+            boundary_version=1,
+            blocked_capabilities=(CriticalCapability.CHILD_SEXUAL_EXPLOITATION,),
+        )
+    # E a fronteira segue não podendo admitir — agora impedido no tipo.
+    with pytest.raises(ValueError, match="nunca produz"):
+        SafetyAssessment(outcome=GovernanceOutcome.ADMISSIBLE, boundary_version=1)
+
+
+def test_e432_resolutions_from_resolve_remain_valid(memory_session):
+    """Toda resolução produzida pelo caminho canônico continua válida.
+
+    Percorre os três desfechos que `resolve()` sabe produzir, e exige
+    que cada um seja hashable e estruturalmente coerente — se algum
+    caminho do manager montasse um estado inválido, `__post_init__` o
+    recusaria aqui.
+    """
+    manager = _manager(memory_session)
+    manager.publish_version(
+        policy_key="p",
+        rules=(
+            GovernanceRule(
+                rule_id="ok",
+                effect=GovernanceEffect.ADMIT,
+                operations=frozenset({CognitiveOperation.READ}),
+            ),
+        ),
+    )
+    memory_session.flush()
+
+    proibida = manager.resolve(
+        descriptor=_descriptor(
+            capabilities=frozenset({CriticalCapability.WEAPON_OF_MASS_DESTRUCTION_ENABLEMENT}),
+            engagement=CapabilityEngagement.OPERATIONAL_ENABLEMENT,
+        ),
+        context=MemoryContext.build(),
+        policy_key="p",
+    )
+    admitida = manager.resolve(
+        descriptor=_descriptor(), context=MemoryContext.build(), policy_key="p"
+    )
+    sem_policy = manager.resolve(descriptor=_descriptor(), context=MemoryContext.build())
+
+    assert proibida.outcome is GovernanceOutcome.PROHIBITED
+    assert proibida.blocked_capabilities and proibida.policy_key is None
+    assert admitida.outcome is GovernanceOutcome.ADMISSIBLE
+    assert admitida.matched_rule_id == "ok" and admitida.policy_id is not None
+    assert sem_policy.outcome is GovernanceOutcome.NOT_APPLICABLE
+
+    for resolucao in (proibida, admitida, sem_policy):
+        assert isinstance(hash(resolucao), int)
+        assert isinstance(resolucao.blocked_capabilities, tuple)
