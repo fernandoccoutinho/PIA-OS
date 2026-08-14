@@ -35,6 +35,53 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 
+def _canonical_domain_ids(value: object) -> tuple[uuid.UUID, ...]:
+    """Normaliza `domain_ids` para uma tupla canônica de `UUID`.
+
+    Aceita qualquer iterável (menos `str`/`bytes`, que iteram caractere
+    a caractere e quase sempre indicam engano do chamador), rejeita
+    elementos que não sejam `uuid.UUID`, desduplica e ordena.
+
+    `None` também é rejeitado: o default do campo é `()` e `build()`
+    já normaliza ausência, então um `None` explícito aqui contradiz a
+    anotação `tuple[uuid.UUID, ...]` e é engano do chamador. Tratá-lo
+    silenciosamente como vazio seria a mesma leniência que originou o
+    defeito corrigido em `E4.2.1`.
+
+    A tupla é o que torna o objeto **efetivamente** imutável e
+    hashable: `frozen=True` impede reatribuir o atributo, mas não
+    impede que uma lista guardada nele seja mutada por quem ainda tem
+    a referência original.
+    """
+    if value is None or isinstance(value, str | bytes) or not isinstance(value, Iterable):
+        raise TypeError(
+            f"domain_ids deve ser um iterável de uuid.UUID, recebido {type(value).__name__}"
+        )
+    itens = tuple(value)
+    invalidos = [item for item in itens if not isinstance(item, uuid.UUID)]
+    if invalidos:
+        tipos = ", ".join(sorted({type(item).__name__ for item in invalidos}))
+        raise TypeError(f"domain_ids aceita apenas uuid.UUID; recebido(s): {tipos}")
+    return tuple(sorted(set(itens), key=str))
+
+
+def _validated_optional_text(name: str, value: object) -> str | None:
+    """`None` ou `str` não vazia — qualquer outra coisa é erro.
+
+    Ausência é situação válida e silenciosa. Presença vazia é engano
+    do chamador (`ValueError`, mesma convenção de `CoidManager` em
+    E3.2). Tipo errado é `TypeError` — são diagnósticos diferentes e
+    não devem se mascarar.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{name} deve ser str ou None, recebido {type(value).__name__}")
+    if not value.strip():
+        raise ValueError(f"{name} não pode ser vazio ou apenas espaços — omita-o")
+    return value
+
+
 @dataclass(frozen=True)
 class MemoryContext:
     """Perspectiva imutável. Todos os campos são opcionais.
@@ -50,8 +97,11 @@ class MemoryContext:
     identificador persistente para algo que é, por contrato, uma
     circunstância.
 
-    Construa por `build()`, não pelo construtor: é `build()` que
-    canonicaliza `domain_ids`.
+    Os invariantes valem em **qualquer** construção pública —
+    `MemoryContext(...)`, `build()`, `derive()`, `without_domains()` e
+    `dataclasses.replace` — porque são impostos em `__post_init__`
+    (corretivo `E4.2.1`). `domain_ids` é sempre uma `tuple` canônica
+    de `uuid.UUID`, e o objeto é sempre hashable.
     """
 
     domain_ids: tuple[uuid.UUID, ...] = ()
@@ -103,6 +153,36 @@ class MemoryContext:
     neste módulo.
     """
 
+    def __post_init__(self) -> None:
+        """Impõe os invariantes em **toda** construção pública.
+
+        Corretivo E4.2.1. Antes disso os invariantes viviam apenas em
+        `build()`, e o construtor direto — que é API pública de
+        qualquer dataclass — os contornava por completo. As
+        consequências não eram cosméticas:
+
+        - `MemoryContext(domain_ids=[d1, d2])` guardava a **própria
+          lista**, então mutá-la depois alterava um objeto que o
+          contrato declara imutável;
+        - com uma lista dentro, `hash()` levantava `TypeError`, o que
+          quebra a igualdade estrutural que o módulo usa para comparar
+          perspectivas;
+        - strings em branco e tipos inteiramente inválidos entravam
+          sem reclamação.
+
+        `frozen=True` protege a **referência**, não o **conteúdo**. A
+        canonicalização precisa acontecer aqui, no único ponto por
+        onde toda construção passa — `__init__`, `dataclasses.replace`
+        e `build()` incluídos.
+
+        `object.__setattr__` é o mecanismo previsto para escrever em
+        dataclass congelada durante a inicialização; não abre
+        mutabilidade depois.
+        """
+        object.__setattr__(self, "domain_ids", _canonical_domain_ids(self.domain_ids))
+        for campo in ("session_id", "actor_ref", "purpose"):
+            object.__setattr__(self, campo, _validated_optional_text(campo, getattr(self, campo)))
+
     @staticmethod
     def build(
         *,
@@ -125,19 +205,17 @@ class MemoryContext:
         erro. Strings presentes porém em branco são precondição
         violada pelo chamador — `ValueError`, mesma convenção de
         `CoidManager.generate_unique` (E3.2) e do `trace_id` em branco
-        do `IndexManager` (E3.7).
-        """
-        for nome, valor in (
-            ("session_id", session_id),
-            ("actor_ref", actor_ref),
-            ("purpose", purpose),
-        ):
-            if valor is not None and not valor.strip():
-                raise ValueError(f"{nome} não pode ser vazio ou apenas espaços — omita-o")
+        do `IndexManager` (E3.7). Tipo errado é `TypeError`: são
+        diagnósticos diferentes e não se mascaram.
 
-        canonicos = tuple(sorted(set(domain_ids or ()), key=str))
+        Desde `E4.2.1` este método é conveniência de nomenclatura, não
+        o guardião dos invariantes — `__post_init__` os impõe em toda
+        construção, inclusive `MemoryContext(...)` direto e
+        `dataclasses.replace`. Concentrar a regra num só ponto é o que
+        garante que não exista caminho público capaz de contorná-la.
+        """
         return MemoryContext(
-            domain_ids=canonicos,
+            domain_ids=_canonical_domain_ids(() if domain_ids is None else domain_ids),
             session_id=session_id,
             actor_ref=actor_ref,
             purpose=purpose,

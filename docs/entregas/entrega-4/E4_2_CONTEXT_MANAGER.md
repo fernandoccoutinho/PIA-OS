@@ -390,3 +390,116 @@ CONTEXT_CACHE        = NOT_AUTHORIZED
 ```
 
 Próximo error code livre: **`PIA-8027`**.
+
+---
+
+## 11. Corretivo E4.2.1 — invariantes do value object
+
+**Defeito real, confirmado por reprodução antes de qualquer correção.**
+
+`frozen=True` protege a **referência**, não o **conteúdo**. Os
+invariantes de `MemoryContext` viviam apenas em `build()`, e o
+construtor direto — que é API pública de qualquer dataclass — os
+contornava por completo.
+
+### 11.1 Sintomas reproduzidos
+
+| # | Sintoma | Gravidade |
+|---|---|---|
+| 1 | `MemoryContext(domain_ids=[d1, d2])` guardava a **própria lista** | — |
+| 2 | mutar a lista original **alterava o contexto já construído** (2 domínios viravam 3) | **crítico** |
+| 3 | com uma lista dentro, `hash()` levantava `TypeError` | **crítico** |
+| 4 | o construtor contornava ordenação e desduplicação | — |
+| 5 | strings em branco (`""`, `"   "`) eram aceitas | — |
+| 6 | tipos inteiramente inválidos (`"nao-e-uuid"`, `123`) entravam sem reclamação | — |
+
+O sintoma 2 é o que torna isto um defeito de contrato e não uma
+inconveniência: um objeto declarado imutável mudava de conteúdo pelas
+costas de quem o segurava. O 3 quebra a igualdade estrutural de que o
+módulo inteiro depende para comparar perspectivas — e era justamente
+`hash()` que a E4.2 usava como prova de que nenhuma identidade
+persistente era necessária.
+
+### 11.2 Correção
+
+Os invariantes migraram de `build()` para **`__post_init__`**, o único
+ponto por onde toda construção passa — `MemoryContext(...)`,
+`build()`, `derive()`, `without_domains()` e `dataclasses.replace`.
+
+```
+domain_ids  → sempre tuple[uuid.UUID, ...], ordenada e desduplicada
+elementos   → somente uuid.UUID          (TypeError caso contrário)
+texto       → None ou str não vazia      (ValueError se em branco,
+                                          TypeError se tipo errado)
+objeto      → efetivamente imutável e hashable
+```
+
+`build()` deixou de ser o guardião e passou a ser conveniência de
+nomenclatura. Concentrar a regra num só ponto é o que garante que
+**não exista caminho público capaz de contorná-la** — o defeito
+original existia precisamente porque havia dois pontos de entrada e um
+só era guardado.
+
+Duas decisões de diagnóstico, ambas seguindo a disciplina do projeto
+de não colapsar erros distintos:
+
+- **valor** inválido (string em branco) → `ValueError`, mesma
+  convenção de `CoidManager.generate_unique` (E3.2);
+- **tipo** inválido (`int` onde se espera `str`, `str` onde se espera
+  `UUID`) → `TypeError`.
+
+`domain_ids=None` explícito também é rejeitado: o default do campo é
+`()` e `build()` já normaliza ausência, então um `None` ali contradiz
+a anotação. Aceitá-lo como "vazio" seria repetir exatamente a
+leniência que produziu o defeito.
+
+### 11.3 Testes
+
+12 testes novos, e todos foram **verificados contra o código
+anterior**: os 11 primeiros falham no código com defeito e passam no
+corrigido. Um teste que passasse nos dois provaria nada.
+
+| Exigência | Teste |
+|---|---|
+| 1. construção direta com lista | `test_e421_direct_construction_with_a_list_stores_a_tuple` |
+| 2. isolamento da lista original | `test_e421_original_list_is_isolated_from_the_context` |
+| 3. canonicalização e desduplicação | `test_e421_direct_construction_canonicalizes_and_deduplicates` |
+| 4. igualdade construtor × `build()` | `test_e421_direct_construction_equals_build` |
+| 5. `hash()` funciona | `test_e421_context_is_hashable_in_every_construction` |
+| 6. rejeição de domínio não-UUID | `test_e421_non_uuid_domain_is_rejected` |
+| 7. rejeição de branco e tipo inválido | `test_e421_blank_and_wrong_typed_text_fields_are_rejected` |
+| 8. invariantes em `derive`/`without_domains` | `test_e421_invariants_survive_derive_and_without_domains` |
+| extra | `test_e421_replace_cannot_reintroduce_a_mutable_container` |
+| extra | `test_e421_explicit_none_domain_ids_is_rejected` |
+
+O teste 4 usa uma ordem de entrada **garantidamente** diferente da
+canônica (`reversed(sorted(...))`, com asserção de que difere), porque
+uma comparação com dois elementos passaria por acaso metade das vezes.
+
+### 11.4 Código morto removido
+
+A exigência de 100% de cobertura revelou um ramo inalcançável
+(`value is None` no helper de canonicalização), pelo mesmo mecanismo
+que já havia revelado dois trechos mortos em E3.11.1. Removido, e a
+regra ficou mais estrita em vez de mais frouxa.
+
+### 11.5 Resultados
+
+```
+E4_2_1_IMPLEMENTATION = COMPLETE
+E4_2_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
+
+FULL_SUITE = 1135 passed / 1 skipped / 0 failed   (total coletado 1136)
+E3_REGRESSION_DELTA   = 0   (598/598)
+E4_1_REGRESSION_DELTA = 0   (40/40)
+E4_2_REGRESSION_DELTA = 0   (11/11 integração)
+
+GLOBAL_COVERAGE = 98,56%   APP_MEMORY = 100%   APP_COGNITIVE = 100%
+RUFF = PASS   BLACK = PASS   MYPY_NEW_ERRORS = 0
+
+MEMORY_CONTEXT_PERSISTENCE = TRANSIENT
+MIGRATION_REQUIRED = NO    DATABASE_WRITES = 0
+E3_UNCHANGED = TRUE        E4_1_SEMANTICS_UNCHANGED = TRUE
+ARQUITETURA E4.2 = INALTERADA
+READY_FOR_E4_3 = FALSE
+```

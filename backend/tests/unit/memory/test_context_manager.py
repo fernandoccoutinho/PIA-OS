@@ -359,3 +359,199 @@ def test_ct24_validate_without_repository_is_a_caller_error_not_a_silent_pass():
     # ausência de trabalho, não ausência de verificação.
     vazio = manager.build(session_id="s1")
     assert manager.validate(vazio) is vazio
+
+
+# ======================================================================
+# E4.2.1 — invariantes do value object em QUALQUER construção pública
+#
+# Defeito corrigido: `frozen=True` protege a *referência*, não o
+# *conteúdo*. Antes de E4.2.1 os invariantes viviam apenas em
+# `build()`, e o construtor direto — API pública de qualquer dataclass
+# — os contornava por completo.
+# ======================================================================
+
+
+def test_e421_direct_construction_with_a_list_stores_a_tuple():
+    """(1) Construção direta com lista guarda `tuple`, não a lista.
+
+    Este era o defeito de origem: `MemoryContext(domain_ids=[...])`
+    guardava a própria lista.
+    """
+    d1, d2 = uuid.uuid4(), uuid.uuid4()
+    contexto = MemoryContext(domain_ids=[d1, d2])
+
+    assert isinstance(contexto.domain_ids, tuple)
+    assert set(contexto.domain_ids) == {d1, d2}
+
+
+def test_e421_original_list_is_isolated_from_the_context():
+    """(2) Mutar a lista original não altera o contexto.
+
+    O sintoma mais grave do defeito: um objeto que o contrato declara
+    imutável mudava de conteúdo depois de construído, pelas costas de
+    quem o segurava.
+    """
+    d1, d2 = uuid.uuid4(), uuid.uuid4()
+    origem = [d1, d2]
+
+    contexto = MemoryContext(domain_ids=origem)
+    origem.append(uuid.uuid4())
+    origem.clear()
+
+    assert len(contexto.domain_ids) == 2
+    assert set(contexto.domain_ids) == {d1, d2}
+
+
+def test_e421_direct_construction_canonicalizes_and_deduplicates():
+    """(3) Ordenação determinística e desduplicação no construtor."""
+    d1, d2, d3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+    contexto = MemoryContext(domain_ids=[d3, d1, d2, d1, d3])
+
+    assert contexto.domain_ids == tuple(sorted({d1, d2, d3}, key=str))
+    assert len(contexto.domain_ids) == 3
+
+
+def test_e421_direct_construction_equals_build():
+    """(4) Construtor direto e `build()` produzem o mesmo objeto.
+
+    Comparação feita com uma ordem de entrada **garantidamente**
+    diferente da canônica, para que a igualdade não passe por acaso.
+    """
+    ids = [uuid.uuid4() for _ in range(4)]
+    canonico = sorted(ids, key=str)
+    desordenado = list(reversed(canonico))
+    assert desordenado != canonico, "a entrada precisa diferir da ordem canônica"
+
+    direto = MemoryContext(domain_ids=desordenado, purpose="p", session_id="s")
+    construido = MemoryContext.build(domain_ids=desordenado, purpose="p", session_id="s")
+
+    assert direto == construido
+    assert direto.domain_ids == tuple(canonico)
+
+
+def test_e421_context_is_hashable_in_every_construction():
+    """(5) `hash()` funciona — inclusive vindo de lista.
+
+    Com uma lista dentro, `hash()` levantava `TypeError`, quebrando a
+    igualdade estrutural de que o módulo depende para comparar
+    perspectivas.
+    """
+    d1, d2 = uuid.uuid4(), uuid.uuid4()
+    a = MemoryContext(domain_ids=[d1, d2])
+    b = MemoryContext.build(domain_ids=[d2, d1])
+
+    assert isinstance(hash(a), int)
+    assert hash(a) == hash(b)
+    assert len({a, b}) == 1, "contextos equivalentes colapsam num conjunto"
+    assert {a: "vista"}[b] == "vista", "utilizável como chave de dicionário"
+
+
+def test_e421_non_uuid_domain_is_rejected():
+    """(6) Só `uuid.UUID` entra em `domain_ids`."""
+    with pytest.raises(TypeError, match="uuid.UUID"):
+        MemoryContext(domain_ids=["nao-e-uuid"])
+    with pytest.raises(TypeError, match="uuid.UUID"):
+        MemoryContext(domain_ids=[uuid.uuid4(), 42])
+    with pytest.raises(TypeError, match="uuid.UUID"):
+        MemoryContext.build(domain_ids=[str(uuid.uuid4())])
+
+    # Uma string é iterável, mas iterar caractere a caractere é sempre
+    # engano do chamador — rejeitada como tipo, não silenciosamente
+    # expandida.
+    with pytest.raises(TypeError, match="iterável"):
+        MemoryContext(domain_ids=str(uuid.uuid4()))
+    with pytest.raises(TypeError, match="iterável"):
+        MemoryContext(domain_ids=123)
+
+
+@pytest.mark.parametrize("campo", ["session_id", "actor_ref", "purpose"])
+def test_e421_blank_and_wrong_typed_text_fields_are_rejected(campo):
+    """(7) `None` ou `str` não vazia — nada além disso.
+
+    Ausência é válida e silenciosa (`ValueError` nunca é levantado por
+    campo omitido); presença vazia é engano de valor; tipo errado é
+    engano de tipo. Os dois diagnósticos permanecem distintos.
+    """
+    for branco in ("", "   ", "\t\n"):
+        with pytest.raises(ValueError, match=campo):
+            MemoryContext(**{campo: branco})
+        with pytest.raises(ValueError, match=campo):
+            MemoryContext.build(**{campo: branco})
+
+    for tipo_errado in (123, 1.5, uuid.uuid4(), ["x"], True):
+        with pytest.raises(TypeError, match=campo):
+            MemoryContext(**{campo: tipo_errado})
+
+    assert getattr(MemoryContext(**{campo: None}), campo) is None
+    assert getattr(MemoryContext(**{campo: "válido"}), campo) == "válido"
+
+
+def test_e421_invariants_survive_derive_and_without_domains():
+    """(8) `derive()` e `without_domains()` preservam os invariantes.
+
+    `without_domains()` usa `dataclasses.replace`, que reexecuta
+    `__post_init__` — é por isso que impor a regra ali, e não em
+    `build()`, fecha todos os caminhos de uma vez.
+    """
+    d1, d2, d3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    base = MemoryContext(domain_ids=[d2, d1], session_id="s1")
+
+    # derive com lista mutável e desordenada
+    origem = [d3, d1, d3]
+    derivado = base.derive(domain_ids=origem)
+    origem.append(uuid.uuid4())
+
+    assert isinstance(derivado.domain_ids, tuple)
+    assert derivado.domain_ids == tuple(sorted({d1, d3}, key=str))
+    assert isinstance(hash(derivado), int)
+    assert base.domain_ids == tuple(sorted({d1, d2}, key=str)), "base intacta"
+
+    # derive rejeita entrada inválida em vez de aceitá-la em silêncio
+    with pytest.raises(TypeError, match="uuid.UUID"):
+        base.derive(domain_ids=["x"])
+    with pytest.raises(ValueError, match="purpose"):
+        base.derive(purpose="   ")
+
+    # without_domains preserva tipo, hashabilidade e demais campos
+    vazio = base.without_domains()
+    assert vazio.domain_ids == ()
+    assert isinstance(vazio.domain_ids, tuple)
+    assert isinstance(hash(vazio), int)
+    assert vazio.session_id == "s1"
+    assert base.domain_ids != ()
+
+
+def test_e421_replace_cannot_reintroduce_a_mutable_container():
+    """`dataclasses.replace` também passa por `__post_init__`.
+
+    Fecha a última porta pública: não existe caminho que devolva um
+    `MemoryContext` com lista dentro.
+    """
+    d1, d2 = uuid.uuid4(), uuid.uuid4()
+    base = MemoryContext(domain_ids=[d1])
+
+    reposto = dataclasses.replace(base, domain_ids=[d2, d1, d2])
+
+    assert isinstance(reposto.domain_ids, tuple)
+    assert reposto.domain_ids == tuple(sorted({d1, d2}, key=str))
+    assert isinstance(hash(reposto), int)
+
+    with pytest.raises(TypeError, match="uuid.UUID"):
+        dataclasses.replace(base, domain_ids=["x"])
+
+
+def test_e421_explicit_none_domain_ids_is_rejected():
+    """`domain_ids=None` explícito é engano do chamador.
+
+    O default do campo é `()` e `build()` normaliza ausência, então um
+    `None` explícito contradiz a anotação `tuple[uuid.UUID, ...]`.
+    Aceitá-lo como "vazio" seria a mesma leniência que produziu o
+    defeito de E4.2.1.
+    """
+    with pytest.raises(TypeError, match="iterável"):
+        MemoryContext(domain_ids=None)
+
+    # Ausência continua sendo expressa das duas formas legítimas.
+    assert MemoryContext().domain_ids == ()
+    assert MemoryContext.build(domain_ids=None).domain_ids == ()
