@@ -114,6 +114,14 @@ class MultiInputTransformationReceipt:
                 "fontes duplicadas não são desduplicadas silenciosamente: "
                 "DUPLICATE SOURCE = INVALID INPUT"
             )
+        if list(self.source_coids) != sorted(self.source_coids):
+            raise ValueError(
+                "source_coids deve ser apresentado em ordem canônica estrita por UUID "
+                "(corretivo E3.4.2.1). O recibo NÃO reordena: `lineage_edge_ids` mantém "
+                "correspondência posicional com as fontes, e reordenar apenas os COIDs "
+                "separaria cada fonte de sua respectiva edge, fabricando um pareamento "
+                "que nunca existiu. CANONICAL INPUT → ACCEPT; NON-CANONICAL INPUT → ERROR"
+            )
         if self.target_coid in self.source_coids:
             raise ValueError(
                 "o alvo de uma transformação multi-input é um CognitiveObject novo — "

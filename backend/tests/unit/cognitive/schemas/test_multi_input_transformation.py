@@ -20,6 +20,18 @@ def _ids(quantidade: int) -> list[uuid.UUID]:
     return [uuid.uuid4() for _ in range(quantidade)]
 
 
+def _fontes(quantidade: int) -> list[uuid.UUID]:
+    """Fontes em **ordem canônica** por UUID.
+
+    A partir do corretivo E3.4.2.1 o recibo recusa `source_coids` fora
+    de ordem estrita, e `_ids()` gera em ordem aleatória — um helper que
+    não canonicalizasse faria metade das execuções falhar por acaso, o
+    que é ruído de harness, não cobertura. Onde a ordem não canônica é o
+    **objeto** do teste, ela é construída explicitamente.
+    """
+    return sorted(_ids(quantidade))
+
+
 _AUSENTE = object()
 """Sentinela: `None` é um valor de teste legítimo para `source_coids`
 (deve ser recusado pelo value object), então não pode ser usado como
@@ -30,7 +42,7 @@ helper engoliu o caso `None` e fez o teste passar por engano."""
 def _recibo(**overrides) -> MultiInputTransformationReceipt:
     fontes = overrides.pop("source_coids", _AUSENTE)
     if fontes is _AUSENTE:
-        fontes = _ids(2)
+        fontes = _fontes(2)
     campos = {
         "source_coids": fontes,
         "target_coid": uuid.uuid4(),
@@ -52,7 +64,7 @@ def _recibo(**overrides) -> MultiInputTransformationReceipt:
 
 
 def test_e342_receipt_valid_construction():
-    fontes = _ids(3)
+    fontes = _fontes(3)
     edges = _ids(3)
     alvo, clid, transformacao, evento = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
@@ -92,7 +104,7 @@ def test_e342_receipt_is_hashable():
 def test_e342_receipt_is_hashable_when_built_from_lists():
     """O caso que quebrava em E4.2.1/E4.3.2: coleção mutável guardada
     como está torna o objeto não-hashable."""
-    fontes = _ids(2)
+    fontes = _fontes(2)
     recibo = MultiInputTransformationReceipt(
         source_coids=list(fontes),
         target_coid=uuid.uuid4(),
@@ -108,7 +120,7 @@ def test_e342_receipt_is_hashable_when_built_from_lists():
 
 
 def test_e342_receipt_structural_equality():
-    fontes, edges = _ids(2), _ids(2)
+    fontes, edges = _fontes(2), _ids(2)
     alvo, transformacao, evento = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     comum = {
         "target_coid": alvo,
@@ -127,7 +139,7 @@ def test_e342_receipt_structural_equality():
 
 
 def test_e342_receipt_converts_lists_to_tuples():
-    recibo = _recibo(source_coids=_ids(2))
+    recibo = _recibo(source_coids=_fontes(2))
     assert isinstance(recibo.source_coids, tuple)
     assert isinstance(recibo.lineage_edge_ids, tuple)
     assert isinstance(recibo.causal_event_ids, tuple)
@@ -137,7 +149,7 @@ def test_e342_receipt_converts_lists_to_tuples():
 def test_e342_mutating_the_original_list_does_not_change_the_receipt():
     """O defeito crítico das três correções anteriores: mutar a lista
     original alterava o objeto já construído."""
-    fontes = _ids(2)
+    fontes = _fontes(2)
     recibo = MultiInputTransformationReceipt(
         source_coids=fontes,
         target_coid=uuid.uuid4(),
@@ -159,7 +171,7 @@ def test_e342_mutating_the_original_list_does_not_change_the_receipt():
 
 @pytest.mark.parametrize("quantidade", [0, 1])
 def test_e342_receipt_requires_at_least_two_sources(quantidade):
-    fontes = _ids(quantidade)
+    fontes = _fontes(quantidade)
     with pytest.raises(ValueError, match="ao menos duas fontes"):
         MultiInputTransformationReceipt(
             source_coids=fontes,
@@ -223,7 +235,7 @@ def test_e342_receipt_rejects_string_as_collection():
 
 
 def test_e342_receipt_rejects_target_equal_to_a_source():
-    fontes = _ids(2)
+    fontes = _fontes(2)
     with pytest.raises(ValueError, match="CognitiveObject novo"):
         MultiInputTransformationReceipt(
             source_coids=fontes,
@@ -241,13 +253,13 @@ def test_e342_receipt_rejects_target_equal_to_a_source():
 @pytest.mark.parametrize("quantidade_edges", [1, 3])
 def test_e342_receipt_requires_one_edge_per_source(quantidade_edges):
     with pytest.raises(ValueError, match="uma LineageEdge"):
-        _recibo(source_coids=_ids(2), lineage_edge_ids=_ids(quantidade_edges))
+        _recibo(source_coids=_fontes(2), lineage_edge_ids=_ids(quantidade_edges))
 
 
 def test_e342_receipt_rejects_repeated_edge_ids():
     repetido = uuid.uuid4()
     with pytest.raises(ValueError, match="lineage_edge_ids"):
-        _recibo(source_coids=_ids(2), lineage_edge_ids=[repetido, repetido])
+        _recibo(source_coids=_fontes(2), lineage_edge_ids=[repetido, repetido])
 
 
 # --- 11. Causalidade-raiz incoerente ---------------------------------
@@ -311,7 +323,7 @@ def test_e342_dataclasses_replace_cannot_reintroduce_a_mutable_container():
     import dataclasses
 
     recibo = _recibo()
-    substituido = dataclasses.replace(recibo, source_coids=list(_ids(2)))
+    substituido = dataclasses.replace(recibo, source_coids=list(_fontes(2)))
     assert isinstance(substituido.source_coids, tuple)
 
 
@@ -321,3 +333,73 @@ def test_e342_receipt_is_frozen():
     recibo = _recibo()
     with pytest.raises(dataclasses.FrozenInstanceError):
         recibo.target_coid = uuid.uuid4()
+
+
+# ======================================================================
+# E3.4.2.1 — ordem canônica estrita de `source_coids`
+# ======================================================================
+
+
+def _par_ordenado() -> tuple[uuid.UUID, uuid.UUID]:
+    menor, maior = _fontes(2)
+    return menor, maior
+
+
+def test_e3421_receipt_accepts_canonical_source_order():
+    """Ordem canônica estrita por UUID é a única aceita."""
+    menor, maior = _par_ordenado()
+    recibo = _recibo(source_coids=(menor, maior))
+    assert recibo.source_coids == (menor, maior)
+
+
+def test_e3421_receipt_rejects_non_canonical_source_order():
+    """PROVADOR DE DEFEITO — falha contra o patch 46.
+
+    O manager ordena antes de construir, mas o construtor público
+    aceitava qualquer ordem, permitindo que o value object existisse em
+    estado não canônico.
+    """
+    menor, maior = _par_ordenado()
+    with pytest.raises(ValueError, match="ordem canônica estrita"):
+        _recibo(source_coids=(maior, menor))
+
+
+def test_e3421_receipt_does_not_silently_reorder_sources():
+    """A recusa é obrigatória justamente porque reordenar seria pior.
+
+    `lineage_edge_ids` mantém correspondência **posicional** com
+    `source_coids`. Se o recibo reordenasse apenas os COIDs, a fonte da
+    posição 0 passaria a ser pareada com a edge da fonte da posição 1 —
+    um pareamento fabricado, e silencioso.
+    """
+    menor, maior = _par_ordenado()
+    edges = _ids(2)
+    with pytest.raises(ValueError):
+        MultiInputTransformationReceipt(
+            source_coids=(maior, menor),
+            target_coid=uuid.uuid4(),
+            target_clid=None,
+            transformation_id=uuid.uuid4(),
+            lineage_edge_ids=edges,
+            causal_event_ids=_ids(1),
+        )
+
+    # E o caminho canônico preserva a correspondência posicional intacta.
+    recibo = MultiInputTransformationReceipt(
+        source_coids=(menor, maior),
+        target_coid=uuid.uuid4(),
+        target_clid=None,
+        transformation_id=uuid.uuid4(),
+        lineage_edge_ids=edges,
+        causal_event_ids=_ids(1),
+    )
+    assert recibo.source_coids == (menor, maior)
+    assert recibo.lineage_edge_ids == tuple(edges)
+
+
+def test_e3421_receipt_rejects_non_canonical_order_with_three_sources():
+    """Com três fontes o acaso não salva: uma permutação errada em três
+    elementos é detectada igual."""
+    a, b, c = sorted(_ids(3))
+    with pytest.raises(ValueError, match="ordem canônica estrita"):
+        _recibo(source_coids=(a, c, b))

@@ -133,9 +133,17 @@ foi tocado. Nenhuma migração, tabela, coluna ou enum novo.
 | Grupo | Onde | Qtd |
 |---|---|---|
 | Recibo (§12.1) | `tests/unit/cognitive/schemas/test_multi_input_transformation.py` | 32 |
-| Manager (§12.2) | `tests/unit/cognitive/services/test_multi_input_transformation_manager.py` | 69 |
+| Manager (§12.2) | `tests/unit/cognitive/services/test_multi_input_transformation_manager.py` | **70** |
 | PostgreSQL real (§13) | `tests/integration/cognitive/test_multi_input_transformation_integration.py` | 20 |
-| **Total novo** | | **121** |
+| **Total novo** | | **122** |
+
+> **Correção E3.4.2.1.** A primeira versão desta tabela declarava 69
+> testes de manager e total 121. A coleta real do pytest é **70** e
+> **122** — o número anterior foi contado à mão, não coletado. Corrigido
+> aqui pela coleta real, e a disciplina fica registrada: contagem se
+> obtém do `pytest --collect-only`, nunca por estimativa. As contagens
+> após o corretivo E3.4.2.1 estão em
+> `E3_4_2_1_LIB04_MULTI_INPUT_CONTRACT_HARDENING.md`.
 
 ### 5.1 Rollback provado por injeção de falha
 
@@ -243,7 +251,7 @@ E4_2_REGRESSION_DELTA = 0   (42/42)
 E4_3_REGRESSION_DELTA = 0   (108/108)
 E4_4_REGRESSION_DELTA = 0   (74/74)
 
-E3_4_2 NOVOS = 121 passed
+E3_4_2 NOVOS = 122 passed   (corrigido em E3.4.2.1; antes declarado 121)
 
 GLOBAL_COVERAGE = 98,85%   (baseline 98,79%)
 APP_COGNITIVE_COVERAGE = 100%

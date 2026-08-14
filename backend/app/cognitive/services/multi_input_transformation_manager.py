@@ -78,6 +78,21 @@ _OPERATION_TYPE_MAX_LENGTH = 64
 falhe **antes** de qualquer escrita, e não como erro de banco no meio
 de uma operação já parcialmente aplicada."""
 
+_POLICY_REF_MAX_LENGTH = 255
+"""Capacidade real da coluna `transformation_records.policy_ref`
+(`String(255)`), pela mesma razão — corretivo E3.4.2.1.
+
+Sem esta checagem o resultado de um `policy_ref` longo demais dependeria
+do comportamento específico do banco ou do driver (truncar em silêncio,
+recusar, ou variar por dialeto), e a exigência de validação integral
+antes da primeira escrita ficaria furada exatamente no campo mais fácil
+de passar despercebido.
+
+O valor é validado, **nunca normalizado**: nada de `strip()` no que se
+persiste, nada de truncar. `DECLARED VALUE != NORMALIZED VALUE` — o
+`.strip()` que aparece abaixo é apenas predicado para detectar string
+em branco, e não toca a declaração original."""
+
 
 def _declaracoes(campo: str, valor: object, *, obrigatorio: bool) -> list[str]:
     """Materializa e valida uma coleção de declarações textuais.
@@ -341,6 +356,11 @@ class MultiInputTransformationManager:
                 )
             if not policy_ref.strip():
                 raise ValueError("policy_ref, quando informado, não pode ser vazio")
+            if len(policy_ref) > _POLICY_REF_MAX_LENGTH:
+                raise ValueError(
+                    f"policy_ref excede a capacidade real da coluna "
+                    f"({_POLICY_REF_MAX_LENGTH} caracteres): {len(policy_ref)}"
+                )
         if occurred_at is not None and not isinstance(occurred_at, datetime):
             raise TypeError(
                 f"occurred_at deve ser datetime ou None, recebido {type(occurred_at).__name__}"

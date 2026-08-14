@@ -911,3 +911,113 @@ def test_e342_string_as_predecessor_event_ids_is_rejected(kit):
             declared_losses=["x"],
             predecessor_event_ids="abc",
         )
+
+
+# ======================================================================
+# E3.4.2.1 — limite de comprimento de `policy_ref`
+# ======================================================================
+
+
+def test_e3421_policy_ref_with_255_characters_is_accepted(kit):
+    """255 é a capacidade real da coluna — o limite é inclusivo."""
+    manager, objetos, _lin, transformacoes, *_ = kit
+    a, b = _fonte(objetos), _fonte(objetos)
+    valor = "p" * 255
+
+    recibo = manager.derive_many(
+        source_coids=[a.id, b.id],
+        operation_type="c",
+        declared_losses=["x"],
+        policy_ref=valor,
+    )
+
+    registro = transformacoes.get_by_id(recibo.transformation_id)
+    assert registro.policy_ref == valor
+    assert len(registro.policy_ref) == 255
+
+
+def test_e3421_policy_ref_with_256_characters_is_rejected(kit):
+    """PROVADOR DE DEFEITO — falha contra o patch 46.
+
+    A coluna é `String(255)`. Sem esta checagem, o desfecho dependeria
+    do banco ou do driver (truncar em silêncio, recusar, ou variar por
+    dialeto), e a validação integral antes da primeira escrita ficaria
+    furada.
+    """
+    manager, objetos, *_ = kit
+    a, b = _fonte(objetos), _fonte(objetos)
+
+    with pytest.raises(ValueError, match="capacidade real da coluna"):
+        manager.derive_many(
+            source_coids=[a.id, b.id],
+            operation_type="c",
+            declared_losses=["x"],
+            policy_ref="p" * 256,
+        )
+
+
+def test_e3421_oversized_policy_ref_writes_nothing(kit, cognitive_session):
+    """`DATABASE_WRITES = 0` — a recusa acontece no preflight, antes de
+    qualquer alvo, edge ou registro existir."""
+    from sqlalchemy import event as sa_event
+
+    manager, objetos, *_ = kit
+    a, b = _fonte(objetos), _fonte(objetos)
+    cognitive_session.flush()
+
+    escritas = []
+
+    def _contar(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+            escritas.append(statement)
+
+    engine = cognitive_session.get_bind()
+    sa_event.listen(engine, "before_cursor_execute", _contar)
+    try:
+        with pytest.raises(ValueError, match="capacidade real da coluna"):
+            manager.derive_many(
+                source_coids=[a.id, b.id],
+                operation_type="c",
+                declared_losses=["x"],
+                policy_ref="p" * 256,
+            )
+        cognitive_session.flush()
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", _contar)
+
+    assert escritas == []
+
+
+def test_e3421_policy_ref_is_persisted_exactly_as_given(kit):
+    """Nada de `strip()` no que se persiste: espaços internos e nas
+    bordas fazem parte da declaração do chamador.
+
+        DECLARED VALUE != NORMALIZED VALUE
+    """
+    manager, objetos, _lin, transformacoes, *_ = kit
+    a, b = _fonte(objetos), _fonte(objetos)
+    valor = "  policy://com espaços  "
+
+    recibo = manager.derive_many(
+        source_coids=[a.id, b.id],
+        operation_type="c",
+        declared_losses=["x"],
+        policy_ref=valor,
+    )
+
+    assert transformacoes.get_by_id(recibo.transformation_id).policy_ref == valor
+
+
+def test_e3421_receipt_from_the_manager_is_always_canonical(kit):
+    """GUARDA DE REGRESSÃO — passa contra o patch 46 também.
+
+    O manager canonicaliza antes de construir, então o invariante novo
+    do recibo nunca o alcança, qualquer que seja a ordem de entrada.
+    """
+    manager, objetos, *_ = kit
+    fontes = [_fonte(objetos) for _ in range(3)]
+    ids = [f.id for f in fontes]
+
+    for ordem in ([ids[2], ids[0], ids[1]], [ids[1], ids[2], ids[0]], sorted(ids, reverse=True)):
+        recibo = manager.derive_many(source_coids=ordem, operation_type="c", declared_losses=["x"])
+        assert list(recibo.source_coids) == sorted(ids)

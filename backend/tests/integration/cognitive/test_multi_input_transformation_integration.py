@@ -476,6 +476,7 @@ def test_e342_pg15_rollback_by_omission_leaves_nothing():
             "app.cognitive.repositories.transformation_repository.TransformationRepository.add",
         ),
         ("causal", "app.cognitive.services.causal_history_manager.CausalHistoryManager.record"),
+        ("clid", "app.cognitive.services.clid_manager.ClidManager.assign"),
     ],
 )
 def test_e342_pg16_pg17_pg18_pg19_rollback_after_injected_failure(
@@ -486,7 +487,15 @@ def test_e342_pg16_pg17_pg18_pg19_rollback_after_injected_failure(
 
     `orphan target = 0`, `partial lineage = 0`,
     `partial transformation = 0`, `partial causal history = 0`,
-    `source mutation = 0`.
+    `source mutation = 0`, `source clid mutation = 0`,
+    `internal commit = 0`.
+
+    O quarto caso — `ClidManager.assign` — entra no corretivo E3.4.2.1.
+    Ele **só é alcançável** porque as fontes deste cenário compartilham
+    um CLID não nulo: com CLIDs divergentes o alvo nasceria com
+    `clid=None` e `assign()` nunca seria chamado, o que tornaria a
+    injeção uma prova vazia. `_criar_fontes(3, clid=clid)` garante o
+    caminho de herança.
     """
     clid = uuid.uuid4()
     fontes = _criar_fontes(3, clid=clid)
@@ -510,6 +519,7 @@ def test_e342_pg16_pg17_pg18_pg19_rollback_after_injected_failure(
         edges_antes = _contar("lineage_edges")
         registros_antes = _contar("transformation_records")
         eventos_antes = _contar("causal_history_events")
+        historias_antes = _contar("causal_histories")
 
         modulo, _, atributo = alvo_do_patch.rpartition(".")
         import importlib
@@ -536,11 +546,24 @@ def test_e342_pg16_pg17_pg18_pg19_rollback_after_injected_failure(
 
         monkeypatch.undo()
 
+        # A injeção precisa ter sido realmente alcançada. Sem isto, um
+        # caso cujo caminho não fosse exercitado passaria como prova
+        # vazia — o risco concreto do caso `clid`, que só existe quando
+        # as fontes compartilham CLID.
+        assert chamadas["n"] > 0, f"a etapa '{etapa}' nunca foi alcançada — prova vazia"
+
         assert _contar("cognitive_objects") == objetos_antes, "alvo órfão sobreviveu"
         assert _contar("lineage_edges") == edges_antes, "linhagem parcial sobreviveu"
         assert _contar("transformation_records") == registros_antes
         assert _contar("causal_history_events") == eventos_antes
-        assert _censo_fontes() == antes, "fonte foi mutada"
+        assert _contar("causal_histories") == historias_antes
+
+        depois = _censo_fontes()
+        assert depois == antes, "fonte foi mutada"
+        # SOURCE_CLID_MUTATION = 0, dito separadamente do censo geral
+        # para que o diagnóstico não dependa de ler uma tupla inteira.
+        assert [linha[1] for linha in depois] == [linha[1] for linha in antes]
+        assert all(str(linha[1]) == str(clid) for linha in depois)
     finally:
         _limpar(fontes)
 
@@ -723,5 +746,119 @@ def test_e342_traceability_s1_can_be_reconstructed_from_its_sources():
 
             assert por_linhagem == set(fontes)
             assert por_registro == set(fontes)
+    finally:
+        _limpar(criados)
+
+
+# ======================================================================
+# E3.4.2.1 — prova persistente de `actor_ref`
+# ======================================================================
+
+
+def test_e3421_actor_ref_is_propagated_to_both_persisted_records():
+    """`actor_ref` chega aos DOIS registros produzidos, e é o mesmo.
+
+    A E3.4.2 propagava corretamente no código, mas não havia prova
+    contra o estado persistido. Aqui o valor é consultado direto no
+    banco, não pelo objeto que o manager devolveu.
+
+    Usa um `ProvenanceRecord` **real**: `causal_history_events.actor_ref`
+    é FK para `provenance_records.id`, e a FK continua sendo a
+    autoridade final. Nada de ator fictício, nada de remover
+    `actor_ref` para contornar a restrição.
+
+        PROVENANCE != CAUSAL HISTORY
+    """
+    from app.cognitive.models.enums import ProvenanceActorType, ProvenanceSourceType
+    from app.cognitive.models.provenance_record import ProvenanceRecord
+    from app.cognitive.repositories.provenance_repository import ProvenanceRepository
+
+    fontes = _criar_fontes(2, clid=uuid.uuid4())
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            registro_prov = ProvenanceRepository(uow.session).add(
+                ProvenanceRecord(
+                    coid=fontes[0],
+                    source_type=ProvenanceSourceType.HUMAN,
+                    actor_type=ProvenanceActorType.HUMAN,
+                )
+            )
+            uow.commit()
+            ator_solicitado = registro_prov.id
+
+        with UnitOfWork() as uow:
+            manager, *_ = _kit(uow.session)
+            recibo = manager.derive_many(
+                source_coids=fontes,
+                operation_type="consolidar",
+                declared_losses=["x"],
+                actor_ref=ator_solicitado,
+            )
+            uow.commit()
+            criados.append(recibo.target_coid)
+
+        # Consulta ao estado persistido, não ao objeto em memória.
+        with UnitOfWork() as uow:
+            ator_na_transformacao = uow.session.execute(
+                sa.text("SELECT actor_ref FROM transformation_records WHERE id = :t"),
+                {"t": str(recibo.transformation_id)},
+            ).scalar_one()
+
+            atores_causais = [
+                linha[0]
+                for linha in uow.session.execute(
+                    sa.text(
+                        "SELECT e.actor_ref FROM causal_history_events e "
+                        "JOIN causal_histories h ON h.id = e.history_id "
+                        "WHERE h.subject_coid = :t"
+                    ),
+                    {"t": str(recibo.target_coid)},
+                ).all()
+            ]
+
+        assert atores_causais, "nenhum evento causal foi persistido para o alvo"
+        assert ator_na_transformacao == ator_solicitado
+        assert set(atores_causais) == {ator_solicitado}
+        assert ator_na_transformacao == atores_causais[0] == ator_solicitado
+    finally:
+        _limpar(criados)
+
+
+def test_e3421_absent_actor_ref_stays_absent_in_both_persisted_records():
+    """Ausência continua ausência: `None` não vira ator fabricado.
+
+    MISSING PROVENANCE != AUTHORIZATION TO INVENT PROVENANCE
+    """
+    fontes = _criar_fontes(2)
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            manager, *_ = _kit(uow.session)
+            recibo = manager.derive_many(
+                source_coids=fontes, operation_type="c", declared_losses=["x"]
+            )
+            uow.commit()
+            criados.append(recibo.target_coid)
+
+        with UnitOfWork() as uow:
+            na_transformacao = uow.session.execute(
+                sa.text("SELECT actor_ref FROM transformation_records WHERE id = :t"),
+                {"t": str(recibo.transformation_id)},
+            ).scalar_one()
+            causais = [
+                linha[0]
+                for linha in uow.session.execute(
+                    sa.text(
+                        "SELECT e.actor_ref FROM causal_history_events e "
+                        "JOIN causal_histories h ON h.id = e.history_id "
+                        "WHERE h.subject_coid = :t"
+                    ),
+                    {"t": str(recibo.target_coid)},
+                ).all()
+            ]
+
+        assert na_transformacao is None
+        assert causais == [None]
     finally:
         _limpar(criados)
