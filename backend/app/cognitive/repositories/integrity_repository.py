@@ -28,10 +28,11 @@ from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from app.cognitive.models.causal_history import CausalHistory, CausalHistoryEvent
 from app.cognitive.models.cognitive_object import CognitiveObject
-from app.cognitive.models.enums import RelationshipType, RevisionStatus
+from app.cognitive.models.enums import AccessibilityState, RelationshipType, RevisionStatus
 from app.cognitive.models.lineage_edge import LineageEdge
 from app.cognitive.models.provenance_record import ProvenanceRecord
 from app.cognitive.models.relationship import Relationship
+from app.cognitive.models.transformation_record import TransformationRecord
 
 
 class IntegrityRepository:
@@ -183,6 +184,63 @@ class IntegrityRepository:
 
     def causal_dangling_subjects(self) -> list[uuid.UUID]:
         return self._dangling(CausalHistory.subject_coid, CausalHistory.id)
+
+    def transformation_dangling_actor_refs(self) -> list[uuid.UUID]:
+        """`TransformationRecord`s cujo `actor_ref` não resolve para um
+        `ProvenanceRecord` (`E3.10.1`).
+
+        `actor_ref` foi reservado em `E3.4` como "referência estrutural
+        a um `ProvenanceRecord` futuro (E3.6)", **sem FK** — a tabela
+        alvo não existia então, e `E3.6` manteve o campo intocado por
+        instrução explícita. Agora que `provenance_records` existe, a
+        referência é verificável; auditar é o caminho correto, e
+        acrescentar FK retrospectiva não é (mudaria schema de módulo
+        congelado, o que este corretivo proíbe).
+
+        `actor_ref IS NULL` é **válido** e nunca vira finding. Nenhum
+        `ProvenanceRecord` é fabricado para preencher a lacuna.
+
+        `input_refs`/`output_refs` continuam `DEFERRED`: são listas
+        JSON de referências polimórficas, cuja completude referencial
+        nunca foi contratada — reinterpretá-las como erro seria
+        transformar decisão aceita em corrupção.
+        """
+        existing = select(ProvenanceRecord.id).where(
+            ProvenanceRecord.id == TransformationRecord.actor_ref
+        )
+        stmt = select(TransformationRecord.id).where(
+            TransformationRecord.actor_ref.is_not(None), ~existing.exists()
+        )
+        return list(self._session.execute(stmt).scalars().all())
+
+    def invalid_accessibility_states(self) -> list[tuple[uuid.UUID, str]]:
+        """Objetos cujo `accessibility` persistido está fora do
+        vocabulário congelado (`E3.10.1`).
+
+        A coluna é `VARCHAR` sem `CHECK` no banco (`SAEnum(...,
+        native_enum=False)` não cria constraint por padrão no
+        SQLAlchemy 2.x), então um valor fora do enum é fisicamente
+        gravável por SQL direto, import ou restore legado — e carregar
+        a entidade pelo ORM levantaria antes de conseguirmos
+        diagnosticar. Por isso a coluna é lida como
+        `literal_column`, fora da coerção do enum, enquanto o `id`
+        continua vindo pela coluna tipada.
+
+        Auditoria **estrutural de vocabulário apenas**: se o valor é
+        um dos quatro estados congelados. Política de transição
+        (`ACTIVE → CAUSALLY_EXTINCT` foi correta?) permanece em `E4` e
+        não é julgada aqui.
+        """
+        valid = [state.value for state in AccessibilityState]
+        raw_accessibility: sa.ColumnElement[str] = sa.literal_column("accessibility")
+        stmt = select(CognitiveObject.id, raw_accessibility).where(raw_accessibility.notin_(valid))
+        # `row[0]` pode voltar como `str` conforme o dialeto (o SQLite
+        # guarda UUID como hex sem hífens); normalizar aqui mantém o
+        # contorno do repositório tipado, independente do banco.
+        return [
+            (row[0] if isinstance(row[0], uuid.UUID) else uuid.UUID(str(row[0])), str(row[1]))
+            for row in self._session.execute(stmt).all()
+        ]
 
     def causal_dangling_predecessors(self) -> list[uuid.UUID]:
         """Eventos cujo predecessor declarado não existe.

@@ -31,7 +31,9 @@ from app.cognitive.models.enums import (
     ProvenanceSourceType,
     RelationshipType,
     RevisionStatus,
+    TransformationKind,
 )
+from app.cognitive.models.transformation_record import TransformationRecord
 from app.cognitive.repositories.causal_history_repository import CausalHistoryRepository
 from app.cognitive.repositories.integrity_repository import IntegrityRepository
 from app.cognitive.repositories.lineage_repository import LineageRepository
@@ -360,3 +362,91 @@ def test_ia7_audit_creates_no_tables_and_stores_nothing():
         t for t in tables if "integrity" in t or "finding" in t or "audit" in t or "conform" in t
     }
     assert tables >= set(_ALL_TABLES)
+
+
+def test_ia8_transformation_dangling_actor_ref_is_detected_on_postgres():
+    """IA8 (`E3.10.1`) — `TransformationRecord.actor_ref` sem FK: um
+    valor que não resolve para `ProvenanceRecord` é fisicamente
+    gravável e a auditoria o encontra. `actor_ref` nulo e `actor_ref`
+    resolvível continuam `PASS`."""
+    with UnitOfWork() as uow:
+        subject = ObjectRepository(uow.session).add(CognitiveObject())
+        uow.session.flush()
+        provenance = ProvenanceManager(ProvenanceRepository(uow.session)).record(
+            coid=subject.id,
+            source_type=ProvenanceSourceType.HUMAN,
+            actor_type=ProvenanceActorType.HUMAN,
+        )
+        uow.session.flush()
+        uow.session.add(
+            TransformationRecord(
+                operation_type="revise",
+                transformation_kind=TransformationKind.REVISION,
+                input_refs=[str(subject.id)],
+                output_refs=[str(subject.id)],
+                actor_ref=provenance.id,
+            )
+        )
+        uow.session.add(
+            TransformationRecord(
+                operation_type="derive",
+                transformation_kind=TransformationKind.DERIVATION,
+                input_refs=[],
+                output_refs=[],
+            )
+        )
+        uow.commit()
+
+    assert _audit().status is IntegrityStatus.PASS
+
+    with UnitOfWork() as uow:
+        orphan = TransformationRecord(
+            operation_type="derive",
+            transformation_kind=TransformationKind.DERIVATION,
+            input_refs=[str(uuid.uuid4())],
+            output_refs=[],
+            actor_ref=uuid.uuid4(),
+        )
+        uow.session.add(orphan)
+        uow.commit()
+        orphan_id = orphan.id
+
+    report = _audit()
+
+    assert report.status is IntegrityStatus.FAIL
+    (finding,) = [
+        f for f in report.findings if f.code is IntegrityCode.TRANSFORMATION_DANGLING_ACTOR_REF
+    ]
+    assert finding.entity_refs == (orphan_id,)
+
+
+def test_ia9_invalid_accessibility_value_is_detected_on_postgres():
+    """IA9 (`E3.10.1`) — a coluna `accessibility` é `VARCHAR` sem
+    `CHECK` no PostgreSQL, então um valor fora do vocabulário é
+    gravável por SQL direto. A auditoria o diagnostica sem que o ORM
+    precise carregar a entidade corrompida."""
+    with UnitOfWork() as uow:
+        objects = ObjectRepository(uow.session)
+        for state in AccessibilityState:
+            objects.add(CognitiveObject(accessibility=state))
+        uow.commit()
+
+    assert _audit().status is IntegrityStatus.PASS
+
+    with engine.begin() as conn:
+        corrupted = conn.execute(
+            sa.text(
+                "UPDATE cognitive_objects SET accessibility = 'unknown_state' "
+                "WHERE accessibility = 'latent' RETURNING id"
+            )
+        ).scalar_one()
+
+    report = _audit()
+
+    assert report.status is IntegrityStatus.FAIL
+    (finding,) = [
+        f for f in report.findings if f.code is IntegrityCode.IDENTITY_INVALID_ACCESSIBILITY_STATE
+    ]
+    assert finding.evidence["invalid_states"] == [
+        {"coid": str(corrupted), "accessibility": "unknown_state"}
+    ]

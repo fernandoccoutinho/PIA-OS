@@ -74,11 +74,55 @@ nenhuma API do PIA conseguiria criar, sem corromper banco.
 | `INTEGRITY-REL-003` | duplicidade de relação **ativa** | `E3.5.1` |
 | `INTEGRITY-REL-004` | endpoint de relação pendente | `E3.5` |
 | `INTEGRITY-VER-001` | `COUNT(CURRENT) <= 1` por CLID | `E3.4.1` |
+| `INTEGRITY-TRF-001` | `TransformationRecord.actor_ref` pendente | `E3.4` + `E3.10.1` |
+| `INTEGRITY-IDN-001` | `accessibility` fora do vocabulário congelado | `E3.6` + `E3.10.1` |
 | `INTEGRITY-PRV-001` | `ProvenanceRecord` com `coid` pendente | `E3.6` |
 | `INTEGRITY-CAU-001` | ciclo no grafo causal global | `E3.9`/`E3.9.1a` |
 | `INTEGRITY-CAU-002` | evento predecessor de si mesmo | `E3.9` |
 | `INTEGRITY-CAU-003` | mais de uma história por sujeito | `E3.9.1` |
 | `INTEGRITY-CAU-004` | referência causal pendente | `E3.9` |
+
+### Completude de escopo (E3.10.1)
+
+**`TransformationRecord.actor_ref`.** `E3.4` reservou o campo como
+"referência estrutural a um `ProvenanceRecord` futuro (E3.6)",
+**sem FK** — a tabela alvo não existia então, e `E3.6` manteve o campo
+intocado por instrução explícita. Agora que `provenance_records`
+existe, a referência é verificável. Auditar é o caminho correto;
+acrescentar FK retrospectiva não é, porque mudaria schema de módulo
+congelado.
+
+```text
+actor_ref IS NULL                          → válido
+actor_ref != NULL + ProvenanceRecord existe → válido
+actor_ref != NULL + ProvenanceRecord ausente → INTEGRITY-TRF-001
+```
+
+Nenhum `ProvenanceRecord` é fabricado para fechar a lacuna.
+
+**Vocabulário de `AccessibilityState`.** A coluna é `VARCHAR` sem
+`CHECK` no banco — `SAEnum(..., native_enum=False)` não cria
+constraint por padrão no SQLAlchemy 2.x —, então um valor fora do enum
+é fisicamente gravável por SQL direto, import ou restore legado, e
+carregar a entidade pelo ORM levantaria **antes** de conseguirmos
+diagnosticar. Por isso a coluna é lida como `literal_column`, fora da
+coerção do enum, enquanto o `id` continua vindo pela coluna tipada.
+
+O que se audita é **validade estrutural do valor persistido**, e só:
+
+```text
+accessibility ∈ {active, latent, inaccessible, causally_extinct} → válido
+qualquer outro valor → INTEGRITY-IDN-001
+```
+
+```text
+ACCESSIBILITY_TRANSITION_POLICY = E4
+```
+
+Se `ACTIVE → CAUSALLY_EXTINCT` foi uma transição *correta* não é
+julgado aqui — isso é política, e política é `E4`.
+`CAUSALLY_EXTINCT`, `INACCESSIBLE` e `LATENT` continuam estados
+legítimos, nunca corrupção.
 
 ### Deliberadamente não auditados
 
@@ -91,8 +135,12 @@ nenhuma API do PIA conseguiria criar, sem corromper banco.
   ordem". Não existe invariante temporal congelado a auditar.
 - **`provider_id`/`model_id` ausentes.** Opcionais por contrato desde
   `E3.6`, inclusive para `actor_type = AGENT`.
-- **Limitações deferidas conhecidas.** `input_refs`/`output_refs` de
-  `TransformationRecord` e o bypass de `add()`/`create()` herdados em
+- **`input_refs`/`output_refs`.** `INPUT_OUTPUT_REFS_STATUS =
+  DEFERRED` — listas JSON de referências polimórficas cuja completude
+  referencial nunca foi contratada. Reinterpretá-las como erro seria
+  transformar decisão aceita em corrupção (`T4` prova que não viram
+  finding).
+- **Limitações deferidas conhecidas.** O bypass de `add()`/`create()` herdados em
   `LineageRepository` são limitações **explicitamente aceitas**;
   transformá-las em corrupção porque `E3.10` as desejaria mais fortes
   seria reclassificar decisão como defeito.
@@ -112,12 +160,17 @@ Existe para impedir overclaim futuro — cada garantia tem um dono.
 | Relationship unicidade ativa | sim (índice parcial) | sim | sim |
 | `CURRENT` único por CLID | sim (índice parcial) | sim (pré-checagem) | sim |
 | Uma história por sujeito | sim (índice único) | sim | sim |
+| `actor_ref` de Transformation resolve | **não** (sem FK) | não validado | **sim** |
+| Vocabulário de `accessibility` | **não** (VARCHAR sem CHECK) | sim (enum do ORM) | **sim** |
 | Auto-predecessor causal | sim (`CHECK`) | sim | sim |
 | **DAG causal global** | **não** | `APPLICATION_STRUCTURAL_DAG` | **sim** |
 | Append-only de história | **não** | sim (repositório) | indireto (via ciclo) |
 
-As duas linhas em negrito são a razão de o módulo existir: são os
-únicos invariantes que **nenhuma** outra camada garante.
+As linhas em negrito são a razão de o módulo existir: invariantes que
+**nenhuma** outra camada garante estruturalmente. As duas últimas
+foram acrescentadas por `E3.10.1` — em ambas o banco não impõe nada, e
+no caso do vocabulário a validação do ORM só age na escrita pelo
+caminho autorizado, não sobre o que já está gravado.
 
 `INTEGRITY_AUDIT != DB_CONSTRAINT` — auditar o DAG causal **não**
 altera a classificação de `E3.9.1a`
@@ -311,7 +364,7 @@ fornecedor existe.
 ## Testes
 
 - **Unitários**
-  (`tests/unit/cognitive/services/test_integrity_manager.py`, 21):
+  (`tests/unit/cognitive/services/test_integrity_manager.py`, 31):
   `IG1`-`IG7` sobre `find_cycle()` puro (incluindo ciclo de 1000 nós,
   para provar a ausência de `RecursionError`, e componentes múltiplos);
   caminho de reporte de **todos** os invariantes via repositório
@@ -319,14 +372,20 @@ fornecedor existe.
   identidade cognitiva no finding; `status` derivado; e o
   false-positive gate sobre patrimônio real em SQLite (Galaxy Trace,
   Broken Glass, patrimônio legítimo amplo), mais detecção de ciclo
-  indireto real de linhagem.
+  indireto real de linhagem. `E3.10.1` acrescenta `T1`-`T4`
+  (`actor_ref` nulo/válido/pendente e `input_refs`/`output_refs`
+  deferidas) e `A1`-`A5` (os quatro estados congelados válidos, valor
+  fora do vocabulário reportado), mais a prova de que transição de
+  acessibilidade não é julgada.
 - **Integração PostgreSQL**
-  (`tests/integration/cognitive/test_integrity_integration.py`, 7):
+  (`tests/integration/cognitive/test_integrity_integration.py`, 9):
   `IA1` patrimônio amplo legítimo audita `PASS`; `IA2` read-only
   strong gate; `IA3` `FULL_DAG` sobre arestas reais; `IA4` ciclo
   causal injetado por SQL direto; `IA5` `CURRENT` duplicado injetado
   com índice temporariamente removido; `IA6` patrimônio vazio; `IA7`
-  nenhuma tabela de auditoria criada.
+  nenhuma tabela de auditoria criada; `IA8`/`IA9` (`E3.10.1`)
+  `actor_ref` pendente e `accessibility` inválida contra PostgreSQL
+  real.
 
-Estado: 450 unitários cognitivos, 66 de integração cognitiva, suíte
+Estado: 460 unitários cognitivos, 68 de integração cognitiva, suíte
 completa sem regressão E1/E2, `app.cognitive` em 100% de cobertura.

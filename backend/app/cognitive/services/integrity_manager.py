@@ -162,8 +162,10 @@ class IntegrityManager:
         findings.extend(self._audit_lineage())
         findings.extend(self._audit_relationships())
         findings.extend(self._audit_versions())
+        findings.extend(self._audit_transformations())
         findings.extend(self._audit_provenance())
         findings.extend(self._audit_causal_history())
+        findings.extend(self._audit_identity())
         return IntegrityReport(findings=tuple(findings), audited_at=datetime.now(UTC))
 
     # --- Lineage ------------------------------------------------------
@@ -338,6 +340,77 @@ class IntegrityManager:
                 evidence={
                     "clids": [
                         {"clid": str(clid), "current_count": count} for clid, count in duplicates
+                    ]
+                },
+            )
+        ]
+
+    # --- Transformation -----------------------------------------------
+
+    def _audit_transformations(self) -> list[IntegrityFinding]:
+        """Auditoria de `TransformationRecord` (`E3.10.1`).
+
+        Um único invariante: `actor_ref`, quando não-nulo, precisa
+        resolver para um `ProvenanceRecord`. `NULL` é válido — o campo
+        nunca foi obrigatório.
+
+        `input_refs`/`output_refs` continuam **fora de escopo**:
+        `INPUT_OUTPUT_REFS_STATUS = DEFERRED`. Sua completude
+        referencial nunca foi contratada, e tratá-la como corrupção
+        seria reclassificar limitação aceita como defeito
+        (`KNOWN_DEFERRED_LIMITATION != INTEGRITY_VIOLATION`).
+        """
+        dangling = self._repository.transformation_dangling_actor_refs()
+        if not dangling:
+            return []
+        return [
+            IntegrityFinding(
+                code=IntegrityCode.TRANSFORMATION_DANGLING_ACTOR_REF,
+                category=IntegrityCategory.TRANSFORMATION,
+                severity=ErrorSeverity.ERROR,
+                entity_type="TransformationRecord",
+                entity_refs=tuple(dangling),
+                message=(
+                    "TransformationRecord.actor_ref aponta para um "
+                    "ProvenanceRecord inexistente. actor_ref nulo é válido; o "
+                    "registro ausente NÃO é fabricado."
+                ),
+            )
+        ]
+
+    # --- Identity -----------------------------------------------------
+
+    def _audit_identity(self) -> list[IntegrityFinding]:
+        """Auditoria de vocabulário de `AccessibilityState`
+        (`E3.10.1`).
+
+        Verifica **apenas** se o valor persistido pertence ao
+        vocabulário congelado. Não julga transição: se
+        `ACTIVE → CAUSALLY_EXTINCT` foi correta é decisão de política,
+        e política é `E4`.
+
+        `CAUSALLY_EXTINCT`, `INACCESSIBLE` e `LATENT` **não** são
+        corrupção — são estados legítimos do contrato.
+        """
+        invalid = self._repository.invalid_accessibility_states()
+        if not invalid:
+            return []
+        return [
+            IntegrityFinding(
+                code=IntegrityCode.IDENTITY_INVALID_ACCESSIBILITY_STATE,
+                category=IntegrityCategory.IDENTITY,
+                severity=ErrorSeverity.ERROR,
+                entity_type="CognitiveObject",
+                entity_refs=tuple(coid for coid, _ in invalid),
+                message=(
+                    "CognitiveObject com accessibility fora do vocabulário "
+                    "congelado (active, latent, inaccessible, causally_extinct). "
+                    "Isto é validade estrutural do valor — não julgamento da "
+                    "transição que o produziu."
+                ),
+                evidence={
+                    "invalid_states": [
+                        {"coid": str(coid), "accessibility": state} for coid, state in invalid
                     ]
                 },
             )

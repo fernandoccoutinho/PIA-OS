@@ -32,7 +32,9 @@ from app.cognitive.models.enums import (
     ProvenanceSourceType,
     RelationshipType,
     RevisionStatus,
+    TransformationKind,
 )
+from app.cognitive.models.transformation_record import TransformationRecord
 from app.cognitive.repositories.causal_history_repository import CausalHistoryRepository
 from app.cognitive.repositories.integrity_repository import IntegrityRepository
 from app.cognitive.repositories.lineage_repository import LineageRepository
@@ -177,6 +179,8 @@ class FakeIntegrityRepository:
     provenance_dangling: list[uuid.UUID] = field(default_factory=list)
     causal_dangling_subject: list[uuid.UUID] = field(default_factory=list)
     causal_dangling_predecessor: list[uuid.UUID] = field(default_factory=list)
+    transformation_dangling_actor: list[uuid.UUID] = field(default_factory=list)
+    invalid_accessibility: list[tuple[uuid.UUID, str]] = field(default_factory=list)
 
     def lineage_edges(self):
         return self.lineage
@@ -219,6 +223,12 @@ class FakeIntegrityRepository:
 
     def causal_dangling_predecessors(self):
         return self.causal_dangling_predecessor
+
+    def transformation_dangling_actor_refs(self):
+        return self.transformation_dangling_actor
+
+    def invalid_accessibility_states(self):
+        return self.invalid_accessibility
 
 
 def _audit(**kwargs) -> IntegrityReport:
@@ -289,6 +299,8 @@ def test_every_structural_invariant_has_a_reporting_path():
         provenance_dangling=[ids[2]],
         causal_dangling_subject=[ids[3]],
         causal_dangling_predecessor=[ids[4]],
+        transformation_dangling_actor=[ids[5]],
+        invalid_accessibility=[(ids[6], "unknown_state")],
     )
 
     assert report.status is IntegrityStatus.FAIL
@@ -304,6 +316,8 @@ def test_every_structural_invariant_has_a_reporting_path():
         IntegrityCode.CAUSAL_SELF_PREDECESSOR,
         IntegrityCode.CAUSAL_MULTIPLE_HISTORIES_PER_SUBJECT,
         IntegrityCode.CAUSAL_DANGLING_REFERENCE,
+        IntegrityCode.TRANSFORMATION_DANGLING_ACTOR_REF,
+        IntegrityCode.IDENTITY_INVALID_ACCESSIBILITY_STATE,
     }
     assert report.counts[IntegrityCategory.LINEAGE] == 2
     assert report.counts[IntegrityCategory.RELATIONSHIP] == 4
@@ -548,3 +562,171 @@ def test_audit_does_not_write_to_the_patrimony(integrity):
     session.flush()
 
     assert census() == before
+
+
+# ---------------------------------------------------------------------
+# E3.10.1 — completude de escopo: actor_ref de Transformation e
+# vocabulário de AccessibilityState.
+# ---------------------------------------------------------------------
+
+
+def test_t1_transformation_with_null_actor_ref_is_valid(integrity):
+    """T1 — `actor_ref IS NULL` é válido: o campo nunca foi
+    obrigatório."""
+    session, objects, manager = integrity
+    session.add(
+        TransformationRecord(
+            operation_type="split",
+            transformation_kind=TransformationKind.DERIVATION,
+            input_refs=[],
+            output_refs=[],
+        )
+    )
+    session.flush()
+
+    report = manager.audit()
+
+    assert report.status is IntegrityStatus.PASS, report.findings
+
+
+def test_t2_transformation_with_resolvable_actor_ref_is_valid(integrity):
+    """T2 — `actor_ref` que resolve para um `ProvenanceRecord` não é
+    finding."""
+    session, objects, manager = integrity
+    subject = _obj(objects, session)
+    provenance = ProvenanceManager(ProvenanceRepository(session)).record(
+        coid=subject.id,
+        source_type=ProvenanceSourceType.HUMAN,
+        actor_type=ProvenanceActorType.HUMAN,
+    )
+    session.flush()
+    session.add(
+        TransformationRecord(
+            operation_type="revise",
+            transformation_kind=TransformationKind.REVISION,
+            input_refs=[str(subject.id)],
+            output_refs=[str(subject.id)],
+            actor_ref=provenance.id,
+        )
+    )
+    session.flush()
+
+    report = manager.audit()
+
+    assert report.status is IntegrityStatus.PASS, report.findings
+
+
+def test_t3_transformation_with_dangling_actor_ref_is_reported(integrity):
+    """T3 — `actor_ref` apontando para `ProvenanceRecord` inexistente
+    vira finding.
+
+    O campo não tem FK (`E3.4` o reservou antes de `provenance_records`
+    existir, e `E3.6` o manteve intocado), então este estado é
+    fisicamente alcançável — que é exatamente o motivo de auditá-lo em
+    vez de acrescentar FK retrospectiva.
+    """
+    session, objects, manager = integrity
+    record = TransformationRecord(
+        operation_type="derive",
+        transformation_kind=TransformationKind.DERIVATION,
+        input_refs=[],
+        output_refs=[],
+        actor_ref=uuid.uuid4(),
+    )
+    session.add(record)
+    session.flush()
+
+    report = manager.audit()
+
+    assert report.status is IntegrityStatus.FAIL
+    (finding,) = [
+        f for f in report.findings if f.code is IntegrityCode.TRANSFORMATION_DANGLING_ACTOR_REF
+    ]
+    assert finding.category is IntegrityCategory.TRANSFORMATION
+    assert finding.entity_refs == (record.id,)
+    assert "fabricado" in finding.message
+
+
+def test_t4_unresolved_input_output_refs_are_not_findings(integrity):
+    """T4 — `input_refs`/`output_refs` que não resolvem **não** viram
+    finding nesta fase.
+
+    `INPUT_OUTPUT_REFS_STATUS = DEFERRED`: são referências
+    polimórficas cuja completude nunca foi contratada. Tratá-las como
+    corrupção seria reclassificar limitação aceita como defeito.
+    """
+    session, objects, manager = integrity
+    session.add(
+        TransformationRecord(
+            operation_type="derive",
+            transformation_kind=TransformationKind.DERIVATION,
+            input_refs=[str(uuid.uuid4()), "ref://externa"],
+            output_refs=[str(uuid.uuid4())],
+        )
+    )
+    session.flush()
+
+    report = manager.audit()
+
+    assert report.status is IntegrityStatus.PASS, report.findings
+
+
+@pytest.mark.parametrize("state", list(AccessibilityState))
+def test_a1_a4_every_frozen_accessibility_state_is_valid(integrity, state):
+    """A1-A4 — os quatro estados congelados são válidos. Nenhum deles
+    é corrupção, `CAUSALLY_EXTINCT` inclusive."""
+    session, objects, manager = integrity
+    _obj(objects, session, accessibility=state)
+
+    report = manager.audit()
+
+    assert report.status is IntegrityStatus.PASS, report.findings
+
+
+def test_a5_accessibility_outside_the_vocabulary_is_reported(integrity):
+    """A5 — valor persistido fora do vocabulário vira finding.
+
+    A coluna é `VARCHAR` sem `CHECK` no banco, então o estado é
+    fisicamente alcançável por SQL direto, import ou restore legado.
+    O `UPDATE` cru abaixo é fixture de teste — a auditoria precisa ser
+    capaz de diagnosticar patrimônio que chegou assim.
+    """
+    import sqlalchemy as sa
+
+    session, objects, manager = integrity
+    obj = _obj(objects, session)
+    # UPDATE cru: o único objeto do teste. Escrito sem filtrar por `id`
+    # de propósito — o `Uuid` do SQLAlchemy serializa o id de formas
+    # diferentes por dialeto, e o alvo aqui é o valor da coluna, não a
+    # seleção da linha.
+    session.execute(
+        sa.text("UPDATE cognitive_objects SET accessibility = :s"), {"s": "unknown_state"}
+    )
+    session.flush()
+
+    report = manager.audit()
+
+    assert report.status is IntegrityStatus.FAIL
+    (finding,) = [
+        f for f in report.findings if f.code is IntegrityCode.IDENTITY_INVALID_ACCESSIBILITY_STATE
+    ]
+    assert finding.category is IntegrityCategory.IDENTITY
+    assert finding.evidence["invalid_states"] == [
+        {"coid": str(obj.id), "accessibility": "unknown_state"}
+    ]
+
+
+def test_e3_10_1_audits_do_not_judge_accessibility_transitions(integrity):
+    """A auditoria de vocabulário não julga transição: um objeto que
+    foi de `ACTIVE` a `CAUSALLY_EXTINCT` continua `PASS`.
+
+    `ACCESSIBILITY_TRANSITION_POLICY = E4`.
+    """
+    session, objects, manager = integrity
+    obj = _obj(objects, session, accessibility=AccessibilityState.ACTIVE)
+    obj.accessibility = AccessibilityState.CAUSALLY_EXTINCT
+    session.flush()
+
+    report = manager.audit()
+
+    assert report.status is IntegrityStatus.PASS, report.findings
