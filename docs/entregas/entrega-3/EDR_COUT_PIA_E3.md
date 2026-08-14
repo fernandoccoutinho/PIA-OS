@@ -385,3 +385,47 @@ CROSS_HISTORY                    != CYCLE_PERMISSION
 `GLOBAL_DB_CYCLE_PROTECTION = NOT_REQUIRED_IN_E3_9` — a API autorizada
 preserva a propriedade necessária; a garantia será reavaliada se
 houver requisito de writers externos ou acesso direto ao banco.
+
+### Integridade, conformidade e aprendizado (E3.10)
+
+```text
+INTEGRITY_DETECTS_DOES_NOT_DECIDE
+ERROR_IS_EVIDENCE_NOT_LEARNING
+PIA_LEARNING_SOURCE = VALIDATED_EXPERIENCE
+COMPLIANCE != LEARNING
+IMPROVEMENT != REPAIR
+KERNEL_CHANGE != INCIDENT_RESPONSE
+AUTO_DESTRUCTIVE_REPAIR = FORBIDDEN_E3_10
+```
+
+**Integridade detecta, não decide.** O Integrity Manager observa,
+verifica e diagnostica; decidir o que fazer com uma condição detectada
+é governança, que pertence a `E4`. Detectar inconsistência não
+autoriza apagá-la: um estado inconsistente pode ser parte da história
+observada do sistema (`DETECTED INCONSISTENCY != AUTHORIZATION TO
+ERASE HISTORY`), e `INTERNALLY_CONSISTENT != TRUE_ABOUT_REALITY` —
+auditoria testa invariantes internos, não verdade ontológica.
+
+**Erro é evidência possível, não aprendizado.** O PIA não aprende com
+erro como regra. Um finding é observação, não conhecimento. Sucesso
+repetido, resultado superior, estabilidade, comparação entre
+estratégias, feedback humano, evidência externa, descoberta causal,
+resultado experimental e divergência Multi-IA também produzem
+evidência — `LEARNING != FAILURE_RESPONSE`.
+
+A fonte do aprendizado futuro é **experiência validada**:
+
+```text
+EXPERIENCE → EVIDENCE → EVALUATION → VALIDATION → LEARNING →
+IMPROVEMENT PROPOSAL → GOVERNANCE → CONTROLLED EVOLUTION
+```
+
+Conformidade poderá participar como **uma** fonte de evidência nesse
+fluxo, nunca como motor de aprendizado. Um caso fechado não altera
+automaticamente regra, política, contrato ou Kernel.
+
+**Kernel.** `KERNEL_SELF_MODIFICATION = NOT_AUTHORIZED`;
+`KERNEL_IMPROVEMENT = FUTURE_CONTROLLED_PROCESS`. Candidato a melhoria
+exige experiência validada mais reprodutibilidade, evidência
+suficiente, generalizabilidade e aprovação de governança. Nunca
+`INCIDENT → KERNEL CHANGE`.
