@@ -1,0 +1,377 @@
+{
+  "manifest_version": "1.0",
+  "delivery": "E3",
+  "module": "E3.12 / AWP-E3-INTEGRATION",
+  "generated_by": "E3.12 final integration gate",
+  "baseline_head": "7de327a80ae3f72a3683141a8e88eeca49f9f80c",
+  "audited_head": "bf9788c0542ff0356e1950ec783ee628904f632c",
+  "branch": "audit/e3-final-validation",
+  "patch_chain": {
+    "patches_before_e3_12": 33,
+    "this_patch": "e3-12-e3-final-integration-gate.patch",
+    "position": 34
+  },
+  "alembic": {
+    "single_head": "c9a3f61b74d2",
+    "revisions": 13,
+    "orphans": 0,
+    "duplicate_ids": 0,
+    "migrations": [
+      {
+        "revision": "0460b6556563",
+        "down_revision": "6bf0c0eb0c2e",
+        "purpose": "guard provenance downgrade safety against historical data loss (E3.6.1)",
+        "file": "0460b6556563_guard_provenance_downgrade_safety_.py"
+      },
+      {
+        "revision": "257dc8c23ab1",
+        "down_revision": "None",
+        "purpose": "create cognitive_objects table (E3.1 / LIB-01)",
+        "file": "257dc8c23ab1_create_cognitive_objects_table_e3_1_lib_.py"
+      },
+      {
+        "revision": "2826ce7fa4dc",
+        "down_revision": "4f8fa05e036c",
+        "purpose": "create relationships table (E3.5 / LIB-05)",
+        "file": "2826ce7fa4dc_create_relationships_table_e3_5_lib_05.py"
+      },
+      {
+        "revision": "2832894b5cb2",
+        "down_revision": "f3e7e2b98ce3",
+        "purpose": "create transformation_records table (E3.4 / LIB-04)",
+        "file": "2832894b5cb2_create_transformation_records_table_e3_.py"
+      },
+      {
+        "revision": "4f56e1a4936c",
+        "down_revision": "257dc8c23ab1",
+        "purpose": "create lineage_edges table (E3.3 / LIB-03)",
+        "file": "4f56e1a4936c_create_lineage_edges_table_e3_3_lib_03.py"
+      },
+      {
+        "revision": "4f8fa05e036c",
+        "down_revision": "2832894b5cb2",
+        "purpose": "add unique current per clid index (E3.4.1)",
+        "file": "4f8fa05e036c_add_unique_current_per_clid_index_e3_4_1.py"
+      },
+      {
+        "revision": "63d205dec996",
+        "down_revision": "2826ce7fa4dc",
+        "purpose": "active uniqueness and symmetric guarantee for relationships (E3.5.1)",
+        "file": "63d205dec996_active_uniqueness_and_symmetric_.py"
+      },
+      {
+        "revision": "6bf0c0eb0c2e",
+        "down_revision": "e2c89ee3aa59",
+        "purpose": "add trace_id to provenance_records (E3.6.1)",
+        "file": "6bf0c0eb0c2e_add_trace_id_to_provenance_records_e3_6_.py"
+      },
+      {
+        "revision": "b7c41d0e92a5",
+        "down_revision": "0460b6556563",
+        "purpose": "add structural indexes (E3.7 / LIB-07 Index Manager)",
+        "file": "b7c41d0e92a5_add_structural_indexes_e3_7_lib_07.py"
+      },
+      {
+        "revision": "c9a3f61b74d2",
+        "down_revision": "b7c41d0e92a5",
+        "purpose": "create causal history tables (E3.9 / LIB-09)",
+        "file": "c9a3f61b74d2_create_causal_history_tables_e3_9_lib_09.py"
+      },
+      {
+        "revision": "e2c89ee3aa59",
+        "down_revision": "f11551e97026",
+        "purpose": "create provenance_records table (E3.6 / LIB-06)",
+        "file": "e2c89ee3aa59_create_provenance_records_table_e3_6_.py"
+      },
+      {
+        "revision": "f11551e97026",
+        "down_revision": "63d205dec996",
+        "purpose": "guard relationship downgrade safety against historical data loss (E3.5.2)",
+        "file": "f11551e97026_guard_relationship_downgrade_safety_.py"
+      },
+      {
+        "revision": "f3e7e2b98ce3",
+        "down_revision": "4f56e1a4936c",
+        "purpose": "add revision_status to cognitive_objects (E3.4.0)",
+        "file": "f3e7e2b98ce3_add_revision_status_to_cognitive_.py"
+      }
+    ]
+  },
+  "modules": {
+    "E3.1_LIB01": "Object Repository",
+    "E3.2_LIB02": "COID Manager",
+    "E3.3_LIB03": "CLID / Lineage",
+    "E3.4_LIB04": "Version / Transformation",
+    "E3.5_LIB05": "Relationship",
+    "E3.6_LIB06": "Provenance / Accessibility",
+    "E3.7_LIB07": "Index",
+    "E3.8_LIB08": "Search",
+    "E3.9_LIB09": "Causal History",
+    "E3.10_LIB10": "Integrity",
+    "E3.11_LIB11": "Synchronization"
+  },
+  "file_counts": {
+    "models": 7,
+    "repositories": 10,
+    "services": 11,
+    "schemas": 4,
+    "errors": 2,
+    "migrations": 13,
+    "cognitive_test_files": 110
+  },
+  "error_codes": {
+    "domain_prefix": "PIA-8xxx",
+    "count": 22,
+    "duplicates": 0,
+    "contiguous": true,
+    "next_free": "PIA-8023",
+    "codes": [
+      {
+        "code": "PIA-8001",
+        "name": "PIA_8001_IDENTITY_IMMUTABLE"
+      },
+      {
+        "code": "PIA-8002",
+        "name": "PIA_8002_CLID_ALREADY_SET"
+      },
+      {
+        "code": "PIA-8003",
+        "name": "PIA_8003_COID_INVALID"
+      },
+      {
+        "code": "PIA-8004",
+        "name": "PIA_8004_COID_COLLISION"
+      },
+      {
+        "code": "PIA-8005",
+        "name": "PIA_8005_CLID_INVALID"
+      },
+      {
+        "code": "PIA-8006",
+        "name": "PIA_8006_LINEAGE_SELF_LINK"
+      },
+      {
+        "code": "PIA-8007",
+        "name": "PIA_8007_LINEAGE_DUPLICATE_EDGE"
+      },
+      {
+        "code": "PIA-8008",
+        "name": "PIA_8008_LINEAGE_ENDPOINT_NOT_FOUND"
+      },
+      {
+        "code": "PIA-8009",
+        "name": "PIA_8009_LINEAGE_EDGE_IMMUTABLE"
+      },
+      {
+        "code": "PIA-8010",
+        "name": "PIA_8010_TRANSFORMATION_RECORD_IMMUTABLE"
+      },
+      {
+        "code": "PIA-8011",
+        "name": "PIA_8011_REVISION_STATUS_INVALID_TRANSITION"
+      },
+      {
+        "code": "PIA-8012",
+        "name": "PIA_8012_REVISION_CURRENT_UNIQUENESS_VIOLATION"
+      },
+      {
+        "code": "PIA-8013",
+        "name": "PIA_8013_RELATIONSHIP_SELF_LINK"
+      },
+      {
+        "code": "PIA-8014",
+        "name": "PIA_8014_RELATIONSHIP_DUPLICATE"
+      },
+      {
+        "code": "PIA-8015",
+        "name": "PIA_8015_RELATIONSHIP_ENDPOINT_NOT_FOUND"
+      },
+      {
+        "code": "PIA-8016",
+        "name": "PIA_8016_RELATIONSHIP_IMMUTABLE"
+      },
+      {
+        "code": "PIA-8017",
+        "name": "PIA_8017_PROVENANCE_RECORD_IMMUTABLE"
+      },
+      {
+        "code": "PIA-8018",
+        "name": "PIA_8018_ACCESSIBILITY_INVALID_TRANSITION"
+      },
+      {
+        "code": "PIA-8019",
+        "name": "PIA_8019_SEARCH_CRITERIA_INVALID"
+      },
+      {
+        "code": "PIA-8020",
+        "name": "PIA_8020_CAUSAL_HISTORY_IMMUTABLE"
+      },
+      {
+        "code": "PIA-8021",
+        "name": "PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR"
+      },
+      {
+        "code": "PIA-8022",
+        "name": "PIA_8022_SYNC_PACKAGE_INVALID"
+      }
+    ],
+    "integrity_diagnostics": [
+      {
+        "code": "INTEGRITY-LIN-001",
+        "name": "LINEAGE_CYCLE"
+      },
+      {
+        "code": "INTEGRITY-LIN-002",
+        "name": "LINEAGE_SELF_LINK"
+      },
+      {
+        "code": "INTEGRITY-LIN-003",
+        "name": "LINEAGE_DANGLING_ENDPOINT"
+      },
+      {
+        "code": "INTEGRITY-REL-001",
+        "name": "RELATIONSHIP_SELF_LINK"
+      },
+      {
+        "code": "INTEGRITY-REL-002",
+        "name": "RELATIONSHIP_NON_CANONICAL_SYMMETRIC"
+      },
+      {
+        "code": "INTEGRITY-REL-003",
+        "name": "RELATIONSHIP_DUPLICATE_ACTIVE"
+      },
+      {
+        "code": "INTEGRITY-REL-004",
+        "name": "RELATIONSHIP_DANGLING_ENDPOINT"
+      },
+      {
+        "code": "INTEGRITY-VER-001",
+        "name": "VERSION_MULTIPLE_CURRENT_PER_CLID"
+      },
+      {
+        "code": "INTEGRITY-TRF-001",
+        "name": "TRANSFORMATION_DANGLING_ACTOR_REF"
+      },
+      {
+        "code": "INTEGRITY-IDN-001",
+        "name": "IDENTITY_INVALID_ACCESSIBILITY_STATE"
+      },
+      {
+        "code": "INTEGRITY-PRV-001",
+        "name": "PROVENANCE_DANGLING_COID"
+      },
+      {
+        "code": "INTEGRITY-CAU-001",
+        "name": "CAUSAL_CYCLE"
+      },
+      {
+        "code": "INTEGRITY-CAU-002",
+        "name": "CAUSAL_SELF_PREDECESSOR"
+      },
+      {
+        "code": "INTEGRITY-CAU-003",
+        "name": "CAUSAL_MULTIPLE_HISTORIES_PER_SUBJECT"
+      },
+      {
+        "code": "INTEGRITY-CAU-004",
+        "name": "CAUSAL_DANGLING_REFERENCE"
+      }
+    ],
+    "integrity_note": "Deliberadamente fora do catalogo PIA-8xxx: finding e resultado de auditoria, nao excecao."
+  },
+  "cout_contract": {
+    "COUT_P1_DISTINCTION_PRESERVATION": "PASS",
+    "COUT_P2_CONTINUITY": "PASS",
+    "COUT_P3_PROVENANCE": "PASS",
+    "COUT_P4_MULTIPLE_HISTORIES": "PASS",
+    "COUT_P5_TRANSFORMATION": "PASS",
+    "COUT_P6_ACCESSIBILITY_NOT_EXISTENCE": "PASS",
+    "COUT_P7_NO_DESTRUCTIVE_EQUIVALENCE_COLLAPSE": "PASS",
+    "COUT_P8_INCOMPARABLE_UNRESOLVED_VALID": "PASS",
+    "COUT_P9_NON_DECISIONAL": "PASS",
+    "COUT_P10_PIA_OWNS_PERSISTENCE": "PASS"
+  },
+  "dag_guarantee_matrix": {
+    "causal": {
+      "APPLICATION_STRUCTURAL_DAG": true,
+      "DB_LEVEL_GLOBAL_DAG_GUARANTEE": false,
+      "INTEGRITY_GLOBAL_AUDIT": true,
+      "SYNC_PREFLIGHT": true
+    },
+    "lineage": {
+      "DB_SELF_PROTECTION": true,
+      "FULL_DAG_DB_GUARANTEE": false,
+      "INTEGRITY_FULL_DAG_AUDIT": true
+    }
+  },
+  "not_implemented": [
+    "CognitiveDistinction",
+    "CausalClassRef",
+    "CausalComparison",
+    "full Accessibility policy (E4)",
+    "Governance (E4)",
+    "Compliance/Conformance",
+    "Continuous Cognitive Improvement",
+    "CognitiveExecution (E7)",
+    "Multi-AI Orchestration (E7)",
+    "Artifact Storage",
+    "full-text/vector/embedding search",
+    "input_refs/output_refs referential integrity",
+    "external/tombstone policy"
+  ],
+  "boundaries": {
+    "COUT_DECISION_ENGINE": "NONE",
+    "COUT_GLOBAL_SCORE": "NONE",
+    "A_R_P_T_CANONICAL_SCORE": "NONE",
+    "COUT_PROVIDER_SELECTOR": "NONE",
+    "COUT_KERNEL_DECISION_DEPENDENCY": "NONE",
+    "TRANSCRIPT_AUTO_STORAGE": "NONE",
+    "ARTIFACT_STORAGE": "DEFERRED",
+    "REPAIR_IMPLEMENTED": "NO",
+    "GOVERNANCE_IMPLEMENTED": "NO",
+    "LEARNING_ENGINE_IMPLEMENTED": "NO",
+    "COGNITIVE_DOMAIN_METADATA_PRIMITIVE": "NONE",
+    "PROVIDER_NEUTRAL_DOMAIN": "PASS"
+  },
+  "test_evidence": {
+    "cognitive_unit_collected": 493,
+    "cognitive_integration_collected": 105,
+    "e3_12_gate_tests": 23,
+    "total_collected": 1054,
+    "raw_env_full_suite": "11 failed / 1019 passed / 1 skipped",
+    "raw_failures_classification": "6 = bit de execucao ausente no proprio tree git (DEFEITO DA BASELINE, reportado, patch corretivo proposto e NAO aplicado em E3.12); 5 = artefato de presenca do .env (ambiental, provado por isolamento)",
+    "normalized_full_suite": "1052 passed / 1 skipped / 1 deselected",
+    "normalized_full_suite_failed": 0,
+    "e1_e2_regression_delta": 0,
+    "global_coverage": "98.28%",
+    "app_cognitive_coverage": "100%",
+    "ruff": "PASS",
+    "black": "PASS",
+    "mypy_total_errors": 7,
+    "mypy_new_errors": 0,
+    "postgresql": "16.14",
+    "driver": "psycopg 3.2.3",
+    "schema_orm_sync": "PASS (compare_metadata 0 diffs)",
+    "public_api_import_audit": "PASS (39 modulos, 0 falhas, 0 ciclos)"
+  },
+  "stop_conditions": "NONE",
+  "gate": {
+    "E3_12_IMPLEMENTATION_GATE": "PASS",
+    "E3_FINAL_FREEZE": "PENDING_INDEPENDENT_AUDIT",
+    "GATE_E3_TO_E4": "PENDING",
+    "READY_FOR_E4": false
+  },
+  "reported_defects": [
+    {
+      "id": "E3.12-D1",
+      "origin_module": "baseline E1/E2 (Modulo 2.13, commit 7de327a)",
+      "defect": "6 scripts em backend/deploy/scripts/ tem modo 100644 no tree git; test_script_exists_and_is_executable exige os.X_OK",
+      "reproduction": "clone limpo da baseline -> pytest tests/unit/deploy/test_scripts.py -> 6 failed",
+      "is_regression": false,
+      "regression_note": "a baseline sempre teve; E3_REGRESSION_DELTA permanece 0",
+      "fixed_in_e3_12": false,
+      "proposed_corrective_patch": "e3-12-1-baseline-deploy-scripts-exec-bit.patch (git update-index --chmod=+x; nenhum conteudo alterado)",
+      "handling": "normalizado apenas em tempo de execucao (§31B); mudancas de modo revertidas antes do commit do patch 34"
+    }
+  ]
+}

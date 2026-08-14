@@ -515,3 +515,100 @@ CANDIDATE_GRAPH = DESTINATION_ACCEPTED_STATE
 Detectar que duas representações divergem não é declarar uma delas
 inválida — e continua sem vencedor automático: qualquer conflito
 aborta o import, com zero escritas.
+
+---
+
+## Consolidação final da Entrega 3 (E3.12)
+
+Esta seção **não reescreve** nenhuma decisão anterior. Ela congela a
+matriz normativa COUT-PIA da E3 e registra onde cada princípio deixou
+de ser afirmação documental e passou a ser comportamento verificado.
+
+### Matriz COUT-PIA congelada
+
+```text
+COUT-P1   DISTINCTION PRESERVATION
+COUT-P2   CONTINUITY PRESERVATION
+COUT-P3   PROVENANCE PRESERVATION
+COUT-P4   MULTIPLE HISTORY PRESERVATION
+COUT-P5   TRANSFORMATION PRESERVATION / DECLARED LOSS
+COUT-P6   ACCESSIBILITY != EXISTENCE
+COUT-P7   EQUIVALENCE != DESTRUCTIVE COLLAPSE
+COUT-P8   INCOMPARABLE / UNRESOLVED ARE VALID
+COUT-P9   COUT INFORMS; DOES NOT DECIDE
+COUT-P10  PERSISTENT COGNITIVE MEMORY BELONGS TO PIA-OS,
+          NOT TO A MODEL/PROVIDER
+```
+
+Os dez são demonstrados em
+`tests/integration/cognitive/test_e3_12_final_integration_gate.py`
+(G1–G22), contra PostgreSQL real e duas instâncias reais. A
+correspondência princípio → teste está em
+`E3_12_E3_FINAL_INTEGRATION_GATE.md` §5.
+
+### Reafirmação sem alteração de classificação
+
+A E3.12 **não** alterou nenhuma classificação anterior. Em
+particular, continuam exatamente como foram registradas:
+
+```text
+APPLICATION_STRUCTURAL_DAG    = TRUE     (E3.9.1a)
+DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE    (E3.9.1a)
+INTEGRITY_GLOBAL_AUDIT        = TRUE     (E3.10)
+SYNC_PREFLIGHT                = TRUE     (E3.11.1)
+DB_SELF_PROTECTION            = TRUE     (E3.3)
+FULL_DAG_DB_GUARANTEE         = FALSE    (E3.3 → auditado em E3.10)
+```
+
+O que a E3.12 acrescentou foi a prova **nos dois sentidos**: o
+`UPDATE` direto que cria um ciclo é aceito pelo banco — logo
+`DB_LEVEL = FALSE` não é modéstia retórica — e a auditoria global o
+encontra — logo `INTEGRITY_GLOBAL_AUDIT = TRUE` não é promessa vazia.
+
+### Não-colapso diagnóstico (princípio acrescentado em E3.12)
+
+```text
+DIAGNOSTIC DISTINCTION IS ITSELF A COUT PROPERTY
+
+FIVE DEFECT CLASSES MUST PRODUCE FIVE DIAGNOSTICS
+COLLAPSING THEM INTO "INVALID" DESTROYS THE DISTINCTION
+THE SYSTEM EXISTS TO PRESERVE
+
+DETECTION != CLASSIFICATION
+CLASSIFICATION != DECISION
+```
+
+Um sistema que respondesse "inválido" a conflito de identidade, pacote
+causalmente inválido, ciclo de linhagem, referência pendente e
+vocabulário inválido estaria tecnicamente "detectando" os cinco — e
+destruindo a informação que torna cada um acionável. A preservação da
+distinção diagnóstica é a mesma propriedade COUT aplicada ao próprio
+mecanismo de verificação.
+
+### Fronteira do que a E3 não entrega
+
+Reafirmado, e agora verificado por teste executável (G19), não apenas
+declarado:
+
+```text
+REPAIR_IMPLEMENTED                  = NO
+GOVERNANCE_IMPLEMENTED              = NO
+LEARNING_ENGINE_IMPLEMENTED         = NO
+ARTIFACT_STORAGE                    = DEFERRED
+COGNITIVE_DOMAIN_METADATA_PRIMITIVE = NONE
+COGNITIVE_EXECUTION                 = E7
+MULTI_AI_ORCHESTRATION              = E7
+FULL_ACCESSIBILITY_POLICY           = E4
+```
+
+### Continuidade cognitiva vs continuidade de modelo
+
+```text
+COGNITIVE_CONTINUITY > MODEL_CONTINUITY   ← HIPÓTESE, NÃO RESULTADO
+```
+
+A E3 entrega a infraestrutura necessária — identidade, proveniência,
+linhagem, história causal, sincronização, neutralidade de provider. Ela
+**não** demonstra o avanço empírico, e nada nesta entrega autoriza a
+afirmação mais forte. A verificação pertence a fases futuras, com
+modelos efetivamente substituíveis.
