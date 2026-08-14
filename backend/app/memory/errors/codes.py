@@ -89,3 +89,21 @@ Versões publicadas são imutáveis: mudança semântica cria versão nova.
 Aceitar a segunda escrita como atualização apagaria em silêncio a
 policy que fundamentou decisões passadas — e nenhuma delas poderia
 mais ser explicada."""
+
+PIA_8028_GOVERNANCE_POLICY_IMMUTABLE = ErrorCode(
+    code="PIA-8028",
+    default_message="governance_policy_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de alterar ou remover uma `GovernancePolicy` publicada.
+
+Corretivo `E4.3.1`. A E4.3 **afirmava** imutabilidade e não a impunha:
+o repositório herdava `update()`/`delete()` de `BaseRepository`, e uma
+mutação ORM seguida de `commit()` adulterava a versão publicada sem
+criar versão nova — reproduzido antes da correção.
+
+É a mesma dívida que a E3.3.1 fechou em `LineageEdge`, onde a
+docstring dizia "append-only por construção" sem que nada aplicasse a
+regra."""

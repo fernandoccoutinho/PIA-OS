@@ -20,6 +20,7 @@ caminho inverso não tem volta.
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.memory.models.governance_enums import (
     CognitiveOperation,
@@ -207,5 +208,73 @@ class GovernanceDecision:
         naquele contexto — nada sobre o patrimônio existir. Deixar
         isso implícito seria confiar em que todo consumidor futuro
         chegue sozinho à mesma conclusão.
+        """
+        return False
+
+
+@dataclass(frozen=True)
+class GovernanceResolution:
+    """Resolução completa: fronteira de plataforma + policy local.
+
+    Imutável e **transitória**, como `GovernanceDecision`,
+    `IntegrityFinding` (E3.10) e `SyncReport` (E3.11).
+
+    `declared_preservations` e `declared_losses` reaproveitam
+    deliberadamente o vocabulário de `TransformationRecord` (E3.4):
+    quando algo é bloqueado, declarar **o que se preservou e o que se
+    perdeu** é a mesma disciplina que a E3 aplica a transformações —
+    uma resolução que não declara perda afirma não ter perdido nada, o
+    que é quase sempre falso.
+
+    A resolução registra as **capacidades** bloqueadas, do vocabulário
+    fechado, e nunca o conteúdo do pedido: o corretivo exige tanto
+    oferecer alternativa quanto não conservar detalhe operacional
+    nocivo desnecessário.
+    """
+
+    outcome: GovernanceOutcome
+    operation: CognitiveOperation
+    safety_boundary_version: int
+    safety_rationale: str = ""
+    blocked_capabilities: tuple[Any, ...] = ()
+    preserved_intent: str | None = None
+    admissible_alternatives: tuple[str, ...] = ()
+    constraints: tuple[str, ...] = ()
+    declared_preservations: tuple[str, ...] = ()
+    declared_losses: tuple[str, ...] = ()
+    policy_key: str | None = None
+    policy_version: int | None = None
+    policy_id: uuid.UUID | None = None
+    matched_rule_id: str | None = None
+    policy_rationale: str = ""
+
+    @property
+    def execution_authorized(self) -> bool:
+        """`True` **somente** em `ADMISSIBLE`.
+
+        Nem `NOT_APPLICABLE`, nem `PROHIBITED`, nem a existência de
+        alternativas autorizam coisa alguma:
+
+            REDIRECTION != AUTHORIZATION
+
+        Oferecer um caminho seguro não libera o caminho recusado, e a
+        propriedade existe para que nenhum chamador precise
+        reimplementar essa distinção e errar nela.
+        """
+        return self.outcome is GovernanceOutcome.ADMISSIBLE
+
+    @property
+    def prohibited_by_platform(self) -> bool:
+        """Recusado pela fronteira — irreversível por policy local."""
+        return self.outcome is GovernanceOutcome.PROHIBITED
+
+    @property
+    def implies_nonexistence(self) -> bool:
+        """Sempre `False`, dito explicitamente.
+
+        ```
+        DENIED       != NONEXISTENT
+        PROHIBITED   != NONEXISTENT
+        ```
         """
         return False

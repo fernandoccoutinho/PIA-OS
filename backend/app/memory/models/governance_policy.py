@@ -25,16 +25,17 @@ determinada decisão.
 """
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import CheckConstraint, DateTime, Integer, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Integer, UniqueConstraint, event
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON, TypeEngine
 
-from app.memory.models.governance_enums import CognitiveOperation, GovernanceEffect
-from app.memory.schemas.governance import GovernanceRule
 from app.models.base_model import BaseModel
+
+if TYPE_CHECKING:  # pragma: no cover - somente para tipagem
+    from app.memory.schemas.governance import GovernanceRule
 
 _RULES_JSON: TypeEngine[Any] = JSON().with_variant(JSONB(), "postgresql")  # type: ignore[no-untyped-call]
 """JSONB no PostgreSQL, JSON genérico nos demais.
@@ -112,7 +113,7 @@ class GovernancePolicy(BaseModel):
     vigência sempre coerente."""
 
     @staticmethod
-    def serialize_rules(rules: tuple[GovernanceRule, ...]) -> list[dict[str, Any]]:
+    def serialize_rules(rules: "tuple[GovernanceRule, ...]") -> list[dict[str, Any]]:
         """Converte regras tipadas em JSON canônico.
 
         Todos os conjuntos viram listas **ordenadas**: `frozenset` não
@@ -120,6 +121,13 @@ class GovernancePolicy(BaseModel):
         mesmo conjunto de regras produziria bytes diferentes a cada
         gravação.
         """
+        ids = [rule.rule_id for rule in rules]
+        duplicados = sorted({rid for rid in ids if ids.count(rid) > 1})
+        if duplicados:
+            raise ValueError(
+                f"rule_id duplicado na mesma versão: {', '.join(duplicados)} — "
+                "duplicata torna o fundamento da decisão ambíguo"
+            )
         return [
             {
                 "rule_id": rule.rule_id,
@@ -133,7 +141,7 @@ class GovernancePolicy(BaseModel):
         ]
 
     @staticmethod
-    def deserialize_rules(payload: list[dict[str, Any]]) -> tuple[GovernanceRule, ...]:
+    def deserialize_rules(payload: list[dict[str, Any]]) -> "tuple[GovernanceRule, ...]":
         """Reconstrói regras tipadas a partir do JSON.
 
         Reconstrói **pelo construtor**, que reaplica todos os
@@ -142,6 +150,21 @@ class GovernancePolicy(BaseModel):
         pior desfecho possível: uma policy que parece restringir e não
         restringe.
         """
+        from app.memory.models.governance_enums import (
+            CognitiveOperation,
+            GovernanceEffect,
+        )
+        from app.memory.schemas.governance import GovernanceRule
+
+        vistos: set[str] = set()
+        for item in payload:
+            if item["rule_id"] in vistos:
+                raise ValueError(
+                    f"rule_id duplicado na mesma versão: '{item['rule_id']}' — "
+                    "duplicata torna o fundamento da decisão ambíguo"
+                )
+            vistos.add(item["rule_id"])
+
         return tuple(
             GovernanceRule(
                 rule_id=item["rule_id"],
@@ -155,6 +178,42 @@ class GovernancePolicy(BaseModel):
         )
 
     @property
-    def typed_rules(self) -> tuple[GovernanceRule, ...]:
+    def typed_rules(self) -> "tuple[GovernanceRule, ...]":
         """Regras desta versão, já tipadas."""
         return GovernancePolicy.deserialize_rules(self.rules or [])
+
+
+@event.listens_for(GovernancePolicy, "before_update")
+def _reject_published_policy_update(
+    mapper: object, connection: object, target: GovernancePolicy
+) -> None:
+    """Rejeita qualquer `UPDATE` numa versão já publicada (E4.3.1).
+
+    Sobrescrever `update()` no repositório não bastava: o defeito foi
+    reproduzido **contornando o repositório**, mutando o atributo do
+    objeto carregado e chamando `commit()`. O evento de mapper pega
+    esse caminho, porque só dispara quando o SQLAlchemy já decidiu
+    emitir um `UPDATE` para a linha existente.
+
+    Mesma técnica que a E3 usa em `CognitiveObject` para recusar
+    reatribuição de COID.
+    """
+    from app.memory.errors.exceptions import GovernancePolicyImmutableError
+
+    raise GovernancePolicyImmutableError(target.id, operation="update")
+
+
+@event.listens_for(GovernancePolicy, "before_delete")
+def _reject_published_policy_delete(
+    mapper: object, connection: object, target: GovernancePolicy
+) -> None:
+    """Rejeita qualquer `DELETE` numa versão já publicada (E4.3.1).
+
+    Nota honesta sobre o alcance: isto protege o caminho ORM, que é o
+    caminho da aplicação. Um `UPDATE`/`DELETE` SQL direto continua
+    possível — como em toda a E3 — e o documento diz isso em vez de
+    afirmar garantia de banco que não existe.
+    """
+    from app.memory.errors.exceptions import GovernancePolicyImmutableError
+
+    raise GovernancePolicyImmutableError(target.id, operation="delete")

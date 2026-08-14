@@ -18,7 +18,10 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.memory.errors.exceptions import GovernancePolicyVersionExistsError
+from app.memory.errors.exceptions import (
+    GovernancePolicyImmutableError,
+    GovernancePolicyVersionExistsError,
+)
 from app.memory.models.governance_policy import GovernancePolicy
 from app.memory.schemas.governance import GovernanceRule
 from app.repositories.base_repository import BaseRepository
@@ -145,3 +148,18 @@ class GovernancePolicyRepository(BaseRepository[GovernancePolicy]):
             .limit(1)
         )
         return self._session.execute(stmt).scalars().first()
+
+    def update(self, entity: GovernancePolicy) -> GovernancePolicy:
+        """Sempre rejeita — versões publicadas são imutáveis (E4.3.1).
+
+        A E4.3 herdava `update()` de `BaseRepository` e afirmava
+        imutabilidade só na documentação. Mesma dívida que a E3.3.1
+        fechou em `LineageEdge`; aqui ela é fechada em duas camadas —
+        este método e o evento de mapper no modelo, que pega a mutação
+        ORM que contorna o método.
+        """
+        raise GovernancePolicyImmutableError(entity.id, operation="update")
+
+    def delete(self, entity: GovernancePolicy) -> None:
+        """Sempre rejeita — ver `update()` acima."""
+        raise GovernancePolicyImmutableError(entity.id, operation="delete")

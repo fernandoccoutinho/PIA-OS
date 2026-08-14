@@ -81,3 +81,88 @@ class GovernanceOutcome(StrEnum):
     ADMISSIBLE = "admissible"
     INADMISSIBLE = "inadmissible"
     NOT_APPLICABLE = "not_applicable"
+
+    PROHIBITED = "prohibited"
+    """Recusado pela fronteira de segurança da plataforma (E4.3.1).
+
+    Acrescentado, e distinto de `INADMISSIBLE` de propósito: este é o
+    único resultado que **nenhuma policy local pode reverter**.
+    Colapsá-lo em `INADMISSIBLE` faria parecer que uma regra local com
+    `ADMIT` poderia tê-lo evitado — e ela não pode.
+
+    Nenhum outro resultado foi acrescentado.
+    """
+
+
+class CriticalCapability(StrEnum):
+    """Capacidades cuja habilitação operacional a plataforma recusa.
+
+    Vocabulário **fechado e mínimo**, e o critério de admissão é
+    estreito: capacidade cuja entrega operacional causa dano grave e
+    irreversível a pessoas. Ampliar exige EDR.
+
+    Estas são **capacidades**, não temas:
+
+        TOPIC != CAPABILITY
+
+    Falar sobre exploração infantil para prevenir, detectar, proteger,
+    responder, denunciar ou pesquisar não habilita capacidade alguma —
+    e bloquear por tema destruiria exatamente esse trabalho.
+    """
+
+    CHILD_SEXUAL_EXPLOITATION = "child_sexual_exploitation"
+    """Produção, obtenção ou facilitação de material ou ato de
+    exploração sexual infantil."""
+
+    MINOR_TARGETING_FOR_EXPLOITATION = "minor_targeting_for_exploitation"
+    """Seleção, perfilamento ou aliciamento de menores para
+    exploração — inclusive quando apresentado como segmentação,
+    triagem ou análise de audiência."""
+
+    WEAPON_OF_MASS_DESTRUCTION_ENABLEMENT = "weapon_of_mass_destruction_enablement"
+    """Facilitação operacional de armas químicas, biológicas,
+    radiológicas ou nucleares."""
+
+    CATASTROPHIC_HARM_ENABLEMENT = "catastrophic_harm_enablement"
+    """Facilitação operacional de dano catastrófico em larga escala que
+    não é, ele próprio, uma arma — sabotagem de infraestrutura crítica,
+    por exemplo.
+
+    Única categoria acrescentada além das nomeadas no corretivo, e
+    justificada: o requisito fala em "armas **ou** dano catastrófico",
+    duas coisas. Sem esta, a fronteira teria um vão que o próprio
+    enunciado descreve.
+    """
+
+
+class CapabilityEngagement(StrEnum):
+    """Como a operação se relaciona com a capacidade crítica.
+
+    É esta dimensão — e não o tema — que separa o que a plataforma
+    recusa do que ela permite que a governança local decida:
+
+        KNOWLEDGE != EXECUTION
+        ANALYSIS  != OPERATIONAL ENABLEMENT
+    """
+
+    OPERATIONAL_ENABLEMENT = "operational_enablement"
+    """Entregaria capacidade utilizável para causar o dano."""
+
+    ANALYTICAL = "analytical"
+    """Histórico, científico, jurídico, jornalístico, analítico."""
+
+    PREVENTIVE = "preventive"
+    """Prevenção, detecção, proteção, resposta, denúncia ou pesquisa
+    ética — inclusive com dados sintéticos."""
+
+    UNSPECIFIED = "unspecified"
+    """Não estabelecido.
+
+    Diante de capacidade crítica isto **proíbe**, e a razão é o
+    princípio, não a cautela genérica:
+
+        MISSING SAFE INTENT != AUTHORIZATION TO INVENT ONE
+
+    Tratar "não sei" como "provavelmente tudo bem" seria fabricar
+    finalidade legítima ausente.
+    """

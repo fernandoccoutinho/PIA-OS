@@ -38,7 +38,7 @@ GOVERNANCE != COUT DECISION ENGINE
 ```
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app.memory.models.governance_enums import (
     CognitiveOperation,
@@ -47,8 +47,17 @@ from app.memory.models.governance_enums import (
 )
 from app.memory.models.governance_policy import GovernancePolicy
 from app.memory.repositories.governance_policy_repository import GovernancePolicyRepository
-from app.memory.schemas.governance import GovernanceDecision, GovernanceRule
+from app.memory.schemas.governance import (
+    GovernanceDecision,
+    GovernanceResolution,
+    GovernanceRule,
+)
 from app.memory.schemas.memory_context import MemoryContext
+from app.memory.services.platform_safety_boundary import (
+    CapabilityDescriptor,
+    SafetyAssessment,
+    assess_capability,
+)
 
 
 class GovernanceManager:
@@ -126,6 +135,13 @@ class GovernanceManager:
         fundamento é reproduzível entre execuções e instâncias.
 
         Não escreve absolutamente nada.
+
+        **Esta função não é autoridade ativa.** Ela avalia a policy que
+        lhe derem — inclusive uma nunca publicada ou fora de vigência —
+        e existe como função pura reutilizável. O caminho público
+        canônico é `resolve()`, que busca a versão vigente por
+        `policy_key` e passa pela fronteira de segurança antes.
+        Corretivo `E4.3.1`, defeito 5.
         """
         dominios = frozenset(context.domain_ids)
         aplicaveis = [
@@ -201,4 +217,133 @@ class GovernanceManager:
             context_purpose=context.purpose,
             matched_rule_id=rule.rule_id if rule is not None else None,
             reason=reason,
+        )
+
+    # --- caminho canônico: fronteira → policy → resolução -------------
+
+    def resolve(
+        self,
+        *,
+        descriptor: CapabilityDescriptor,
+        context: MemoryContext,
+        policy_key: str | None = None,
+        moment: datetime | None = None,
+    ) -> GovernanceResolution:
+        """Caminho público canônico (E4.3.1).
+
+        ```
+        PLATFORM SAFETY BOUNDARY   → não sobreponível
+                ↓
+        LOCAL GOVERNANCE POLICY    → versão vigente, buscada aqui
+                ↓
+        GOVERNANCE RESOLUTION
+        ```
+
+        Não aceita objeto `GovernancePolicy` do chamador: recebe
+        `policy_key` e busca a **versão vigente** no instante dado.
+        Era esse o defeito 5 — o caminho público avaliava qualquer
+        policy fornecida como se fosse autoridade ativa.
+
+        Quando a fronteira proíbe, **a policy local sequer é
+        consultada**. Não é otimização: consultá-la sugeriria que o
+        resultado poderia depender dela, e não pode.
+
+        Uma leitura de banco no máximo (a versão vigente). Nenhuma
+        escrita, nenhuma consulta por `CognitiveObject`, nenhuma
+        `Search`/`Retrieval`, nenhuma chamada de ferramenta ou
+        provider, nenhum score.
+        """
+        agora = moment if moment is not None else datetime.now(UTC)
+        avaliacao = assess_capability(descriptor)
+
+        if avaliacao.prohibits:
+            return self._prohibited_resolution(descriptor, avaliacao)
+
+        if policy_key is None:
+            return self._no_policy_resolution(descriptor, avaliacao)
+
+        policy = self._policies.effective_version_at(policy_key, agora)
+        if policy is None:
+            return self._no_policy_resolution(
+                descriptor,
+                avaliacao,
+                nota=(
+                    f"nenhuma versão de '{policy_key}' vigente em {agora.isoformat()} — "
+                    "ausência de policy não concede admissibilidade"
+                ),
+            )
+
+        decisao = self.evaluate(policy=policy, operation=descriptor.operation, context=context)
+        return GovernanceResolution(
+            outcome=decisao.outcome,
+            operation=descriptor.operation,
+            safety_boundary_version=avaliacao.boundary_version,
+            safety_rationale=avaliacao.rationale,
+            preserved_intent=avaliacao.preserved_intent,
+            policy_key=decisao.policy_key,
+            policy_version=decisao.policy_version,
+            policy_id=decisao.policy_id,
+            matched_rule_id=decisao.matched_rule_id,
+            policy_rationale=decisao.reason,
+        )
+
+    @staticmethod
+    def _prohibited_resolution(
+        descriptor: CapabilityDescriptor, avaliacao: SafetyAssessment
+    ) -> GovernanceResolution:
+        """Resolução de um pedido recusado pela fronteira.
+
+        Bloqueia a capacidade, preserva **apenas** intenção legítima
+        demonstrável, oferece alternativas como proposta e declara o
+        que foi preservado e o que foi perdido.
+
+        Nenhum campo da policy local é preenchido — ela não foi
+        consultada, e fingir que foi seria proveniência falsa.
+        """
+        preservou: list[str] = []
+        perdeu: list[str] = ["a capacidade operacional solicitada"]
+        if avaliacao.preserved_intent:
+            preservou.append(f"finalidade declarada: {avaliacao.preserved_intent}")
+        if avaliacao.admissible_alternatives:
+            preservou.append("caminhos legítimos de trabalho sobre o assunto")
+        else:  # pragma: no cover - toda capacidade do catálogo tem alternativas
+            perdeu.append("nenhuma alternativa catalogada para esta capacidade")
+
+        return GovernanceResolution(
+            outcome=GovernanceOutcome.PROHIBITED,
+            operation=descriptor.operation,
+            safety_boundary_version=avaliacao.boundary_version,
+            safety_rationale=avaliacao.rationale,
+            blocked_capabilities=avaliacao.blocked_capabilities,
+            preserved_intent=avaliacao.preserved_intent,
+            admissible_alternatives=avaliacao.admissible_alternatives,
+            constraints=(
+                "a fronteira da plataforma não é sobreponível por policy local, "
+                "ator, propósito ou domínio",
+                "alternativas são propostas; nenhuma é executada automaticamente",
+            ),
+            declared_preservations=tuple(preservou),
+            declared_losses=tuple(perdeu),
+        )
+
+    @staticmethod
+    def _no_policy_resolution(
+        descriptor: CapabilityDescriptor,
+        avaliacao: SafetyAssessment,
+        *,
+        nota: str = "nenhuma policy local informada",
+    ) -> GovernanceResolution:
+        """A fronteira não se opõe, mas não há policy local vigente.
+
+        `NOT_APPLICABLE`, nunca `ADMISSIBLE`: a fronteira **não
+        admite** — ela proíbe ou se cala. Silêncio da plataforma somado
+        a ausência de policy continua sendo ausência de autorização.
+        """
+        return GovernanceResolution(
+            outcome=GovernanceOutcome.NOT_APPLICABLE,
+            operation=descriptor.operation,
+            safety_boundary_version=avaliacao.boundary_version,
+            safety_rationale=avaliacao.rationale,
+            preserved_intent=avaliacao.preserved_intent,
+            policy_rationale=nota,
         )

@@ -21,6 +21,7 @@ from app.memory.errors.codes import (
     PIA_8025_MEMORY_DOMAIN_MEMBERSHIP_OBJECT_NOT_FOUND,
     PIA_8026_CONTEXT_UNKNOWN_DOMAIN_REFERENCE,
     PIA_8027_GOVERNANCE_POLICY_VERSION_EXISTS,
+    PIA_8028_GOVERNANCE_POLICY_IMMUTABLE,
 )
 
 
@@ -110,4 +111,26 @@ class GovernancePolicyVersionExistsError(PIAOSException):
                 "crie uma versão nova."
             ),
             detail={"policy_key": policy_key, "version": version},
+        )
+
+
+class GovernancePolicyImmutableError(PIAOSException):
+    """Uma versão publicada não pode ser alterada nem removida (E4.3.1).
+
+    Mudança semântica cria versão nova. Sobrescrever apagaria a policy
+    que fundamentou decisões passadas, e a pergunta "sob qual regra
+    isto foi decidido?" deixaria de ter resposta.
+    """
+
+    error_code = PIA_8028_GOVERNANCE_POLICY_IMMUTABLE
+
+    def __init__(self, policy_id: uuid.UUID | None, operation: str) -> None:
+        self.policy_id = policy_id
+        self.operation = operation
+        super().__init__(
+            message=(
+                f"GovernancePolicy {policy_id} é imutável — operação '{operation}' "
+                "recusada; publique uma nova versão."
+            ),
+            detail={"policy_id": str(policy_id) if policy_id else None, "operation": operation},
         )

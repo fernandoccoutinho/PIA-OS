@@ -24,6 +24,17 @@ from app.memory.schemas.memory_context import MemoryContext
 from app.memory.services.governance_manager import GovernanceManager
 
 
+def _executable_source(alvo) -> str:
+    """Código-fonte sem docstrings — ver `test_gv16` (E4.3.1)."""
+    import ast
+
+    arvore = ast.parse(inspect.getsource(alvo))
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Expr) and isinstance(no.value, ast.Constant):
+            no.value = ast.Constant(value="")
+    return ast.unparse(arvore)
+
+
 def _policy(rules: tuple[GovernanceRule, ...], *, key: str = "p", version: int = 1):
     """Policy em memória — não persistida; basta para avaliar."""
     policy = GovernancePolicy(
@@ -416,7 +427,11 @@ def test_gv16_governance_is_not_an_authorization_or_search_engine():
     ):
         assert proibido not in expostos, f"GovernanceManager expõe {proibido}"
 
-    fonte = inspect.getsource(GovernanceManager) + inspect.getsource(GovernanceDecision)
+    # Compara apenas o **código executável**: as docstrings do módulo
+    # citam nominalmente o que ele não faz, e uma varredura ingênua no
+    # texto acusaria exatamente as frases que negam o uso. Ajuste do
+    # verificador em E4.3.1 — a asserção continua a mesma.
+    codigo = _executable_source(GovernanceManager) + _executable_source(GovernanceDecision)
     for proibido in (
         "SearchEngine",
         "SearchCriteria",
@@ -424,7 +439,7 @@ def test_gv16_governance_is_not_an_authorization_or_search_engine():
         "MemoryDomainMembership",
         "CognitiveObject",
     ):
-        assert proibido not in fonte, f"governança não deve conhecer {proibido}"
+        assert proibido not in codigo, f"governança não deve conhecer {proibido}"
 
 
 def test_gv17_permission_does_not_implement_the_operation():
