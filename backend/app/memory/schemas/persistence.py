@@ -77,6 +77,36 @@ class PersistenceOutcome(StrEnum):
     RECORDED_CONTINUITY_EVIDENCE = "recorded_continuity_evidence"
 
 
+def _canonical_uuid_text(name: str, value: object) -> str:
+    """Exige um UUID em forma **canônica**, como texto.
+
+    Corretivo `E4.4.1`. Antes, `reference` era qualquer `str` não
+    vazia, e `"nao-e-uuid"` entrava como identificador de evidência.
+
+    O campo continua `str` — e não `uuid.UUID` — de propósito:
+    `reference` é um **token estável** do contrato público, e tipá-lo
+    comprometeria toda categoria futura de evidência a referenciar
+    UUIDs. A validação canônica dá hoje exatamente a mesma garantia
+    que a tipagem daria, sem fazer essa promessa.
+
+    Canônica significa `str(uuid.UUID(v)) == v`: variantes em
+    maiúsculas, com chaves ou em URN são recusadas — senão o mesmo
+    fato produziria duas referências textuais diferentes e a
+    desduplicação deixaria de funcionar.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"{name} deve ser str, recebido {type(value).__name__}")
+    try:
+        canonico = str(uuid.UUID(value))
+    except ValueError as exc:
+        raise ValueError(f"{name} deve ser um UUID canônico, recebido {value!r}") from exc
+    if canonico != value:
+        raise ValueError(
+            f"{name} deve estar na forma canônica do UUID ({canonico!r}), recebido {value!r}"
+        )
+    return canonico
+
+
 def _validated_uuid(name: str, value: object) -> uuid.UUID:
     if not isinstance(value, uuid.UUID):
         raise TypeError(f"{name} deve ser uuid.UUID, recebido {type(value).__name__}")
@@ -115,6 +145,24 @@ def _validated_member(name: str, value: object, enum_cls: type) -> object:
     return value
 
 
+_KINDS_WITH_RELATED_COID: frozenset[PersistenceEvidenceKind] = frozenset(
+    {PersistenceEvidenceKind.LINEAGE_PARENT, PersistenceEvidenceKind.LINEAGE_CHILD}
+)
+"""Só arestas de linhagem relacionam o sujeito a outro objeto."""
+
+_KINDS_WITH_QUALIFIER: frozenset[PersistenceEvidenceKind] = frozenset(
+    {
+        PersistenceEvidenceKind.LINEAGE_PARENT,
+        PersistenceEvidenceKind.LINEAGE_CHILD,
+        PersistenceEvidenceKind.CAUSAL_EVENT,
+    }
+)
+"""Linhagem tem tipo de relação; evento causal tem tipo de evento.
+
+CLID e transformação não têm o que qualificar: o primeiro é propriedade
+do sujeito, e a direção da segunda já está no `kind`."""
+
+
 @dataclass(frozen=True)
 class PersistenceEvidence:
     """Um fato de continuidade, referenciado — nunca o objeto ORM.
@@ -145,22 +193,71 @@ class PersistenceEvidence:
     """
 
     def __post_init__(self) -> None:
+        """Impõe tipos **e coerência dependente de `kind`**.
+
+        Corretivo `E4.4.1`. Antes, `frozen=True` mais validação de tipo
+        deixavam passar formatos semanticamente impossíveis: aresta de
+        linhagem sem o outro extremo, CLID com `related_coid`, evento
+        causal sem tipo de evento. Cada um descreve um fato que não
+        pode existir no patrimônio.
+        """
         object.__setattr__(
             self, "kind", _validated_member("kind", self.kind, PersistenceEvidenceKind)
         )
-        object.__setattr__(self, "reference", _required_text("reference", self.reference))
+        object.__setattr__(self, "reference", _canonical_uuid_text("reference", self.reference))
         object.__setattr__(self, "related_coid", _optional_uuid("related_coid", self.related_coid))
         object.__setattr__(self, "qualifier", _optional_text("qualifier", self.qualifier))
+        self._validate_shape()
 
-    def sort_key(self) -> tuple[str, str, str]:
-        """Chave canônica — determinismo da apresentação.
+    def _validate_shape(self) -> None:
+        """Cada `kind` tem uma forma, e só uma.
 
-        Ordenar por `(kind, reference, qualifier)` torna a lista de
-        evidências reproduzível entre execuções e entre instâncias, o
-        que é pré-requisito para qualquer auditoria comparar dois
-        assessments.
+        - **linhagem** relaciona dois objetos por um tipo de relação:
+          sem `related_coid` não há aresta; sem `qualifier` não se sabe
+          que relação é;
+        - **CLID** é propriedade do próprio sujeito: não há outro
+          extremo nem relação a qualificar;
+        - **transformação** é citada pelo seu registro; o outro extremo
+          não é um objeto único, e a direção já está no `kind`;
+        - **evento causal** pertence ao sujeito e sempre tem tipo.
         """
-        return (self.kind.value, self.reference, self.qualifier or "")
+        exige_relacionado = self.kind in _KINDS_WITH_RELATED_COID
+        exige_qualificador = self.kind in _KINDS_WITH_QUALIFIER
+
+        if exige_relacionado and self.related_coid is None:
+            raise ValueError(f"{self.kind.value} exige related_coid — sem ele não há aresta")
+        if not exige_relacionado and self.related_coid is not None:
+            raise ValueError(
+                f"{self.kind.value} não relaciona dois objetos — related_coid não se aplica"
+            )
+        if exige_qualificador and self.qualifier is None:
+            raise ValueError(
+                f"{self.kind.value} exige qualifier — sem ele o fato não é identificável"
+            )
+        if not exige_qualificador and self.qualifier is not None:
+            raise ValueError(f"{self.kind.value} não admite qualifier")
+
+    def sort_key(self) -> tuple[str, str, str, str]:
+        """Chave canônica **total** — determinismo da apresentação.
+
+        Corretivo `E4.4.1`: a chave anterior era
+        `(kind, reference, qualifier)` e ignorava `related_coid`. Duas
+        arestas de linhagem do mesmo registro para objetos diferentes
+        colidiam, e `sorted` — sendo estável — preservava a ordem de
+        entrada. Duas permutações da mesma coleção produziam
+        assessments **diferentes**, contradizendo a canonicalização
+        que o módulo alegava.
+
+        A chave agora cobre todos os campos que participam da
+        igualdade. É essa cobertura total que a torna canonicalização
+        de fato.
+        """
+        return (
+            self.kind.value,
+            self.reference,
+            str(self.related_coid) if self.related_coid is not None else "",
+            self.qualifier or "",
+        )
 
 
 @dataclass(frozen=True)
@@ -177,6 +274,24 @@ class PersistenceAssessment:
     outcome: PersistenceOutcome
     evidence: tuple[PersistenceEvidence, ...] = ()
     clid: uuid.UUID | None = None
+    subject_deleted: bool = False
+    """O sujeito está com exclusão lógica — **descritor, não evidência**.
+
+    Corretivo `E4.4.1`. Soft delete é um fato sobre o **estado
+    presente** do sujeito, não sobre a continuidade que ele atravessou:
+
+    ```
+    SOFT_DELETED != NEVER EXISTED
+    SOFT_DELETED != SUBJECT_NOT_FOUND
+    SOFT_DELETED != HISTORICAL ERASURE
+    ```
+
+    Por isso aparece aqui e **não** em `evidence` — pelo mesmo critério
+    que mantém `revision_status` fora dela: descrever o estado presente
+    não é atestar travessia. Um objeto soft-deleted continua sendo
+    avaliado, e todas as suas evidências continuam visíveis.
+    """
+
     revision_status: str | None = None
     """Estado de revisão, quando registrado — **descrição da
     trajetória**, não evidência.
@@ -200,8 +315,56 @@ class PersistenceAssessment:
         object.__setattr__(
             self, "revision_status", _optional_text("revision_status", self.revision_status)
         )
+        if not isinstance(self.subject_deleted, bool):
+            raise TypeError(
+                f"subject_deleted deve ser bool, recebido {type(self.subject_deleted).__name__}"
+            )
         object.__setattr__(self, "evidence", _canonical_evidence(self.evidence))
         self._validate_coherence()
+        self._validate_clid_coherence()
+
+    def _validate_clid_coherence(self) -> None:
+        """`clid` e a evidência `CLID` são o mesmo fato, dito duas vezes.
+
+        Corretivo `E4.4.1`. O contrato da E4.4 classifica CLID como
+        evidência canônica de continuidade, e mesmo assim o construtor
+        aceitava um `clid` declarado sem evidência correspondente — um
+        assessment que afirmava continuidade no descritor e a negava na
+        lista de fatos.
+
+        Congelado:
+
+        ```
+        clid is not None  ⇔  existe exatamente uma evidência CLID
+                             cujo reference é esse mesmo UUID
+        ```
+
+        Uma evidência é sempre um fato **exibido**; um descritor que a
+        contradiz não descreve nada.
+        """
+        evidencias_clid = [
+            item for item in self.evidence if item.kind is PersistenceEvidenceKind.CLID
+        ]
+        if len(evidencias_clid) > 1:
+            raise ValueError(
+                "mais de uma evidência CLID — um objeto tem no máximo uma continuidade lógica"
+            )
+        if self.clid is None:
+            if evidencias_clid:
+                raise ValueError(
+                    "evidência CLID presente com clid=None — o descritor nega o fato exibido"
+                )
+            return
+        if not evidencias_clid:
+            raise ValueError(
+                "clid declarado sem evidência CLID — CLID é evidência canônica de "
+                "continuidade, e afirmá-lo sem exibi-lo é afirmação sem fato"
+            )
+        if evidencias_clid[0].reference != str(self.clid):
+            raise ValueError(
+                f"clid declarado ({self.clid}) diverge da evidência CLID "
+                f"({evidencias_clid[0].reference}) — são o mesmo fato e não podem diferir"
+            )
 
     def _validate_coherence(self) -> None:
         """Recusa estados que se contradizem.
@@ -216,6 +379,11 @@ class PersistenceAssessment:
           isso o resultado afirma registro que não exibe.
         """
         if self.outcome is PersistenceOutcome.SUBJECT_NOT_FOUND:
+            if self.subject_deleted:
+                raise ValueError(
+                    "SUBJECT_NOT_FOUND não pode estar soft-deleted — não há linha para "
+                    "estar apagada; SOFT_DELETED != NEVER EXISTED"
+                )
             if self.evidence or self.clid is not None or self.revision_status is not None:
                 raise ValueError(
                     "SUBJECT_NOT_FOUND não pode carregar evidência, clid ou "

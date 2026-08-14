@@ -71,23 +71,39 @@ class ContinuityEvidenceRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def subject_snapshot(self, coid: uuid.UUID) -> tuple[uuid.UUID | None, str | None] | None:
-        """`(clid, revision_status)` do objeto, ou `None` se não existe.
+    def subject_snapshot(self, coid: uuid.UUID) -> tuple[uuid.UUID | None, str | None, bool] | None:
+        """`(clid, revision_status, soft_deleted)`, ou `None` se não há linha.
 
-        Objetos com exclusão lógica são tratados como **inexistentes**
-        para fins de avaliação, seguindo a política de leitura da E3.1.1
-        — a alternativa seria este módulo divergir do resto do sistema
-        sobre o que "existe" significa.
+        **Corretivo E4.4.1.** A versão anterior filtrava
+        `deleted_at IS NULL` e devolvia `None` para objetos com exclusão
+        lógica, transformando-os em `SUBJECT_NOT_FOUND`:
+
+        ```
+        SOFT_DELETED != NEVER EXISTED
+        SOFT_DELETED != SUBJECT_NOT_FOUND
+        SOFT_DELETED != HISTORICAL ERASURE
+        ```
+
+        Eu havia justificado o filtro como "política de leitura da
+        E3.1.1", e a justificativa estava errada: a E3.1.1 filtra por
+        padrão nas **listagens** e oferece `include_deleted=True`
+        precisamente para **consumidores de auditoria**. Um avaliador
+        de continuidade histórica é esse consumidor — soft delete
+        existe na E3 justamente para não destruir identidade nem
+        história, e o COID permanece ocupado para sempre.
+
+        `SUBJECT_NOT_FOUND` passa a significar o que o nome diz:
+        nenhuma linha com aquele COID.
         """
-        stmt = (
-            select(_cognitive_objects.c.clid, _cognitive_objects.c.revision_status)
-            .where(_cognitive_objects.c.id == coid)
-            .where(_cognitive_objects.c.deleted_at.is_(None))
-        )
+        stmt = select(
+            _cognitive_objects.c.clid,
+            _cognitive_objects.c.revision_status,
+            _cognitive_objects.c.deleted_at,
+        ).where(_cognitive_objects.c.id == coid)
         linha = self._session.execute(stmt).first()
         if linha is None:
             return None
-        return (linha[0], linha[1])
+        return (linha[0], linha[1], linha[2] is not None)
 
     def lineage_as_child(self, coid: uuid.UUID) -> list[tuple[Any, Any, Any]]:
         """Arestas em que o sujeito é filho — `(id, parent_coid, relation_type)`."""

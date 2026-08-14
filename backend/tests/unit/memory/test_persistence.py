@@ -28,9 +28,51 @@ _BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 def _evidencia(**kw) -> PersistenceEvidence:
+    """Evidência CLID válida por padrão — a forma mais simples.
+
+    Desde `E4.4.1` cada `kind` tem forma própria, então os helpers
+    abaixo existem para construir cada uma sem repetir a regra.
+    """
     base = {"kind": PersistenceEvidenceKind.CLID, "reference": str(uuid.uuid4())}
     base.update(kw)
     return PersistenceEvidence(**base)
+
+
+def _lineage(reference: str | None = None, **kw) -> PersistenceEvidence:
+    base = {
+        "kind": PersistenceEvidenceKind.LINEAGE_PARENT,
+        "reference": reference or str(uuid.uuid4()),
+        "related_coid": uuid.uuid4(),
+        "qualifier": "branch",
+    }
+    base.update(kw)
+    return PersistenceEvidence(**base)
+
+
+def _causal(reference: str | None = None, **kw) -> PersistenceEvidence:
+    base = {
+        "kind": PersistenceEvidenceKind.CAUSAL_EVENT,
+        "reference": reference or str(uuid.uuid4()),
+        "qualifier": "CREATED",
+    }
+    base.update(kw)
+    return PersistenceEvidence(**base)
+
+
+def _assessment_com(*evidencias: PersistenceEvidence, coid=None) -> PersistenceAssessment:
+    """Monta um assessment coerente a partir das evidências dadas.
+
+    Desde `E4.4.1`, `clid` e a evidência `CLID` são o mesmo fato: o
+    helper deriva um do outro para que os testes não precisem repetir
+    a regra em toda construção.
+    """
+    clids = [e for e in evidencias if e.kind is PersistenceEvidenceKind.CLID]
+    return PersistenceAssessment(
+        coid=coid or uuid.uuid4(),
+        outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
+        evidence=evidencias,
+        clid=uuid.UUID(clids[0].reference) if clids else None,
+    )
 
 
 def _executable_source(alvo) -> str:
@@ -99,27 +141,23 @@ def test_pv3_evidence_is_ordered_deterministically():
     Pré-requisito de qualquer auditoria que compare dois assessments.
     """
     coid = uuid.uuid4()
-    a = _evidencia(kind=PersistenceEvidenceKind.CAUSAL_EVENT, reference="b")
-    b = _evidencia(kind=PersistenceEvidenceKind.CLID, reference="a")
-    c = _evidencia(kind=PersistenceEvidenceKind.CLID, reference="z")
+    clid = _evidencia()
+    causal_a = _causal()
+    causal_b = _causal()
 
-    primeira = PersistenceAssessment(
-        coid=coid,
-        outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
-        evidence=(a, b, c),
-    )
-    segunda = PersistenceAssessment(
-        coid=coid,
-        outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
-        evidence=(c, a, b),
-    )
+    primeira = _assessment_com(causal_a, clid, causal_b, coid=coid)
+    segunda = _assessment_com(causal_b, causal_a, clid, coid=coid)
 
     assert primeira.evidence == segunda.evidence
     assert primeira == segunda
-    # A ordem canônica é por (kind, reference): "causal_event" precede
-    # "clid" alfabeticamente. O que importa aqui é ser reproduzível, e
-    # não uma ordem de mérito — nenhum tipo de evidência vale mais.
-    assert [e.reference for e in primeira.evidence] == ["b", "a", "z"]
+    # A ordem canônica é por (kind, reference, related_coid, qualifier):
+    # "causal_event" precede "clid" alfabeticamente. O que importa é ser
+    # reproduzível, não ser ordem de mérito — nenhum tipo vale mais.
+    assert [e.kind for e in primeira.evidence] == [
+        PersistenceEvidenceKind.CAUSAL_EVENT,
+        PersistenceEvidenceKind.CAUSAL_EVENT,
+        PersistenceEvidenceKind.CLID,
+    ]
 
 
 def test_pv4_duplicates_do_not_produce_unstable_results():
@@ -128,12 +166,8 @@ def test_pv4_duplicates_do_not_produce_unstable_results():
     Duas evidências iguais em todos os campos referenciam o **mesmo**
     fato; exibi-lo duas vezes sugeriria dois fatos.
     """
-    e = _evidencia(reference="r1")
-    resultado = PersistenceAssessment(
-        coid=uuid.uuid4(),
-        outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
-        evidence=(e, e, e),
-    )
+    e = _evidencia()
+    resultado = _assessment_com(e, e, e)
     assert len(resultado.evidence) == 1
     assert isinstance(hash(resultado), int)
 
@@ -144,14 +178,16 @@ def test_pv5_external_mutable_collections_do_not_alter_built_assessments():
     O projeto já pagou três vezes por essa lição (E4.2.1, E4.3.1,
     E4.3.2). Aqui o invariante nasce com o módulo.
     """
-    origem = [_evidencia(reference="r1")]
+    primeira = _evidencia()
+    origem = [primeira]
     resultado = PersistenceAssessment(
         coid=uuid.uuid4(),
         outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
         evidence=origem,
+        clid=uuid.UUID(primeira.reference),
     )
 
-    origem.append(_evidencia(reference="r2"))
+    origem.append(_causal())
     origem.clear()
 
     assert len(resultado.evidence) == 1
@@ -250,11 +286,7 @@ def test_pv9_assessment_is_frozen_and_derived_flag_is_not_a_score():
     vazio = PersistenceAssessment(
         coid=coid, outcome=PersistenceOutcome.NO_RECORDED_CONTINUITY_EVIDENCE
     )
-    com = PersistenceAssessment(
-        coid=coid,
-        outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
-        evidence=(_evidencia(),),
-    )
+    com = _assessment_com(_evidencia(), coid=coid)
 
     assert ausente.has_recorded_continuity is False
     assert vazio.has_recorded_continuity is False
@@ -268,13 +300,9 @@ def test_pv9_assessment_is_frozen_and_derived_flag_is_not_a_score():
 def test_pv10_evidence_of_filters_without_ranking():
     """`evidence_of` é filtro de apresentação, não hierarquia."""
     coid = uuid.uuid4()
-    clid = _evidencia(kind=PersistenceEvidenceKind.CLID, reference="c")
-    pai = _evidencia(kind=PersistenceEvidenceKind.LINEAGE_PARENT, reference="p")
-    resultado = PersistenceAssessment(
-        coid=coid,
-        outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
-        evidence=(clid, pai),
-    )
+    clid = _evidencia()
+    pai = _lineage()
+    resultado = _assessment_com(clid, pai, coid=coid)
 
     assert resultado.evidence_of(PersistenceEvidenceKind.CLID) == (clid,)
     assert resultado.evidence_of(PersistenceEvidenceKind.CAUSAL_EVENT) == ()
@@ -434,3 +462,216 @@ def test_pv16_assess_takes_only_a_coid():
 def test_pv17_assess_rejects_a_non_uuid_subject():
     with pytest.raises(TypeError, match="coid"):
         PersistenceManager(evidence_repository=None).assess("nao-e-uuid")  # type: ignore[arg-type]
+
+
+# ======================================================================
+# E4.4.1 — invariantes de evidência e assessment
+#
+# Defeitos 2, 3 e 4 da auditoria independente. Os de soft delete
+# (defeito 1) exigem banco e vivem na suíte de integração.
+# ======================================================================
+
+
+def test_e441_no_recorded_outcome_rejects_a_clid():
+    """(8) `NO_RECORDED_CONTINUITY_EVIDENCE` + `clid` é contraditório.
+
+    CLID é evidência canônica de continuidade; declará-lo num resultado
+    que afirma ausência de evidência é afirmar e negar o mesmo fato.
+    """
+    with pytest.raises(ValueError):
+        PersistenceAssessment(
+            coid=uuid.uuid4(),
+            outcome=PersistenceOutcome.NO_RECORDED_CONTINUITY_EVIDENCE,
+            clid=uuid.uuid4(),
+        )
+
+
+def test_e441_clid_evidence_without_declared_clid_is_rejected():
+    """(9) Evidência CLID com `assessment.clid=None` — descritor nega o
+    fato exibido."""
+    with pytest.raises(ValueError, match="clid=None"):
+        PersistenceAssessment(
+            coid=uuid.uuid4(),
+            outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
+            evidence=(_evidencia(),),
+            clid=None,
+        )
+
+
+def test_e441_divergent_clids_are_rejected():
+    """(10) `clid` e evidência CLID são o mesmo fato; não podem diferir."""
+    with pytest.raises(ValueError, match="diverge"):
+        PersistenceAssessment(
+            coid=uuid.uuid4(),
+            outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
+            evidence=(_evidencia(),),
+            clid=uuid.uuid4(),
+        )
+
+
+def test_e441_more_than_one_clid_evidence_is_rejected():
+    """(11) Um objeto tem no máximo uma continuidade lógica."""
+    with pytest.raises(ValueError, match="mais de uma evidência CLID"):
+        PersistenceAssessment(
+            coid=uuid.uuid4(),
+            outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
+            evidence=(_evidencia(), _evidencia()),
+            clid=uuid.uuid4(),
+        )
+
+
+def test_e441_declared_clid_without_evidence_is_rejected():
+    """Afirmação sem fato: `clid` declarado e nenhuma evidência CLID."""
+    with pytest.raises(ValueError, match="sem evidência CLID"):
+        PersistenceAssessment(
+            coid=uuid.uuid4(),
+            outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
+            evidence=(_causal(),),
+            clid=uuid.uuid4(),
+        )
+
+
+@pytest.mark.parametrize(
+    "referencia",
+    [
+        "nao-e-uuid",
+        "",
+        "   ",
+        "123",
+        "550E8400-E29B-41D4-A716-446655440000",  # maiúsculas: não canônica
+        "{550e8400-e29b-41d4-a716-446655440000}",  # com chaves
+        "urn:uuid:550e8400-e29b-41d4-a716-446655440000",
+    ],
+)
+def test_e441_non_canonical_uuid_reference_is_rejected(referencia):
+    """(12) `reference` é identificador, não texto arbitrário.
+
+    Variantes não canônicas também são recusadas: o mesmo fato
+    produziria duas referências textuais diferentes, e a desduplicação
+    deixaria de funcionar.
+    """
+    with pytest.raises(ValueError):
+        PersistenceEvidence(kind=PersistenceEvidenceKind.CLID, reference=referencia)
+
+
+def test_e441_reference_must_be_text():
+    with pytest.raises(TypeError):
+        PersistenceEvidence(kind=PersistenceEvidenceKind.CLID, reference=uuid.uuid4())
+
+
+@pytest.mark.parametrize(
+    "kind", [PersistenceEvidenceKind.LINEAGE_PARENT, PersistenceEvidenceKind.LINEAGE_CHILD]
+)
+def test_e441_lineage_requires_related_coid_and_qualifier(kind):
+    """(13) e (14): sem `related_coid` não há aresta; sem `qualifier`
+    não se sabe que relação é."""
+    with pytest.raises(ValueError, match="related_coid"):
+        PersistenceEvidence(kind=kind, reference=str(uuid.uuid4()), qualifier="branch")
+    with pytest.raises(ValueError, match="qualifier"):
+        PersistenceEvidence(kind=kind, reference=str(uuid.uuid4()), related_coid=uuid.uuid4())
+
+
+def test_e441_clid_admits_neither_related_coid_nor_qualifier():
+    """(15) CLID é propriedade do próprio sujeito."""
+    with pytest.raises(ValueError, match="related_coid"):
+        PersistenceEvidence(
+            kind=PersistenceEvidenceKind.CLID,
+            reference=str(uuid.uuid4()),
+            related_coid=uuid.uuid4(),
+        )
+    with pytest.raises(ValueError, match="qualifier"):
+        PersistenceEvidence(
+            kind=PersistenceEvidenceKind.CLID, reference=str(uuid.uuid4()), qualifier="x"
+        )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        PersistenceEvidenceKind.TRANSFORMATION_INPUT,
+        PersistenceEvidenceKind.TRANSFORMATION_OUTPUT,
+    ],
+)
+def test_e441_transformation_admits_neither_related_coid_nor_qualifier(kind):
+    """(16) A transformação é citada pelo seu registro; a direção já
+    está no `kind`, e o outro extremo não é um objeto único."""
+    with pytest.raises(ValueError, match="related_coid"):
+        PersistenceEvidence(kind=kind, reference=str(uuid.uuid4()), related_coid=uuid.uuid4())
+    with pytest.raises(ValueError, match="qualifier"):
+        PersistenceEvidence(kind=kind, reference=str(uuid.uuid4()), qualifier="x")
+
+
+def test_e441_causal_event_requires_qualifier_and_admits_no_related_coid():
+    """(17) e (18)."""
+    with pytest.raises(ValueError, match="qualifier"):
+        PersistenceEvidence(kind=PersistenceEvidenceKind.CAUSAL_EVENT, reference=str(uuid.uuid4()))
+    with pytest.raises(ValueError, match="related_coid"):
+        PersistenceEvidence(
+            kind=PersistenceEvidenceKind.CAUSAL_EVENT,
+            reference=str(uuid.uuid4()),
+            qualifier="CREATED",
+            related_coid=uuid.uuid4(),
+        )
+
+
+def test_e441_permutations_colliding_on_the_old_sort_key_are_now_canonical():
+    """(19) O defeito 4, no cenário exato que o expunha.
+
+    Duas arestas do **mesmo** `LineageEdge` para objetos diferentes
+    colidiam em `(kind, reference, qualifier)`; `sorted`, sendo
+    estável, preservava a ordem de entrada, e duas permutações da mesma
+    coleção produziam assessments **diferentes**.
+    """
+    referencia = str(uuid.uuid4())
+    a = _lineage(referencia)
+    b = _lineage(referencia)
+    assert a != b, "as duas evidências precisam diferir só por related_coid"
+    assert (a.kind, a.reference, a.qualifier) == (
+        b.kind,
+        b.reference,
+        b.qualifier,
+    ), "o cenário exige colisão na chave antiga"
+
+    coid = uuid.uuid4()
+    primeira = _assessment_com(a, b, coid=coid)
+    segunda = _assessment_com(b, a, coid=coid)
+
+    assert primeira == segunda
+    assert hash(primeira) == hash(segunda)
+    assert primeira.evidence == segunda.evidence
+
+
+def test_e441_subject_deleted_is_a_typed_descriptor_not_evidence():
+    """(7) Soft delete aparece como descritor, nunca como evidência."""
+    campos = {f.name for f in dataclasses.fields(PersistenceAssessment)}
+    assert "subject_deleted" in campos
+
+    clid = _evidencia()
+    resultado = PersistenceAssessment(
+        coid=uuid.uuid4(),
+        outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
+        evidence=(clid,),
+        clid=uuid.UUID(clid.reference),
+        subject_deleted=True,
+    )
+    assert resultado.subject_deleted is True
+    assert all(e.kind is not None for e in resultado.evidence)
+    assert len(resultado.evidence) == 1
+    assert "deleted" not in {e.kind.value for e in resultado.evidence}
+
+    with pytest.raises(TypeError, match="subject_deleted"):
+        PersistenceAssessment(
+            coid=uuid.uuid4(),
+            outcome=PersistenceOutcome.NO_RECORDED_CONTINUITY_EVIDENCE,
+            subject_deleted="sim",  # type: ignore[arg-type]
+        )
+
+
+def test_e441_subject_not_found_cannot_be_soft_deleted():
+    """Não há linha para estar apagada — `SOFT_DELETED != NEVER EXISTED`."""
+    with pytest.raises(ValueError, match="SOFT_DELETED"):
+        PersistenceAssessment(
+            coid=uuid.uuid4(),
+            outcome=PersistenceOutcome.SUBJECT_NOT_FOUND,
+            subject_deleted=True,
+        )

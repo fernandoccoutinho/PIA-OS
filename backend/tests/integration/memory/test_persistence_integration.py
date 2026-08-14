@@ -506,12 +506,21 @@ def test_pi14_e3_sync_envelope_still_has_exactly_seven_sections():
     assert len(SECTION_BY_TABLE) == 7
 
 
-def test_pi15_soft_deleted_object_is_treated_as_absent():
-    """Objeto com exclusão lógica é `SUBJECT_NOT_FOUND`.
+def test_pi15_soft_deleted_object_is_still_assessed():
+    """**Corrigido em E4.4.1.** Soft delete não é inexistência.
 
-    Segue a política de leitura da E3.1.1 — divergir aqui faria este
-    módulo discordar do resto do sistema sobre o que "existe"
-    significa.
+    A versão anterior deste teste codificava o defeito: afirmava que um
+    objeto com exclusão lógica é `SUBJECT_NOT_FOUND`, justificando com
+    a "política de leitura da E3.1.1". A justificativa estava errada —
+    a E3.1.1 filtra por padrão nas **listagens** e oferece
+    `include_deleted=True` precisamente para **consumidores de
+    auditoria**, que é o que um avaliador de continuidade é.
+
+    ```
+    SOFT_DELETED != NEVER EXISTED
+    SOFT_DELETED != SUBJECT_NOT_FOUND
+    SOFT_DELETED != HISTORICAL ERASURE
+    ```
     """
     with UnitOfWork() as uow:
         objeto = ObjectRepository(uow.session).add(CognitiveObject(clid=uuid.uuid4()))
@@ -532,8 +541,10 @@ def test_pi15_soft_deleted_object_is_treated_as_absent():
 
     with UnitOfWork() as uow:
         resultado = _manager(uow.session).assess(coid)
-    assert resultado.outcome is PersistenceOutcome.SUBJECT_NOT_FOUND
-    assert resultado.evidence == ()
+    assert resultado.outcome is PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE
+    assert resultado.subject_deleted is True
+    assert resultado.evidence != ()
+    assert resultado.clid is not None
 
 
 def test_pi16_provenance_alone_is_not_continuity():
@@ -611,3 +622,192 @@ def test_pi17_e3_persists_enums_with_two_different_conventions():
     assert (
         relacao.islower() and evento.isupper()
     ), "as duas convenções coexistem no mesmo patrimônio — armadilha registrada"
+
+
+# ======================================================================
+# E4.4.1 — soft delete não é inexistência
+# ======================================================================
+
+
+def _soft_delete(coid: uuid.UUID) -> None:
+    """Marca exclusão lógica por SQL direto.
+
+    Deliberadamente **não** altera `deleted_at` por nenhum caminho de
+    domínio: o corretivo proíbe recuperar objeto apagado ou mexer em
+    `deleted_at` como funcionalidade. Aqui é apenas montagem de
+    cenário.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text("UPDATE cognitive_objects SET deleted_at = now() WHERE id = :c"),
+            {"c": coid},
+        )
+
+
+def test_pi18_unknown_coid_is_still_subject_not_found():
+    """(1) `SUBJECT_NOT_FOUND` continua significando "não há linha".
+
+    A correção alarga o que é avaliado; não pode alargar o que é
+    encontrado.
+    """
+    with UnitOfWork() as uow:
+        resultado = _manager(uow.session).assess(uuid.uuid4())
+    assert resultado.outcome is PersistenceOutcome.SUBJECT_NOT_FOUND
+    assert resultado.subject_deleted is False
+    assert resultado.evidence == ()
+
+
+def test_pi19_soft_deleted_object_keeps_every_kind_of_evidence():
+    """(2)–(6) num único cenário, com as quatro fontes povoadas.
+
+    CLID, linhagem (pai **e** filho), transformação (entrada **e**
+    saída) e história causal continuam visíveis depois da exclusão
+    lógica — e o resultado é idêntico ao de antes, exceto pelo
+    descritor.
+    """
+    with UnitOfWork() as uow:
+        objects = ObjectRepository(uow.session)
+        lineage = LineageRepository(uow.session)
+        causal = CausalHistoryManager(CausalHistoryRepository(uow.session))
+
+        clid = uuid.uuid4()
+        pai = objects.add(CognitiveObject())
+        alvo = objects.add(CognitiveObject(clid=clid))
+        filho = objects.add(CognitiveObject())
+        uow.session.flush()
+        lineage.add_edge(
+            parent_coid=pai.id, child_coid=alvo.id, relation_type=LineageRelation.BRANCH
+        )
+        lineage.add_edge(
+            parent_coid=alvo.id, child_coid=filho.id, relation_type=LineageRelation.DERIVED_FROM
+        )
+        uow.session.add(
+            TransformationRecord(
+                operation_type="entrada",
+                transformation_kind=TransformationKind.DERIVATION,
+                input_refs=[str(alvo.id)],
+                output_refs=[],
+            )
+        )
+        uow.session.add(
+            TransformationRecord(
+                operation_type="saida",
+                transformation_kind=TransformationKind.DERIVATION,
+                input_refs=[],
+                output_refs=[str(alvo.id)],
+            )
+        )
+        causal.record(subject_coid=alvo.id, event_type=CausalEventType.CREATED)
+        uow.commit()
+        coid = alvo.id
+
+    with UnitOfWork() as uow:
+        antes = _manager(uow.session).assess(coid)
+
+    _soft_delete(coid)
+
+    with UnitOfWork() as uow:
+        depois = _manager(uow.session).assess(coid)
+
+    assert depois.outcome is PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE
+    assert depois.subject_deleted is True
+    assert antes.subject_deleted is False
+
+    # (3) CLID mantido
+    assert depois.clid == clid
+    assert len(depois.evidence_of(PersistenceEvidenceKind.CLID)) == 1
+    # (4) linhagem, nas duas direções
+    assert len(depois.evidence_of(PersistenceEvidenceKind.LINEAGE_PARENT)) == 1
+    assert len(depois.evidence_of(PersistenceEvidenceKind.LINEAGE_CHILD)) == 1
+    # (5) transformação, nas duas direções
+    assert len(depois.evidence_of(PersistenceEvidenceKind.TRANSFORMATION_INPUT)) == 1
+    assert len(depois.evidence_of(PersistenceEvidenceKind.TRANSFORMATION_OUTPUT)) == 1
+    # (6) história causal
+    assert len(depois.evidence_of(PersistenceEvidenceKind.CAUSAL_EVENT)) == 1
+
+    # Só o descritor mudou — a continuidade registrada é a mesma.
+    assert depois.evidence == antes.evidence
+
+
+def test_pi20_soft_deleted_without_continuity_is_still_not_subject_not_found():
+    """Objeto soft-deleted **sem** evidência continua distinguível de
+    inexistente — os três resultados seguem separados."""
+    with UnitOfWork() as uow:
+        objeto = ObjectRepository(uow.session).add(CognitiveObject())
+        uow.commit()
+        coid = objeto.id
+    _soft_delete(coid)
+
+    with UnitOfWork() as uow:
+        resultado = _manager(uow.session).assess(coid)
+
+    assert resultado.outcome is PersistenceOutcome.NO_RECORDED_CONTINUITY_EVIDENCE
+    assert resultado.subject_deleted is True
+    assert resultado.outcome is not PersistenceOutcome.SUBJECT_NOT_FOUND
+
+
+def test_pi21_assessing_a_soft_deleted_object_writes_nothing():
+    """(21) A avaliação continua read-only — inclusive no caminho novo.
+
+    Em particular, nada "recupera" o objeto: `deleted_at` fica como
+    está.
+    """
+    with UnitOfWork() as uow:
+        objeto = ObjectRepository(uow.session).add(CognitiveObject(clid=uuid.uuid4()))
+        uow.commit()
+        coid = objeto.id
+    _soft_delete(coid)
+
+    todas = _COGNITIVE_TABLES + _E4_TABLES
+    censo_antes = _census(todas)
+
+    escritas = {"n": 0}
+    padrao = re.compile(r"^\s*(INSERT|UPDATE|DELETE|TRUNCATE)\b", re.IGNORECASE)
+
+    def _listen(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        if padrao.match(statement):
+            escritas["n"] += 1
+
+    event.listen(engine, "before_cursor_execute", _listen)
+    try:
+        with UnitOfWork() as uow:
+            _manager(uow.session).assess(coid)
+    finally:
+        event.remove(engine, "before_cursor_execute", _listen)
+
+    assert escritas["n"] == 0
+    assert _census(todas) == censo_antes
+    with engine.connect() as conn:
+        ainda_apagado = conn.execute(
+            sa.text("SELECT deleted_at IS NOT NULL FROM cognitive_objects WHERE id = :c"),
+            {"c": coid},
+        ).scalar_one()
+    assert ainda_apagado is True, "a avaliação não pode recuperar objeto apagado"
+
+
+def test_pi22_assessments_from_the_manager_remain_valid_under_the_new_invariants():
+    """(20) Tudo que `assess()` produz continua construtível.
+
+    Se algum caminho do manager montasse um assessment incoerente com
+    os invariantes novos, `__post_init__` o recusaria aqui.
+    """
+    refs = _seed_rich_patrimony()
+    _soft_delete(refs["o2"])
+
+    with UnitOfWork() as uow:
+        manager = _manager(uow.session)
+        resultados = [
+            manager.assess(refs["o1"]),
+            manager.assess(refs["o2"]),
+            manager.assess(refs["o3"]),
+            manager.assess(uuid.uuid4()),
+        ]
+
+    for resultado in resultados:
+        assert isinstance(hash(resultado), int)
+        clids = resultado.evidence_of(PersistenceEvidenceKind.CLID)
+        assert len(clids) == (1 if resultado.clid is not None else 0)
+        if resultado.clid is not None:
+            assert clids[0].reference == str(resultado.clid)
+        for evidencia in resultado.evidence:
+            assert uuid.UUID(evidencia.reference)

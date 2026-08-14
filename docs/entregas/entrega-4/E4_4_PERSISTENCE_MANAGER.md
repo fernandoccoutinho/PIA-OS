@@ -324,3 +324,151 @@ E4_4_IMPLEMENTATION = COMPLETE
 E4_4_FINAL_STATUS   = AWAITING_INDEPENDENT_AUDIT
 READY_FOR_E4_5      = FALSE
 ```
+
+---
+
+# E4.4.1 — Corretivo dos invariantes de evidência de persistência
+
+Baseline verificada: bundle SHA-256 `bf0751c6…` ✓ · patch SHA-256
+`7a154cf4…` ✓ · HEAD `02e582b0…` ✓ · PARENT `afb5c38c…` ✓ · TREE
+`f72aa84e…` ✓ · PATCH_ID `73b79360…` ✓ · `PATCH_CHAIN = 44` ✓ ·
+migration head `4ca61776b982` ✓.
+
+## 8. Defeitos reproduzidos
+
+| # | Defeito | Reprodução contra o patch 44 |
+|---|---|---|
+| 1 | soft delete colapsado em inexistência | objeto com **3 evidências** virou `SUBJECT_NOT_FOUND` com **0**, embora a linha e todos os fatos continuassem no banco |
+| 2 | assessment aceita CLID sem evidência | `NO_RECORDED… + clid` aceito; evidência CLID com `clid=None` aceita; CLIDs divergentes aceitos |
+| 3 | evidências semanticamente impossíveis | `LINEAGE_PARENT` sem `related_coid`, `CLID` com `related_coid`, `reference="nao-e-uuid"`, `CAUSAL_EVENT` sem `qualifier`, `TRANSFORMATION_INPUT` com `related_coid` — todos aceitos |
+| 4 | ordenação não canônica | `sort_key` ignorava `related_coid`; `Assessment(A,B) != Assessment(B,A)` |
+
+### 8.1 O defeito 1 é meu, e a justificativa também era
+
+Eu havia escrito que filtrar `deleted_at IS NULL` "segue a política de
+leitura da E3.1.1". **A justificativa estava errada.** A E3.1.1 filtra
+por padrão nas *listagens* e oferece `include_deleted=True`
+precisamente para **consumidores de auditoria** — e um avaliador de
+continuidade histórica é exatamente esse consumidor.
+
+Pior: soft delete existe na E3 justamente para **não** destruir
+identidade nem história, e o COID permanece ocupado para sempre. O
+módulo cuja finalidade é preservar continuidade estava praticando
+apagamento histórico.
+
+```
+SOFT_DELETED != NEVER EXISTED
+SOFT_DELETED != SUBJECT_NOT_FOUND
+SOFT_DELETED != HISTORICAL ERASURE
+```
+
+## 9. Semântica adotada para soft delete
+
+`SUBJECT_NOT_FOUND` passa a significar **o que o nome diz**: não há
+linha com aquele COID.
+
+Um objeto com exclusão lógica continua sendo avaliado, com todas as
+suas evidências visíveis, e o fato aparece como
+`subject_deleted: bool` — a menor representação suficiente.
+
+É **descritor, não evidência**, pelo mesmo critério que já mantinha
+`revision_status` fora de `evidence`: descrever o estado presente não
+é atestar travessia. Consequência congelada: um objeto soft-deleted
+sem continuidade registrada continua `NO_RECORDED_CONTINUITY_EVIDENCE`
+— os três resultados seguem separados.
+
+Nada recupera objeto apagado e nada escreve em `deleted_at`.
+
+## 10. Demais correções
+
+**Defeito 2** — `clid` e evidência `CLID` são o mesmo fato dito duas
+vezes:
+
+```
+clid is not None  ⇔  exatamente uma evidência CLID com esse mesmo UUID
+```
+
+**Defeito 3** — coerência dependente de `kind` em `__post_init__`:
+linhagem exige `related_coid` **e** `qualifier`; CLID e transformação
+não admitem nenhum dos dois; evento causal exige `qualifier` e não
+admite `related_coid`. `reference` passa a exigir UUID **canônico**.
+
+Mantive `reference: str` em vez de `uuid.UUID` — o prompt permite
+ambos. Razão: `reference` é um **token estável** do contrato público, e
+tipá-lo comprometeria toda categoria futura de evidência a referenciar
+UUIDs. A validação canônica dá hoje a mesma garantia sem essa promessa.
+Variantes em maiúsculas, com chaves ou em URN também são recusadas:
+senão o mesmo fato produziria duas referências textuais e a
+desduplicação deixaria de funcionar.
+
+**Defeito 4** — `sort_key` passa a cobrir `(kind, reference,
+related_coid, qualifier)`, todos os campos que participam da
+igualdade. Era essa cobertura total que faltava para a ordenação ser
+canonicalização de fato.
+
+**Defeito 5** — contrato público de `qualifier` congelado:
+
+```
+qualifier = TOKEN PERSISTIDO, LIDO SEM NORMALIZAÇÃO
+```
+
+A docstring anterior afirmava que "a E3 persiste seus enums pelo
+`.value`", e isso é **falso como generalização**: `relation_type`
+(E3.3) grava o `.value`, `event_type` (E3.9) grava o **nome**.
+Corrigida para descrever as duas convenções. Normalizar inventaria uma
+convenção inexistente; duplicar os enums da E3 criaria segunda
+definição do mesmo vocabulário. Ambas seriam piores que a assimetria.
+
+## 11. Testes — prova contra o código anterior
+
+**23 falham no patch 44** e passam no corretivo: 19 unitários e 4 de
+integração (`pi15` corrigido, `pi18`, `pi19`, `pi20`).
+
+**5 passam nos dois lados, e reporto isso explicitamente:**
+
+- três parâmetros de `test_e441_non_canonical_uuid_reference_is_rejected`
+  (`""`, `"   "`) e `test_e441_reference_must_be_text` — o
+  `_required_text` antigo já rejeitava vazio e tipo errado; o que é
+  novo nesse teste são os outros cinco parâmetros;
+- `pi21` e `pi22` — guardas de regressão por natureza ("avaliação
+  continua read-only", "assessments do manager continuam válidos"),
+  exatamente o que o prompt antecipa como legítimo.
+
+`pi15` foi **corrigido**, não removido: ele codificava o defeito, e
+sua nova versão documenta por que a justificativa original estava
+errada.
+
+## 12. Arquivos alterados (5)
+
+```
+backend/app/memory/schemas/persistence.py                          invariantes
+backend/app/memory/repositories/continuity_evidence_repository.py  soft delete
+backend/app/memory/services/persistence_manager.py                 descritor + qualifier
+backend/tests/unit/memory/test_persistence.py                      +22
+backend/tests/integration/memory/test_persistence_integration.py   +5, pi15 corrigido
+docs/entregas/entrega-4/E4_4_PERSISTENCE_MANAGER.md                este registro
+```
+
+## 13. Resultados
+
+```
+FULL_SUITE = 1317 passed / 1 skipped / 0 failed
+E3_REGRESSION_DELTA   = 0   (598/598)
+E4_1_REGRESSION_DELTA = 0   (40/40)
+E4_2_REGRESSION_DELTA = 0   (42/42)
+E4_3_REGRESSION_DELTA = 0   (108/108)
+
+GLOBAL_COVERAGE = 98,79%   APP_MEMORY = 100%   APP_COGNITIVE = 100%
+RUFF = PASS   BLACK = PASS   MYPY_NEW_ERRORS = 0   git diff --check = limpo
+SCHEMA_ORM_DRIFT = 0   MIGRATION_HEAD = 4ca61776b982 (inalterada)
+DATABASE_WRITES_DURING_ASSESSMENT = 0
+
+NEW_PERSISTENT_ENTITY = NO   MIGRATION_REQUIRED = NO   E3_MODIFIED = NO
+PERSISTENCE_SCORE = NONE
+CONTEXT_DOES_NOT_CHANGE_PERSISTENCE      ✓
+GOVERNANCE_DOES_NOT_REWRITE_PERSISTENCE  ✓
+
+E4_4_1_IMPLEMENTATION = COMPLETE
+E4_4_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
+READY_FOR_E4_5        = FALSE
+```

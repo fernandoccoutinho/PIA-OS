@@ -107,6 +107,13 @@ class PersistenceManager:
         (`EQUIVALENCE != DESTRUCTIVE COLLAPSE`,
         `DIVERGENCE != INVALIDITY`).
 
+        **Soft delete não é inexistência** (corretivo `E4.4.1`). Um
+        objeto com exclusão lógica continua sendo avaliado, com todas
+        as suas evidências visíveis, e o fato aparece em
+        `subject_deleted` — um descritor, não uma evidência.
+        `SUBJECT_NOT_FOUND` significa apenas que não há linha alguma
+        com aquele COID.
+
         Estritamente read-only.
         """
         if not isinstance(coid, uuid.UUID):
@@ -116,7 +123,7 @@ class PersistenceManager:
         if instantaneo is None:
             return PersistenceAssessment(coid=coid, outcome=PersistenceOutcome.SUBJECT_NOT_FOUND)
 
-        clid, revision_status = instantaneo
+        clid, revision_status, soft_deleted = instantaneo
         evidencias: list[PersistenceEvidence] = []
 
         if clid is not None:
@@ -178,18 +185,37 @@ class PersistenceManager:
             outcome=outcome,
             evidence=tuple(evidencias),
             clid=clid,
+            subject_deleted=soft_deleted,
             revision_status=_as_stable_value(revision_status),
         )
 
 
 def _as_stable_value(value: object) -> str | None:
-    """Converte um valor lido do banco no seu texto estável.
+    """Devolve o token **exatamente como a E3 o persistiu**.
 
-    A E3 persiste seus enums pelo `.value` (`native_enum=False` com
-    `values_callable`), então o que vem do banco já é a string
-    estável. A conversão existe para o caso de o driver devolver um
-    membro de enum, sem que este módulo precise **importar** aquele
-    enum — o que quebraria a fronteira estabelecida na E4.1.
+    Contrato público de `qualifier`, congelado em `E4.4.1`:
+
+    ```
+    qualifier = TOKEN PERSISTIDO, LIDO SEM NORMALIZAÇÃO
+    ```
+
+    A afirmação anterior desta docstring — "a E3 persiste seus enums
+    pelo `.value`" — estava **errada como generalização**. A E3 usa
+    duas convenções:
+
+    ```
+    lineage_edges.relation_type       (E3.3)  values_callable → ".value"   "branch"
+    causal_history_events.event_type  (E3.9)  sem values_callable → NOME   "CREATED"
+    ```
+
+    E4.4 reporta o que está gravado, sem normalizar. Normalizar
+    inventaria uma convenção que o banco não tem e esconderia um fato
+    da E3; duplicar os enums da E3 aqui criaria uma segunda definição
+    do mesmo vocabulário. Ambas seriam piores que a assimetria.
+
+    A conversão abaixo existe apenas para o caso de o driver devolver
+    um membro de enum em vez de texto, sem que este módulo precise
+    **importar** aquele enum — o que quebraria a fronteira da E4.1.
     """
     if value is None:
         return None
