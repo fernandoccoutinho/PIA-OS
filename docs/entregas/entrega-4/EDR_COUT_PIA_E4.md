@@ -410,16 +410,97 @@ correção: apenas nomenclatura, ordem e ownership.
 
 ---
 
-## 16. Estado do congelamento
+## 16. Decisões congeladas em E4.1 (Memory Domain Foundation)
+
+```text
+DOMAIN MEMBERSHIP != COGNITIVE EXISTENCE
+DOMAIN BOUNDARY   != COGNITIVE BOUNDARY
+DOMAIN CLASSIFICATION MUST NOT COLLAPSE COGNITIVE IDENTITY
+
+COID → {D1, D2, ..., Dn}
+ONE COID REMAINS ONE CognitiveObject
+
+ZERO DOMAIN MEMBERSHIP        != NONEXISTENCE
+CO-MEMBERSHIP                  != COGNITIVE RELATION
+DOMAIN CLASSIFICATION          != CAUSAL RESURRECTION
+
+DOMAIN MEMBERSHIP != ACCESSIBILITY   (E4.7)
+DOMAIN MEMBERSHIP != GOVERNANCE      (E4.3)
+DOMAIN MEMBERSHIP != CONTEXT         (E4.2)
+DOMAIN MEMBERSHIP != PERSISTENCE     (E4.4)
+DOMAIN MEMBERSHIP != RELEVANCE
+MEMORY_DOMAIN     != FILESYSTEM_FOLDER
+```
+
+Membership **não** cria `ProvenanceRecord` nem `CausalHistoryEvent`:
+classificação administrativa não é evento de origem cognitiva, e
+organização lógica não é causalidade. Converter uma na outra sem
+contrato explícito falsificaria a história do patrimônio com um fato
+que nunca ocorreu.
+
+### Fronteira estrutural E3/E4 (acréscimo desta entrega)
+
+```text
+app/memory/ NEVER IMPORTS app.cognitive
+
+COID TRAVELS AS uuid.UUID
+FK IS DECLARED BY TABLE NAME, RESOLVED IN THE SHARED MetaData
+```
+
+A fronteira deixou de ser apenas documental. `app/memory/` referencia
+COID e nunca manipula patrimônio, e a integridade referencial continua
+real porque vem do banco. Verificado por `MD6` e pelo gate `G17` da
+E3.12.
+
+### Ownership congelado
+
+```text
+E3   = source of truth for CognitiveObject and cognitive patrimony
+E4.1 = source of truth only for MemoryDomain and Domain↔COID membership
+
+NO ATTRIBUTE OF CognitiveObject IS COPIED INTO MEMBERSHIP
+```
+
+### Preservação da organização
+
+```text
+MEMORY_DOMAIN_MIGRATION = CONDITIONALLY_REVERSIBLE
+DOWNGRADE_GUARD         = EMBEDDED FROM THE INITIAL MIGRATION
+DOMAIN DELETE MUST NOT CASCADE TO COGNITIVE PATRIMONY
+```
+
+A organização recebe a mesma proteção que a história causal, e a razão
+merece registro: um domínio não é um fato sobre o mundo, é uma decisão
+sobre como o patrimônio é lido. Decisões também não se reconstroem
+sozinhas — perder a classificação de milhares de COIDs é perder
+trabalho humano irrecuperável, ainda que nenhum `CognitiveObject` seja
+tocado.
+
+### Portabilidade permanece aberta
+
+```text
+MEMORY_DOMAIN_SYNC = DEFERRED
+E3 SYNC ENVELOPE   = 7 SECTIONS, UNCHANGED
+```
+
+Resolver a portabilidade aqui seria antecipar política: o critério
+decisivo já registrado — *se `MemoryDomain` carregar semântica de
+acesso, é LOCAL* — só pode ser avaliado depois que E4.3 existir.
+
+---
+
+## 17. Estado do congelamento
 
 ```text
 E4.0.1                 = PASS
 E4.0                   = PASS FINAL
+E4.1                   = PASS
 E4_ARCHITECTURE        = FROZEN
 E4_SEQUENCE            = FROZEN (OPTION_A)
-READY_FOR_E4_1         = TRUE
+READY_FOR_E4_2         = TRUE
 
 LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9
+MEMORY_DOMAIN_SYNC              = DEFERRED
 ```
 
-E4.1 **não** é iniciada automaticamente.
+E4.2 **não** é iniciada automaticamente.

@@ -29,14 +29,19 @@ modificado.
 | Item | Destino | Por que não na E4.0 |
 |---|---|---|
 | política completa de transição de `AccessibilityState` | **E4.7** (sob autoridade de E4.3) | §6 do prompt canônico proíbe inventar transições aqui |
-| identidade de `DomainMembership` | E4.1 | recomendação registrada; decisão é do módulo |
+| ~~identidade de `DomainMembership`~~ | **RESOLVIDO em E4.1** | identidade própria adotada (convenção `BaseModel`); `UNIQUE(domain_id, coid)` é a identidade estrutural |
+| lifecycle de `DomainMembership` (`left_at`) | E4.3+ | entra junto com a remoção, que exige autoridade — coluna sem escritor não preserva história |
+| remoção de membership | E4.3+ | remover é operação sob autoridade |
+| `DOMAIN_DELETION` / `DOMAIN_RENAME` / `DOMAIN_MERGE` | não atribuído | não se cria operação destrutiva para completar CRUD |
+| hierarquia de domínio (`parent_domain_id`, `path`) | não atribuído | `MEMORY_DOMAIN != FILESYSTEM_FOLDER` |
+| `owner` / `policy_ref` de domínio | E4.3 | autoridade é Governance |
 | `MemoryContext` persistente ou transiente | E4.2 | provável divisão `ContextDefinition` / instância |
 | campos de `MemoryContext` | E4.2+ | §7 proíbe congelar campo sem necessidade demonstrada |
 | forma de expressão de `rules` de policy | E4.3 (Governance) | Stop Condition 12 — não escolher motor por conveniência |
 | motor de policy (OPA / Cedar / DSL) | E4.3+ (Governance) | a semântica precede a ferramenta |
 | `on_expiry_action` de retenção | E4.9 | tensão com `CausalHistory` não resolvida |
 | **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6 |
-| portabilidade de `MemoryDomain` | E4.1 | análise registrada, decisão do módulo |
+| portabilidade de `MemoryDomain` | **E4.3+** | E4.1 manteve `MEMORY_DOMAIN_SYNC = DEFERRED`: o critério decisivo (*se carregar semântica de acesso, é LOCAL*) só é avaliável depois de Governance existir |
 | portabilidade de `ValidatedExperience` | E4.11 | análise registrada, decisão do módulo |
 | escopo exato do registro da E4.11 | E4.11 | limite proposto, a confirmar |
 | mecanismo de promoção transcript → patrimônio | não atribuído | exige mecanismo explícito ainda não desenhado |
