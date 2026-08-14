@@ -252,6 +252,37 @@ módulo E3.8). Este é o único código novo de E3.8 — busca é read-only e
 não introduz nenhuma outra condição de domínio."""
 
 
+PIA_8020_CAUSAL_HISTORY_IMMUTABLE = ErrorCode(
+    code="PIA-8020",
+    default_message="causal_history_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de `update`/`delete` físico de uma `CausalHistory` ou de
+um `CausalHistoryEvent` já persistido (E3.9/LIB-09).
+
+História causal é append-only por construção: corrigir um fato
+histórico é acrescentar um evento novo que referencia o anterior,
+nunca reescrever o passado. Mesmo princípio de
+`LineageEdgeImmutableError`/`ProvenanceRecordImmutableError` — e aqui
+com uma razão extra: o próprio registro já é um rastro preservado
+(`COUT-CH-9`), então apagá-lo destruiria justamente a evidência que o
+módulo existe para guardar."""
+
+
+PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR = ErrorCode(
+    code="PIA-8021",
+    default_message="causal_event_self_predecessor",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de registrar um evento causal como predecessor de si
+mesmo (E3.9/LIB-09) — mesma classe de erro de `LineageSelfLinkError`
+e `RelationshipSelfLinkError`."""
+
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -272,6 +303,8 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
     PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
     PIA_8019_SEARCH_CRITERIA_INVALID,
+    PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
+    PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {

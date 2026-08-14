@@ -271,3 +271,72 @@ tentar recriá-la — nunca depender do erro genérico que o próprio banco
 produziria ao tentar aplicá-la sobre dados incompatíveis, porque nesse
 ponto a transação já pode ter executado outras alterações destrutivas
 anteriores no mesmo `downgrade()`.
+
+## Princípios de história causal (decisão arquitetural — E3.9)
+
+Três princípios congelados por `E3.9`/`LIB-09`. Implementação e provas
+em `E3_9_LIB09_CAUSAL_HISTORY.md`.
+
+### ARCHAEOLOGICAL CAUSAL TRACE PRINCIPLE
+
+Um estado presente pode preservar informação causalmente transmitida
+sobre uma distinção que existiu em um estado passado, mesmo quando a
+fonte ou a organização original já se transformou. Observar agora não
+obriga a estar observando o estado atual da fonte.
+
+```text
+PRESENT OBSERVATION MAY BE PRESENT ACCESS TO A PAST CAUSAL TRACE
+CURRENT != ONLY CAUSALLY ACCESSIBLE HISTORY
+```
+
+Cenário motivador (**metáfora arquitetural, não modelo físico**):
+`GALAXY TRACE` — uma fonte distante já evoluiu de `S0` para `S1`,
+mas informação emitida em `S0` continua chegando ao observador. Nada
+de relatividade geral, lente gravitacional, geodésicas, cosmologia,
+CLEO ou LOP é implementado; a lente serve apenas para lembrar que uma
+fonte pode ter **múltiplos caminhos causais**
+(`GRAVITATIONAL_LENSING = ANALOGY_ONLY`).
+
+### DISTINCTION EXTINCTION PRINCIPLE
+
+A extinção presente de uma distinção não nega sua existência
+histórica, e não exige que o substrato material tenha desaparecido.
+
+```text
+MATERIAL PERSISTENCE      != DISTINCTION PERSISTENCE
+SUBSTRATE CONTINUITY      != ORGANIZATIONAL IDENTITY
+DISTINCTION EXTINCTION    != RETROACTIVE HISTORICAL ERASURE
+CAUSALLY_EXTINCT          != NEVER EXISTED
+SUPERSEDED                != FICTION
+TRANSFORMED               != NEVER EXISTED
+```
+
+Cenário motivador: `BROKEN GLASS` — um objeto organizado se
+fragmenta e se dispersa. O material pode continuar existindo; o que
+deixa de existir é a organização que permitia identificá-lo *como
+aquilo*. Registrar que um estado originou outros **não** afirma que
+esses outros ainda sejam o original.
+
+### EPISTEMIC NON-FABRICATION PRINCIPLE
+
+Ausência de evidência preservada não autoriza nenhuma das duas
+conclusões opostas.
+
+```text
+NO PRESENT EVIDENCE != NEVER EXISTED
+NO PRESENT EVIDENCE != ASSERT THAT IT EXISTED
+ONTOLOGICAL POSSIBILITY != RECORDED HISTORICAL FACT
+NO SURVIVING TRACE MAY IMPLY HISTORY NOT RECONSTRUCTIBLE
+RECORDED HISTORY != COMPLETE HISTORY OF REALITY
+```
+
+O PIA nunca preenche lacuna causal por imaginação ou inferência
+silenciosa. Em particular, precedência temporal não é causalidade
+(`TEMPORAL PRECEDENCE != CAUSALITY`): ordenar eventos por tempo de
+registro é apresentação, nunca afirmação de parentesco causal.
+
+E o corolário operacional que muda a implementação: **o registro
+histórico é ele próprio um rastro preservado**. Simular a extinção de
+um rastro apagando o registro destruiria a evidência que o sistema
+existe para guardar — por isso história causal é append-only, e
+corrigir é anexar um evento que referencia o anterior.

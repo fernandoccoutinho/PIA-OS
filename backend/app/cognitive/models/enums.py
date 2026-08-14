@@ -144,3 +144,25 @@ class ProvenanceActorType(StrEnum):
     HUMAN = "human"
     AGENT = "agent"
     SYSTEM = "system"
+
+
+class CausalEventType(StrEnum):
+    """Vocabulário fechado de eventos de história causal
+    (`E3.9`/`LIB-09`).
+
+    O `E3_DOMAIN_MODEL_DRAFT.md` define `event_type` como "vocabulário
+    fechado em E3.9" e dá exatamente estes quatro exemplos. O
+    fechamento aqui usa **apenas** eles: acrescentar valores novos
+    (por exemplo um hipotético `distinction_extinct`) seria inventar
+    vocabulário que o contrato congelado não previu, e a extinção de
+    uma distinção já é representável pela combinação de eventos
+    `TRANSFORMED` com o `AccessibilityState` de `E3.6` — que `E3.9`
+    não redefine.
+
+    Ampliar este enum exige EDR explícito.
+    """
+
+    CREATED = "created"
+    TRANSFORMED = "transformed"
+    COMPARED = "compared"
+    ACCESSED = "accessed"
