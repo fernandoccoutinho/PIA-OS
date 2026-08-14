@@ -12,12 +12,14 @@ este módulo existe para proibir.
 """
 
 import uuid
+from collections.abc import Iterable
 
 from app.exceptions.base import PIAOSException
 from app.memory.errors.codes import (
     PIA_8023_MEMORY_DOMAIN_NOT_FOUND,
     PIA_8024_MEMORY_DOMAIN_MEMBERSHIP_DUPLICATE,
     PIA_8025_MEMORY_DOMAIN_MEMBERSHIP_OBJECT_NOT_FOUND,
+    PIA_8026_CONTEXT_UNKNOWN_DOMAIN_REFERENCE,
 )
 
 
@@ -62,4 +64,27 @@ class MemoryDomainMembershipObjectNotFoundError(PIAOSException):
         super().__init__(
             message=f"Nenhum CognitiveObject com COID {coid}.",
             detail={"coid": str(coid)},
+        )
+
+
+class ContextUnknownDomainReferenceError(PIAOSException):
+    """Um `MemoryContext` referencia `MemoryDomain`(s) inexistente(s).
+
+    Carrega o **conjunto** de ids desconhecidos, e não apenas o
+    primeiro: um contexto pode declarar vários domínios, e reportar um
+    por vez forçaria o chamador a N tentativas para descobrir N
+    referências ruins.
+
+    Distinção preservada (E4.2 §35): domínio ausente **não** é objeto
+    cognitivo ausente. São diagnósticos diferentes e não se mascaram.
+    """
+
+    error_code = PIA_8026_CONTEXT_UNKNOWN_DOMAIN_REFERENCE
+
+    def __init__(self, unknown_domain_ids: Iterable[uuid.UUID]) -> None:
+        self.unknown_domain_ids = tuple(sorted(set(unknown_domain_ids), key=str))
+        listados = ", ".join(str(d) for d in self.unknown_domain_ids)
+        super().__init__(
+            message=f"MemoryContext referencia domínio(s) inexistente(s): {listados}.",
+            detail={"unknown_domain_ids": [str(d) for d in self.unknown_domain_ids]},
         )

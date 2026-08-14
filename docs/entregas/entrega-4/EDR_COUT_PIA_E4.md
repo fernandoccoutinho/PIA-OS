@@ -489,18 +489,66 @@ acesso, é LOCAL* — só pode ser avaliado depois que E4.3 existir.
 
 ---
 
-## 17. Estado do congelamento
+## 17. Decisões congeladas em E4.2 (Context Manager)
+
+```text
+CONTEXT CHANGES VIEW
+CONTEXT DOES NOT REWRITE PATRIMONY
+
+CONTEXT != IDENTITY
+CONTEXT != MEMORY
+CONTEXT != POLICY
+CONTEXT != SESSION
+CONTEXT != DOMAIN
+CONTEXT != COGNITIVE OBJECT
+
+ACTOR PRESENCE != AUTHORIZATION
+CONTEXT DESCRIBES / GOVERNANCE DECIDES ADMISSIBILITY
+CONTEXT DOES NOT MUTATE ACCESSIBILITY
+
+domain in context != object added to domain
+session_id        != context identity
+
+empty context != no memory
+empty context != all authorized
+```
+
+`MemoryContext` é **value object imutável e não persistido** —
+`TRANSIENT` pela matriz F, sem tabela, sem migração, sem identidade
+persistente. Se a perspectiva muda, ela é outra perspectiva
+(`C1 → C2`); mutação silenciosa tornaria irreprodutível qualquer
+decisão futura tomada sob um contexto.
+
+Determinismo congelado: `domain_ids` é canonicalizado (ordenado,
+desduplicado) na construção. A ordem em que alguém informa domínios
+não é informação semântica.
+
+Multi-domínio: o contexto apenas **declara** o conjunto. Nenhuma
+união ou interseção de patrimônio é executada — como usar o conjunto
+é decisão de Governance (E4.3) e Retrieval (E4.6). Inventar a
+semântica aqui seria decidir admissibilidade sem autoridade.
+
+`ContextDefinition` permanece **DEFERRED**: a E4.0 registrou "provável"
+e explicitamente "não congela". Criá-lo agora seria primitiva
+persistente por antecipação, e sem nenhum consumidor que a leia.
+
+---
+
+## 18. Estado do congelamento
 
 ```text
 E4.0.1                 = PASS
 E4.0                   = PASS FINAL
 E4.1                   = PASS
+E4.2                   = PASS
 E4_ARCHITECTURE        = FROZEN
 E4_SEQUENCE            = FROZEN (OPTION_A)
-READY_FOR_E4_2         = TRUE
+READY_FOR_E4_3         = TRUE
 
 LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9
 MEMORY_DOMAIN_SYNC              = DEFERRED
+MEMORY_CONTEXT_SYNC             = NONE
+CONTEXT_DEFINITION              = DEFERRED
 ```
 
-E4.2 **não** é iniciada automaticamente.
+E4.3 **não** é iniciada automaticamente.

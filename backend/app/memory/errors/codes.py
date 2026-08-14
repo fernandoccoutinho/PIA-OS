@@ -57,3 +57,21 @@ PIA_8025_MEMORY_DOMAIN_MEMBERSHIP_OBJECT_NOT_FOUND = ErrorCode(
 
 Nenhum objeto é fabricado para acomodar a classificação — mesma
 disciplina de `MISSING EVIDENCE != AUTHORIZATION TO FABRICATE`."""
+
+PIA_8026_CONTEXT_UNKNOWN_DOMAIN_REFERENCE = ErrorCode(
+    code="PIA-8026",
+    default_message="context_unknown_domain_reference",
+    category=ErrorCategory.VALIDATION,
+    http_status=404,
+    severity=ErrorSeverity.ERROR,
+)
+"""Um `MemoryContext` referencia `MemoryDomain`(s) que não existem.
+
+Código próprio, e não reúso de `PIA-8023`, porque a informação
+diagnóstica tem outra forma: um contexto pode referenciar vários
+domínios de uma vez, e reportar um por vez forçaria N tentativas para
+descobrir N referências ruins. A exceção correspondente carrega o
+**conjunto** de ids desconhecidos.
+
+`DOMAIN NOT FOUND != COGNITIVE OBJECT NOT FOUND` — a distinção
+diagnóstica de E4.1 é preservada, não colapsada."""

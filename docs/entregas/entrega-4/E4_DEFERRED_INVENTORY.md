@@ -35,8 +35,10 @@ modificado.
 | `DOMAIN_DELETION` / `DOMAIN_RENAME` / `DOMAIN_MERGE` | não atribuído | não se cria operação destrutiva para completar CRUD |
 | hierarquia de domínio (`parent_domain_id`, `path`) | não atribuído | `MEMORY_DOMAIN != FILESYSTEM_FOLDER` |
 | `owner` / `policy_ref` de domínio | E4.3 | autoridade é Governance |
-| `MemoryContext` persistente ou transiente | E4.2 | provável divisão `ContextDefinition` / instância |
-| campos de `MemoryContext` | E4.2+ | §7 proíbe congelar campo sem necessidade demonstrada |
+| ~~`MemoryContext` persistente ou transiente~~ | **RESOLVIDO em E4.2** | TRANSIENT confirmado; value object imutável, sem tabela |
+| `ContextDefinition` | **não atribuído** | E4.0 registrou "provável", não congelou; sem consumidor até Governance/Retrieval existirem |
+| campos `task` e `scope` de contexto | não atribuído | sem necessidade demonstrada; §13 proíbe inventar modelo de escopo |
+| ~~campos de `MemoryContext`~~ | **RESOLVIDO em E4.2** | `domain_ids` + `session_id?` + `actor_ref?` + `purpose?`; nada mais |
 | forma de expressão de `rules` de policy | E4.3 (Governance) | Stop Condition 12 — não escolher motor por conveniência |
 | motor de policy (OPA / Cedar / DSL) | E4.3+ (Governance) | a semântica precede a ferramenta |
 | `on_expiry_action` de retenção | E4.9 | tensão com `CausalHistory` não resolvida |
