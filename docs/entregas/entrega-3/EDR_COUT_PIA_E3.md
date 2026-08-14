@@ -361,3 +361,27 @@ Transmissão causal atravessa sujeitos sem fundir suas identidades nem
 suas histórias. Um evento pode referenciar como predecessor um evento
 da história de outro sujeito, e `COID_A != COID_B` e
 `HISTORY_A != HISTORY_B` continuam valendo.
+
+### Garantia de aciclicidade causal (E3.9.1a)
+
+```text
+CAUSAL_DAG_GUARANTEE          = APPLICATION_STRUCTURAL
+DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE
+```
+
+A topologia de eventos causais é um DAG **sob o contrato append-only
+autorizado de Repository/Manager**. O PostgreSQL impõe
+independentemente a validade das FKs e a rejeição de auto-predecessor,
+mas não impõe independentemente aciclicidade global — não há
+constraint recursiva, trigger de DAG, detector de ciclos nem
+imutabilidade append-only no nível do banco.
+
+```text
+SELF_LINK_PROTECTION             != GLOBAL_DAG_PROOF
+APPLICATION_APPEND_ONLY_CONTRACT != DB_LEVEL_IMMUTABILITY
+CROSS_HISTORY                    != CYCLE_PERMISSION
+```
+
+`GLOBAL_DB_CYCLE_PROTECTION = NOT_REQUIRED_IN_E3_9` — a API autorizada
+preserva a propriedade necessária; a garantia será reavaliada se
+houver requisito de writers externos ou acesso direto ao banco.

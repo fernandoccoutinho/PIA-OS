@@ -108,13 +108,29 @@ class CausalHistoryEvent(BaseModel):
     profundidade: o manager já rejeita antes, mas o banco é a
     autoridade final.
 
-    Ciclos indiretos não precisam de proteção adicional e a política
-    **não** foi copiada de `LineageEdge` (`SELF_ONLY`) por hábito:
-    aqui a proteção é *estrutural*. Como a tabela é append-only e a FK
-    exige que o predecessor **já exista** no momento do INSERT, toda
-    aresta aponta necessariamente para um evento anterior — o grafo é
-    um DAG por construção, e não existe operação de update capaz de
-    fechar um ciclo depois."""
+    Ciclos indiretos não recebem proteção adicional, e a política
+    **não** foi copiada de `LineageEdge` (`SELF_ONLY`) por hábito. A
+    garantia real, precisada em `E3.9.1a`:
+
+    ```text
+    APPLICATION_STRUCTURAL_DAG    = TRUE
+    DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE
+    ```
+
+    Pelo contrato autorizado de Repository/Manager, a topologia causal
+    é um DAG: o predecessor precisa **já estar persistido** no momento
+    do append, e não há operação legítima capaz de redirecionar
+    arestas antigas (`update_event()`/`delete_event()` sempre
+    rejeitam). Toda aresta aponta, portanto, para um evento anterior.
+
+    O PostgreSQL, sozinho, impõe apenas validade de FK e rejeição de
+    auto-predecessor — **não** há constraint recursiva, trigger de
+    DAG, detector global de ciclos nem imutabilidade append-only
+    imposta pelo banco. SQL arbitrário fora do repositório poderia,
+    em tese, fechar um ciclo. `GLOBAL_DB_CYCLE_PROTECTION =
+    NOT_REQUIRED_IN_E3_9`: a API autorizada preserva a propriedade
+    necessária, e a garantia será reavaliada se houver requisito de
+    writers externos ou acesso direto ao banco."""
 
     history_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("causal_histories.id"), nullable=False, index=True

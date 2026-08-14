@@ -730,15 +730,26 @@ def test_t5_self_predecessor_remains_rejected_after_e3_9_1(causal):
         repository.add_event(forced)
 
 
-def test_t6_dag_property_survives_cross_history_links(causal):
-    """T6 — a propriedade estrutural de DAG continua valendo, inclusive
-    entre histórias.
+def test_t6_dag_holds_through_the_authorized_application_path(causal):
+    """T6 — a topologia causal é um DAG **sob o contrato autorizado de
+    Repository/Manager**, inclusive com elo entre histórias.
 
-    O que a sustenta: (a) o predecessor precisa **já existir** no
-    momento do append, então toda aresta aponta para trás; (b) não há
-    caminho de update — `update_event()` sempre rejeita, então um ciclo
-    não pode ser fechado depois. Permitir elo entre histórias amplia o
-    alcance das arestas, não a direção delas.
+    Escopo exato do que este teste demonstra
+    (`APPLICATION_STRUCTURAL_DAG`, precisado em `E3.9.1a`): pelo
+    caminho legítimo da aplicação, (a) o predecessor precisa **já
+    estar persistido** no momento do append, então toda aresta aponta
+    para trás; (b) não há operação legítima capaz de redirecionar
+    aresta antiga — `update_event()` sempre rejeita. Permitir elo
+    entre histórias amplia o alcance das arestas, não a direção delas
+    (`CROSS_HISTORY != CYCLE_PERMISSION`).
+
+    O que este teste **não** demonstra, e que a documentação também
+    não afirma: que o PostgreSQL sozinho impeça ciclos.
+    `DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE` — o banco impõe validade
+    de FK e rejeição de auto-predecessor, e nada além disso. Não há
+    aqui teste de bypass por SQL direto, porque seria exigir do banco
+    um comportamento que ele não promete e que `E3.9` deliberadamente
+    não requer (`GLOBAL_DB_CYCLE_PROTECTION = NOT_REQUIRED_IN_E3_9`).
     """
     session, objects, repository, manager = causal
     subject_a = _add(objects, session)

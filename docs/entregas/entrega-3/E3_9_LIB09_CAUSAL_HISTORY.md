@@ -79,19 +79,48 @@ retroativamente") — apresentação não é afirmação causal. Teste `CH8`.
 
 ### Política de ciclos
 
+Formulação canônica (precisada em `E3.9.1a`):
+
+> A topologia de eventos causais é um DAG **sob o contrato
+> append-only autorizado de Repository/Manager**. O PostgreSQL impõe
+> independentemente a validade das FKs e a rejeição de
+> auto-predecessor, mas **não** impõe independentemente aciclicidade
+> global.
+
 ```text
-CYCLE_PROTECTION = STRUCTURAL
+APPLICATION_STRUCTURAL_DAG    = TRUE
+DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE
 ```
 
-Não foi copiada de `LineageEdge` (`SELF_ONLY`) por hábito. Aqui a
-proteção é estrutural: a tabela é append-only e a FK exige que o
-predecessor **já exista** no momento do INSERT, então toda aresta
-aponta para um evento anterior — o grafo é um DAG por construção, e
-não há operação de update capaz de fechar um ciclo depois. O único
-caso que a construção não cobre é auto-referência dentro do próprio
-INSERT, barrada por `CheckConstraint`
-(`ck_causal_history_events_no_self_predecessor`) e por guarda de
-domínio no repositório.
+**O que o caminho autorizado garante.** Pelas operações legítimas da
+aplicação: (1) o predecessor precisa referenciar evento já
+persistido; (2) todo evento novo é append; (3) eventos históricos não
+podem ser atualizados; (4) nem apagados; (5) auto-predecessor é
+rejeitado. Logo, uma aresta nova sempre aponta para um evento causal
+preexistente, e não existe operação legítima posterior capaz de
+redirecionar arestas antigas para fechar um ciclo.
+
+**O que o banco garante sozinho.** Validade de FK e rejeição de
+auto-predecessor (`ck_causal_history_events_no_self_predecessor`).
+Nada além disso: não há constraint recursiva, trigger de DAG,
+detector global de ciclos nem imutabilidade append-only imposta pelo
+PostgreSQL. Portanto
+
+```text
+SELF_LINK_PROTECTION             != GLOBAL_DAG_PROOF
+APPLICATION_APPEND_ONLY_CONTRACT != DB_LEVEL_IMMUTABILITY
+```
+
+**Isto não é defeito funcional.** `GLOBAL_DB_CYCLE_PROTECTION =
+NOT_REQUIRED_IN_E3_9`: a API autorizada preserva a propriedade
+necessária, e inventar proteção contra SQL arbitrário fora do
+Repository/Manager estaria fora do escopo do módulo. Se houver
+requisito futuro de múltiplos writers externos ou acesso direto ao
+banco, a garantia será reavaliada.
+
+A política **não** foi copiada de `LineageEdge` (`SELF_ONLY`) por
+hábito — mas também não é mais forte que a dele no nível do banco: a
+diferença está no contrato de aplicação, não no schema.
 
 ### Topologia (decisões E3.9.1)
 
@@ -368,7 +397,8 @@ FULL_ACCESSIBILITY_MATRIX = E4
   anteriores (`CH20`); e (`E3.9.1`) topologia — `T1` uma história por
   sujeito, `T2` sujeitos distintos, `T3`/`T4` elo entre histórias sem
   fusão, `T5` auto-predecessor segue rejeitado, `T6` propriedade de
-  DAG preservada mesmo com elos entre histórias.
+  DAG (sob o contrato autorizado) preservada mesmo com elos entre
+  histórias.
 - **Integração PostgreSQL**
   (`tests/integration/cognitive/test_causal_history_integration.py`, 10):
   round-trip; constraints do banco como autoridade final; concorrência
