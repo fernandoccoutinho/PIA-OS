@@ -354,19 +354,72 @@ segunda biblioteca.
 
 ---
 
-## 15. Estado do congelamento
+## 15. Sequência e ownership (congelados em E4.0.1)
 
 ```text
-E4.0_ARCHITECTURE_GATE = PASS
-E4_ARCHITECTURE        = FROZEN
-READY_FOR_E4_1         = TRUE
+SEQUENCE_DECISION = OPTION_A
+E4_SEQUENCE       = FROZEN
 
-E4_SEQUENCE = AUDITED — EMENDA PROPOSTA, PENDENTE DE DECISÃO
+E4.0   Architecture & Contract Freeze
+E4.1   Memory Domain Foundation
+E4.2   Context Manager
+E4.3   Governance Policy
+E4.4   Persistence Manager
+E4.5   Consolidation Manager
+E4.6   Memory Retrieval
+E4.7   Accessibility Policy
+E4.8   Memory Isolation
+E4.9   Retention / Forgetting
+E4.10  Compliance Boundary
+E4.11  Validated Experience Registry
+E4.12  Final Integration Gate
 ```
 
-A sequência da E4 foi auditada e **duas inversões de dependência
-reais** foram encontradas (ver `E4_IMPLEMENTATION_SEQUENCE.md` §2–§4).
-A emenda proposta aguarda decisão do titular do Plano Mestre. Tudo o
-mais nesta entrega está congelado.
+Ordem de autoridade congelada:
+
+```text
+GOVERNANCE BEFORE ACCESSIBILITY POLICY
+GOVERNANCE BEFORE MEMORY RETRIEVAL
+
+E4.3 owns: GovernancePolicy, governance authority semantics
+E4.7 owns: AccessibilityPolicy, admissibility / transition policy
+```
+
+Fronteiras acrescentadas:
+
+```text
+RETRIEVAL != GOVERNANCE
+    Memory Retrieval consome MemoryDomain + Context + Governance
+    + Accessibility + Search(E3) e produz admissible memory view.
+    Não define autoridade.
+
+ACCESSIBILITY POLICY DOES NOT DEFINE
+    identity | existence | truth | general authority
+    Aplica admissibilidade/transição SOB a autoridade de Governance.
+```
+
+Precisão registrada: na lista de consumo do Retrieval,
+`AccessibilityState` (E3.6, já congelado) é dependência **dura e já
+satisfeita**; `AccessibilityPolicy` (E4.7) é dependência de
+**composição**. Ler um estado não é autorizar a mudança dele — por
+isso E4.6 não bloqueia em E4.7. Ver `E4_IMPLEMENTATION_SEQUENCE.md`
+§4.1.
+
+Nenhuma mudança conceitual de COUT, LOP ou CLEO ocorreu nesta
+correção: apenas nomenclatura, ordem e ownership.
+
+---
+
+## 16. Estado do congelamento
+
+```text
+E4.0.1                 = PASS
+E4.0                   = PASS FINAL
+E4_ARCHITECTURE        = FROZEN
+E4_SEQUENCE            = FROZEN (OPTION_A)
+READY_FOR_E4_1         = TRUE
+
+LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9
+```
 
 E4.1 **não** é iniciada automaticamente.

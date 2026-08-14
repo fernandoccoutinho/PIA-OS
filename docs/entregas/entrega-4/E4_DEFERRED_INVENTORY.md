@@ -28,14 +28,14 @@ modificado.
 
 | Item | Destino | Por que não na E4.0 |
 |---|---|---|
-| política completa de transição de `AccessibilityState` | **E4.3 / E4.7** | §6 do prompt canônico proíbe inventar transições aqui |
+| política completa de transição de `AccessibilityState` | **E4.7** (sob autoridade de E4.3) | §6 do prompt canônico proíbe inventar transições aqui |
 | identidade de `DomainMembership` | E4.1 | recomendação registrada; decisão é do módulo |
 | `MemoryContext` persistente ou transiente | E4.2 | provável divisão `ContextDefinition` / instância |
 | campos de `MemoryContext` | E4.2+ | §7 proíbe congelar campo sem necessidade demonstrada |
-| forma de expressão de `rules` de policy | E4.3 | Stop Condition 12 — não escolher motor por conveniência |
-| motor de policy (OPA / Cedar / DSL) | E4.3+ | a semântica precede a ferramenta |
+| forma de expressão de `rules` de policy | E4.3 (Governance) | Stop Condition 12 — não escolher motor por conveniência |
+| motor de policy (OPA / Cedar / DSL) | E4.3+ (Governance) | a semântica precede a ferramenta |
 | `on_expiry_action` de retenção | E4.9 | tensão com `CausalHistory` não resolvida |
-| conciliação legal erasure × `CausalHistory` | E4.9 | direções candidatas registradas, nenhuma congelada |
+| **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6 |
 | portabilidade de `MemoryDomain` | E4.1 | análise registrada, decisão do módulo |
 | portabilidade de `ValidatedExperience` | E4.11 | análise registrada, decisão do módulo |
 | escopo exato do registro da E4.11 | E4.11 | limite proposto, a confirmar |
@@ -105,3 +105,38 @@ E3 para fazer E4.0 fechar"*). A E4.0 fecha sem essa mudança — ela não
 (p.ex. `e3-6-2b-causally-extinct-requires-causal-event.patch`), com
 seu próprio gate e sua própria auditoria, fora da E4 e por decisão sua.
 Registrado aqui para não se perder.
+
+---
+
+## 6. Tensão preservada — legal erasure × `CausalHistory`
+
+```
+LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9
+```
+
+**Esta tensão não foi resolvida e não deve ser apagada.** Ela
+permanece visível aqui de propósito: um inventário de deferidos que
+esconde a questão mais difícil da entrega não é inventário, é
+maquiagem.
+
+O conflito, em uma frase: `CausalHistoryEvent` é imutável por contrato
+(`PIA-8020`) e sustenta `COUT-P4`; uma obrigação legítima de exclusão
+que atinja conteúdo referenciado por eventos causais coloca dois
+compromissos legítimos em rota de colisão.
+
+O que **está** congelado, e vale desde já:
+
+```
+PRESERVATION = RETENTION FOREVER   ← FALSE
+```
+
+COUT não autoriza retenção ilimitada contra política legítima ou
+obrigação de exclusão. O que COUT exige é que a exclusão seja
+**explícita, registrada e distinguível** de inacessibilidade, extinção
+causal e não-recuperação.
+
+O que **não** está congelado: o mecanismo. As direções candidatas
+estão em `E4_GOVERNANCE_BOUNDARIES.md` §6.2 — apagar o referente
+preservando a referência; tombstone explícito; ou reconhecer um limite
+nomeado e auditável. **Nenhuma foi escolhida.** A E4.9 decide com o
+problema à vista.

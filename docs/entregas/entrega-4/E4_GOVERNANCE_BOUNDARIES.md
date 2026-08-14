@@ -75,7 +75,7 @@ GOVERNANCE != COUT DECISION ENGINE
 | **Altera patrimônio?** | não | **não** | **não** | não | seria sim — por isso proibido |
 | **Altera vista?** | não | **sim** | não | não | — |
 | **Decide?** | não | sim, sobre acesso | não | não | — |
-| **Módulo** | E3.10 (congelado) | E4.7 | E4.10 | E4.11 (só registro) | **nenhum** |
+| **Módulo** | E3.10 (congelado) | **E4.3** | E4.10 | E4.11 (só registro) | **nenhum** |
 | **Status na E4** | herdado intacto | a definir | fronteira apenas | fronteira apenas | `FORBIDDEN` |
 
 A distinção Integrity/Compliance é a que mais facilmente se perde:
@@ -270,8 +270,8 @@ registrada, **implementação deferida**:
 
 | Camada | Papel | Status |
 |---|---|---|
-| service/application | **política cognitiva explícita** — fonte da decisão | E4.7 |
-| repository | ponto de composição da vista admissível | E4.6/E4.8 |
+| service/application | **política cognitiva explícita** — fonte da decisão | **E4.3** |
+| repository | ponto de composição da vista admissível | E4.6 / E4.7 / E4.8 |
 | database (RLS) | defesa em profundidade, nunca substituto | investigação apenas |
 
 Se RLS for adotado no futuro: **a política de aplicação permanece

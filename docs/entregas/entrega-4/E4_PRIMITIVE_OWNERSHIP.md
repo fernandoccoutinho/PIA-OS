@@ -74,14 +74,14 @@ porque ambas terão sido escritas por caminhos autorizados.
 | **MemoryDomain** | E4.1 | **sim** | id próprio | sim (nome/descrição) | **E4** | — |
 | **DomainMembership** | E4.1 | **sim** | ver §5 | sim (entra/sai) | **E4** | COID + MemoryDomain |
 | **MemoryContext** | E4.2 | **ver §6** | ver §6 | — | E4 se persistido | — |
-| **AccessibilityPolicy** | E4.3 | **sim** | id próprio | sim (versionada) | **E4** | — |
-| **GovernancePolicy** | E4.7 | **sim** | id próprio | sim (versionada) | **E4** | — |
+| **GovernancePolicy** | E4.3 | **sim** | id próprio | sim (versionada) | **E4** | — |
+| **AccessibilityPolicy** | E4.7 | **sim** | id próprio | sim (versionada) | **E4** | GovernancePolicy |
 | **RetentionPolicy** | E4.9 | **sim** | id próprio | sim (versionada) | **E4** | — |
 | **ComplianceFinding** | E4.10 | **não** | não | — | não | patrimônio + policy |
 | **ValidatedExperience** | E4.11 | **sim** | id próprio | não (imutável) | **E4** | ver §7 |
 | Consolidação | E4.5 | **nada novo** | — | — | **E3** | usa E3.4/E3.3 |
 | Retrieval | E4.6 | **nada novo** | — | — | não | E3.8 + E4.2/E4.3 |
-| Isolation | E4.8 | **nada novo** | — | — | não | E4.1 + E4.7 |
+| Isolation | E4.8 | **nada novo** | — | — | não | E4.1 + E4.3 |
 
 Três módulos — E4.5, E4.6, E4.8 — não introduzem nenhuma primitiva
 persistente. São composição sobre o que já existe.
@@ -130,7 +130,7 @@ e ela não é decorativa — ver §5.
 
 Ver §6. Pode não precisar ser persistido.
 
-### 4.4 Policies — `AccessibilityPolicy`, `GovernancePolicy`, `RetentionPolicy` — **admitidas**
+### 4.4 Policies — `GovernancePolicy` (E4.3), `AccessibilityPolicy` (E4.7), `RetentionPolicy` (E4.9) — **admitidas**
 
 *Por que a E3 não representa isto?* A E3 não tem policy alguma, por
 decisão explícita: `GOVERNANCE_IMPLEMENTED = NO`,

@@ -43,7 +43,7 @@ duplica, não estende e não reinterpreta a E3.
 | `E4_GOVERNANCE_BOUNDARIES.md` | governança, compliance, learning, retenção, defense in depth, matriz D |
 | `E4_PRIMITIVE_OWNERSHIP.md` | admissão de primitivas, fonte da verdade, matriz B |
 | `E4_DOMAIN_MODEL_DRAFT.md` | entidades candidatas — rascunho, nada congelado como esquema |
-| `E4_IMPLEMENTATION_SEQUENCE.md` | auditoria da sequência, emendas propostas, matriz G |
+| `E4_IMPLEMENTATION_SEQUENCE.md` | sequência canônica congelada, fronteiras E4.3/E4.6/E4.7, matriz G |
 | `E4_SYNC_BOUNDARY.md` | portable / local / transient, matriz F |
 | `E4_DEFERRED_INVENTORY.md` | o que a E4.0 não entrega e para onde vai |
 | `EDR_COUT_PIA_E4.md` | decisões congeladas, em forma normativa |
@@ -122,7 +122,8 @@ terminal; se `INACCESSIBLE → ACTIVE` é livre; e qual autoridade cada
 transição exige.
 
 **A E4.0 não inventa nenhuma transição.** Política completa deferida
-para E4.3/E4.7 conforme a emenda de sequência.
+para **E4.7 — Accessibility Policy**, sob a autoridade definida em
+E4.3 — Governance Policy.
 
 Congelado, e reafirmado:
 
@@ -345,36 +346,61 @@ foi **não tocá-lo** — está registrado em `E4_DEFERRED_INVENTORY.md`
 
 ---
 
-## 8. Um ponto que exige sua decisão
+## 8. Sequência canônica (congelada em E4.0.1)
 
-A auditoria da sequência encontrou **duas inversões de dependência
-reais** (`E4_IMPLEMENTATION_SEQUENCE.md` §2–§4):
+A auditoria da E4.0 encontrou **duas inversões de dependência reais**
+e apresentou duas emendas. O titular do Plano Mestre aprovou a
+**OPTION A**.
 
-- `E4.3 Accessibility Policy` precede `E4.7 Governance Policy`, mas
-  precisa do conceito de autoridade que só chega em E4.7 — o próprio
-  código da E3 define o escopo de E4.3 como *"quem pode mover o quê,
-  **sob qual autoridade**"*;
-- `E4.6 Memory Retrieval` precede `E4.7`, e nasceria sem ponto de
-  composição para governança.
+```
+SEQUENCE_DECISION = OPTION_A
+E4_SEQUENCE       = FROZEN
 
-**Recomendação:** trocar E4.3 e E4.7 de posição. Alternativa viável:
-manter a numeração e congelar **agora, por escrito**, a divisão de
-escopo entre matriz estrutural de transição (E4.3) e autoridade
-(E4.7).
+E4.0   Architecture & Contract Freeze
+E4.1   Memory Domain Foundation
+E4.2   Context Manager
+E4.3   Governance Policy            ← autoridade primeiro
+E4.4   Persistence Manager
+E4.5   Consolidation Manager
+E4.6   Memory Retrieval
+E4.7   Accessibility Policy
+E4.8   Memory Isolation
+E4.9   Retention / Forgetting
+E4.10  Compliance Boundary
+E4.11  Validated Experience Registry
+E4.12  Final Integration Gate
+```
 
-Conforme §19 do prompt canônico, isso é **proposto, não congelado**.
-Todo o restante desta entrega está congelado.
+Congelado:
+
+```
+GOVERNANCE BEFORE ACCESSIBILITY POLICY
+GOVERNANCE BEFORE MEMORY RETRIEVAL
+
+E4.3 owns:  GovernancePolicy, governance authority semantics
+E4.7 owns:  AccessibilityPolicy, admissibility / transition policy
+
+RETRIEVAL != GOVERNANCE
+```
+
+Razão, em uma frase: acessibilidade responde *"quem pode mover o quê,
+**sob qual autoridade**"* — e autoridade não pode ser definida depois
+de ser usada.
+
+Detalhamento completo, incluindo o registro histórico do achado e a
+precisão sobre o que "Accessibility" significa na lista de consumo do
+Retrieval, em `E4_IMPLEMENTATION_SEQUENCE.md`.
 
 ---
 
 ## 9. Gate
 
 ```
-E4.0_ARCHITECTURE_GATE = PASS
+E4.0.1                 = PASS
+E4.0                   = PASS FINAL
 E4_ARCHITECTURE        = FROZEN
+E4_SEQUENCE            = FROZEN (OPTION_A)
 READY_FOR_E4_1         = TRUE
-
-E4_SEQUENCE = AUDITED — emenda proposta, pendente de decisão
 ```
 
 E4.1 **não** é iniciada automaticamente.

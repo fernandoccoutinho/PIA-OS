@@ -131,7 +131,7 @@ Uma sessão **participa** de um contexto; não o define. A E3 já registra
 
 ---
 
-## 5. Policies (E4.3 / E4.7 / E4.9)
+## 5. Policies — `GovernancePolicy` (E4.3), `AccessibilityPolicy` (E4.7), `RetentionPolicy` (E4.9)
 
 Desenho comum às três.
 
@@ -160,12 +160,18 @@ própria, expressões em JSON) porque é tecnologicamente atraente. A
 Stop Condition 12 do prompt canônico nomeia exatamente isso:
 *"escolher policy engine por conveniência tecnológica"*.
 
-A ordem correta é: primeiro os módulos E4.3/E4.7/E4.9 estabelecem
+A ordem correta é: primeiro os módulos E4.3 (Governance), E4.7
+(Accessibility) e E4.9 (Retention) estabelecem
 **quais decisões** precisam ser expressas; só então se escolhe a forma
 capaz de expressá-las. Escolher o motor antes é deixar a ferramenta
 definir a semântica.
 
-### 5.2 O caso específico de `AccessibilityPolicy`
+### 5.2 O caso específico de `AccessibilityPolicy` (E4.7)
+
+`AccessibilityPolicy` aplica admissibilidade e transição **sob a
+autoridade já definida por `GovernancePolicy` (E4.3)** — ela não
+define autoridade geral, identidade, existência nem verdade.
+
 
 A E3 deixou uma lacuna documentada e agora fechável. O
 `AccessibilityManager` registra:
@@ -180,8 +186,8 @@ A E3 deixou uma lacuna documentada e agora fechável. O
 pela exigência formal — transição para `CAUSALLY_EXTINCT` referenciando
 um `CausalHistoryEvent` real.
 
-**Importante:** isso é trabalho de E4.7 (ou E4.3, conforme a emenda de
-sequência), **não da E4.0**, e exigiria mudar código da E3. Está
+**Importante:** isso é trabalho de **E4.7 — Accessibility Policy**,
+**não da E4.0**, e exigiria mudar código da E3. Está
 registrado aqui como item conhecido, com a advertência de que qualquer
 alteração em `app/cognitive/` durante a E4 aciona a Stop Condition 1
 (*"modificar E3 para fazer E4 fechar"*) e precisa de decisão explícita
