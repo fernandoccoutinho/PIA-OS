@@ -3,15 +3,25 @@
 Manifest consolidado, gerado por inspeção do repositório real em
 `E3.12`. Entrada para auditoria independente.
 
-`FINAL_HEAD` é preenchido pelo commit do patch 34; o valor abaixo é o
-HEAD imediatamente anterior, que é o que esta árvore auditou.
+`FINAL_HEAD` e `FINAL_TREE` são registrados no relatório da E3.12.1,
+porque só existem depois do commit do patch 35.
 
 ```
 BASELINE_HEAD = 7de327a80ae3f72a3683141a8e88eeca49f9f80c
-PATCH_CHAIN   = 33 patches + e3-12-e3-final-integration-gate.patch
-HEAD AUDITADO = bf9788c0542ff0356e1950ec783ee628904f632c
+PATCH_CHAIN   = 33 patches
+              + 34: e3-12-e3-final-integration-gate.patch
+              + 35: e3-12-1-final-reproducibility-corrective.patch
 BRANCH        = audit/e3-final-validation
 ```
+
+> **E3.12.1** — os 6 scripts de `backend/deploy/scripts/` passaram de
+> `100644` para `100755` no estado final. Conteúdo byte-identical
+> (6/6 sha256 preservados, blobs git inalterados); a baseline **não**
+> foi reescrita e continua registrando `100644`. Nenhum `chmod` manual
+> é necessário após o clone. A evidência de testes normativa é
+> `E3_12_1_CANONICAL_TEST_RESULT` (ver
+> `E3_12_E3_FINAL_INTEGRATION_GATE.md` §11); contagens anteriores são
+> HISTORICAL / SUPERSEDED.
 
 ---
 
@@ -207,8 +217,9 @@ Providers são **dados**, nunca estrutura.
 ## 7. Estado de congelamento
 
 ```
-E3.12_IMPLEMENTATION_GATE = PASS
-E3_FINAL_FREEZE           = PENDING_INDEPENDENT_AUDIT
-GATE_E3_TO_E4             = PENDING
-READY_FOR_E4              = FALSE
+E3.12_IMPLEMENTATION_GATE   = PASS
+E3.12.1_IMPLEMENTATION_GATE = PASS
+E3_FINAL_FREEZE             = PENDING_INDEPENDENT_AUDIT
+GATE_E3_TO_E4               = PENDING
+READY_FOR_E4                = FALSE
 ```

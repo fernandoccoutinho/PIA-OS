@@ -271,110 +271,150 @@ modéstia retórica) e a auditoria global o encontra (logo
 
 ---
 
-## 10. Ambiente de teste — leitura dupla (§31, §32)
+## 10. Evidência canônica de testes (revisado em E3.12.1)
 
-### A. Ambiente bruto (raw), exatamente como recebido
+> **Aviso de supersessão.** Todas as contagens de teste publicadas
+> antes da E3.12.1 — tanto nesta seção quanto no manifest e no
+> relatório externo — são **HISTORICAL / SUPERSEDED EVIDENCE**. Elas
+> não eram falsas: cada uma media uma configuração diferente (com e
+> sem os testes da E3.12 no tree; com `.env` de conteúdos distintos).
+> Mas duas contagens divergentes para o mesmo rótulo `RAW` são um
+> defeito documental, e a E3.12.1 existe para eliminá-lo.
+>
+> A **única evidência normativa** passa a ser
+> `E3_12_1_CANONICAL_TEST_RESULT`, abaixo — produzida em execução
+> única, em clone limpo, com patches 1–35 aplicados.
+
+### 10.1 Definições sem ambiguidade
+
+**`RAW_ENV`** — clone limpo, patches 1–35 aplicados, **nenhuma
+intervenção manual após o clone**, configuração padrão do projeto.
+Sem `.env`, sem `chmod`, sem variável de ambiente adicional. Nesta
+configuração o projeto não sabe onde está o banco, então os testes que
+exigem PostgreSQL real **pulam** — corretamente, pelo `skipif`
+declarado neles.
+
+**`NORMALIZED_ENV`** — idêntico ao acima, acrescido **exclusivamente**
+da configuração externa legítima que qualquer suíte precisa para
+alcançar um banco de teste:
 
 ```
-RAW_ENV_FULL_SUITE = 11 failed, 1019 passed, 1 skipped
+ENVIRONMENT=testing
+DATABASE_URL=postgresql+psycopg://<user>:<pw>@<host>:<port>/<db>_test
 ```
 
-Falhas classificadas:
+exportadas como **variáveis de processo**. Nada mais.
 
-| Falhas | Causa | Natureza |
-|---|---|---|
-| 6 | bit de execução ausente **no próprio tree git** dos scripts de deploy | **defeito da baseline — ver §10.1** |
-| 5 | presença de `.env` no CWD durante testes de config que assumem ambiente pristino | ambiental |
+Após o patch 35, três coisas deixaram de fazer parte da normalização:
 
-### 10.1 Reclassificação — o bit de execução **não** é ambiental
+- **`chmod` manual — proibido.** O bit executável passa a vir do Git
+  (`100755` no tree). Se um `chmod` voltasse a ser necessário, o patch
+  35 teria falhado no seu único objetivo.
+- **Arquivo `.env` — desnecessário.** Passar `DATABASE_URL` como
+  variável de processo é a forma mais limpa, e resolve o conflito
+  descrito em 10.3.
+- **`--deselect` — eliminado.** Nenhum teste é excluído da execução
+  canônica. A suíte roda inteira.
+
+### 10.2 Por que o bit de execução não era ambiental
 
 O registro histórico deste projeto classificava as 6 falhas de
-`test_script_exists_and_is_executable` como perda do bit de execução na
-**descompactação de um ZIP** — e, com aquele veículo de entrega, a
+`test_script_exists_and_is_executable` como perda do bit na
+**descompactação de um ZIP** — e, para aquele veículo de entrega, a
 classificação era correta.
 
-Com o veículo atual (git bundle) ela **deixa de ser verdadeira**, e a
-E3.12 não pode repeti-la. Git registra o modo do arquivo, e a
-verificação mostra:
+Com git bundle ela **deixa de ser verdadeira**. Git registra o modo do
+arquivo, e a baseline gravou `100644`:
 
 ```
 git ls-tree main backend/deploy/scripts/
-100644 blob ...  backup.sh
-100644 blob ...  healthcheck.sh
-100644 blob ...  restore.sh
-100644 blob ...  start.sh
-100644 blob ...  stop.sh
-100644 blob ...  wait_for_db.sh
+100644 blob acc5cf24…  backup.sh
+100644 blob a1b0d4c0…  healthcheck.sh
+100644 blob 7626e452…  restore.sh
+100644 blob 800919cb…  start.sh
+100644 blob 9d749f6a…  stop.sh
+100644 blob 709ebf6f…  wait_for_db.sh
 ```
 
-O modo `100644` (sem bit de execução) está gravado **no commit da
-baseline E1/E2** (`7de327a`), e o teste que exige `os.X_OK` também
-existe nessa mesma baseline. Consequência verificada em clone virgem:
-**qualquer clone limpo da baseline falha 6 dos seus próprios testes**,
-sem qualquer intervenção de ambiente.
+O teste que exige `os.X_OK` existe na mesma baseline. Consequência
+verificada em clone virgem: **qualquer clone limpo da baseline falhava
+6 dos seus próprios testes**, sem qualquer interferência de ambiente.
 
-Isso é um **defeito real da baseline**, não um artefato de transporte.
-Ele não é regressão — a E3 não o causou, e o conjunto de falhas de E3
-permanece idêntico ao da baseline no mesmo ambiente
+Isso era defeito real do estado versionado — não artefato de
+transporte. Não era **regressão**: a E3 não o causou, e os conjuntos
+de falha de baseline e E3 eram idênticos teste a teste
 (`E3_REGRESSION_DELTA = 0`).
 
-Conforme §1 e §53 do prompt canônico, **não foi corrigido dentro da
-E3.12**. O `chmod +x` foi aplicado apenas como normalização de execução
-(§31B), em tempo de teste, e **não faz parte do patch 34**: as
-mudanças de modo foram revertidas antes do commit, e a árvore
-entregue preserva o estado original.
+**Resolução (patch 35):** modo corrigido para `100755` **no estado
+final do repositório**, sem tocar um byte do conteúdo dos scripts e
+**sem reescrever a história** — o commit da baseline permanece como
+sempre foi. O registro histórico continua verdadeiro; o estado final
+passa a ser reproduzível.
 
-**Patch corretivo proposto, a ser autorizado separadamente:**
+### 10.3 Por que o `.env` deixou de ser usado
 
-```
-nome sugerido : e3-12-1-baseline-deploy-scripts-exec-bit.patch
-escopo        : git update-index --chmod=+x nos 6 scripts de deploy
-                (backup, healthcheck, restore, start, stop, wait_for_db)
-produção      : nenhum conteúdo de arquivo alterado — apenas modo
-migração      : NONE
-justificativa : a baseline não passa na própria suíte em clone limpo
-risco         : mínimo; o conteúdo dos scripts não muda
-```
+`test_database_url_composed_from_parts_when_db_host_set` remove
+`DATABASE_URL` do ambiente e verifica que `Settings` compõe a URL a
+partir de partes discretas. Com um arquivo `.env` presente,
+`pydantic-settings` o lê e `DATABASE_URL` reaparece — vencendo por
+contrato. O teste então falhava, e a E3.12 o tratou com `--deselect`.
 
-### B. Ambiente normalizado válido
+Isso nunca foi defeito de código, nem do teste: era a consequência
+correta de fornecer a configuração pelo canal errado. Passando
+`DATABASE_URL` como **variável de processo**, o `monkeypatch.delenv`
+do teste funciona como projetado, o teste passa, e os testes de
+PostgreSQL continuam alcançando o banco.
 
-Normalizado **somente** o ambiente de execução, sem alterar uma linha
-de código e sem alterar a árvore entregue:
+Resultado: o `--deselect` desapareceu, e com ele a última exceção na
+contagem canônica.
 
-- `chmod +x deploy/scripts/*.sh` — aplicado em tempo de execução, **não
-  commitado** (ver §10.1: o defeito subjacente é da baseline e recebe
-  patch corretivo próprio);
-- `SECRET_KEY` alinhado ao default de `.env.example` no `.env` de teste
-  (arquivo gitignored, fora da árvore).
+### 10.4 `E3_12_1_CANONICAL_TEST_RESULT`
 
-O único teste restante
-(`test_database_url_composed_from_parts_when_db_host_set`) foi
-**provado ambiental por isolamento**: executado com o `.env` ausente,
-passa. Ele monta `Settings` a partir de partes discretas e o `.env` de
-teste, legitimamente presente, fornece `DATABASE_URL` — que por
-contrato prevalece.
+Execução única, clone limpo, patches 1–35, PostgreSQL 16.14 real.
+Números transcritos da saída do pytest, sem aritmética manual.
 
-```
-NORMALIZED_FULL_SUITE        = 1052 passed, 1 skipped, 1 deselected
-NORMALIZED_FULL_SUITE_FAILED = 0
-```
-
-**Nenhuma falha funcional de código de E1/E2 ou E3 foi encontrada** — o
-defeito de §10.1 é de modo de arquivo, não de código, e está reportado
-em vez de mascarado. Nenhuma falha foi chamada de ambiental sem causa
-demonstrada e reproduzível.
+*(preenchido na §11 — números idênticos aos do manifest JSON,
+verificados por comparação automatizada)*
 
 ---
 
-## 11. Números finais
+## 11. `E3_12_1_CANONICAL_TEST_RESULT` — números finais
+
+Evidência normativa única. Execução em clone limpo, patches 1–35,
+PostgreSQL 16.14 real. Transcrito da saída do pytest, sem aritmética
+manual. Idêntico, campo a campo, ao `E3_FINAL_MANIFEST.json`
+(verificado por comparação automatizada).
 
 ```
+RAW_ENV_FULL_SUITE
+    collected  = 1054
+    passed     = 948
+    failed     = 0
+    skipped    = 106
+    deselected = 0
+    warnings   = 7
+
+NORMALIZED_FULL_SUITE
+    collected  = 1054
+    passed     = 1053
+    failed     = 0
+    skipped    = 1
+    deselected = 0
+    warnings   = 7
+
+NORMALIZED_FULL_SUITE_FAILED = 0
+
+BASELINE_SAME_ENV = 6 failed, 448 passed, 1 skipped
+E3_FAILURE_SET       = {} (vazio)
+BASELINE_FAILURE_SET = {test_script_exists_and_is_executable[×6]}
+E3_REGRESSION_DELTA  = 0
+
 COGNITIVE_UNIT_COLLECTED        = 493
-COGNITIVE_INTEGRATION_COLLECTED = 82 + 23 (E3.12) = 105
+COGNITIVE_INTEGRATION_COLLECTED = 105
 TOTAL_TESTS_COLLECTED           = 1054
 
-GLOBAL_COVERAGE         = 98,28%
-APP_COGNITIVE_COVERAGE  = 100%
+GLOBAL_COVERAGE        = 98,46%
+APP_COGNITIVE_COVERAGE = 100%
 
 RUFF  = PASS
 BLACK = PASS
@@ -383,9 +423,34 @@ MYPY_NEW_ERRORS   = 0
 
 POSTGRESQL = 16.14 (Ubuntu 24.04)
 DRIVER     = psycopg 3.2.3
-SCHEMA_ORM_SYNC = PASS (compare_metadata: 0 diffs)
+SCHEMA_ORM_SYNC         = PASS (compare_metadata: 0 diffs)
 PUBLIC_API_IMPORT_AUDIT = PASS (39 módulos, 0 falhas, 0 ciclos)
 ```
+
+### Notas de leitura honesta
+
+**Os 106 skips do `RAW_ENV` não são falhas nem omissões.** São os
+testes que declaram `skipif` para PostgreSQL real e que, sem
+`DATABASE_URL`, corretamente não rodam. Um `RAW_ENV` que os executasse
+não seria "cru" — teria configuração de banco embutida em algum lugar.
+
+**O 1 skip do `NORMALIZED_ENV`** é
+`tests/unit/database/test_concurrency.py:90` — o pool SQLite em
+memória (`SingletonThreadPool`) não expõe `checkedout()`. Skip
+declarado e justificado desde E1/E2, não intermitente.
+
+**`GLOBAL_COVERAGE` subiu de 98,28% para 98,46%.** Não houve mudança
+de código: o teste antes excluído por `--deselect` agora executa e
+cobre linhas que antes não eram exercidas. O número anterior era
+correto para aquela execução; este é o correto para a execução
+canônica.
+
+**`E3_REGRESSION_DELTA = 0` por conjunto vazio.** Depois do patch 35 a
+relação deixou de ser "conjuntos idênticos" e passou a ser
+estritamente melhor: a E3 não tem nenhuma falha, e corrige as 6 que a
+baseline tinha. Delta zero continua verdadeiro — nenhuma falha existe
+em E3 que não exista na baseline — mas a leitura mudou e é registrada
+para não induzir o auditor a esperar simetria.
 
 ---
 
@@ -479,20 +544,28 @@ nenhuma história precisou ser apagada para um teste passar, nenhum
 conflito precisou de vencedor, e nenhuma afirmação de PASS depende de
 teste não executado.
 
-**Defeito reportado, não corrigido (§1):** o bit de execução ausente
-nos 6 scripts de deploy da baseline (§10.1). Não é Stop Condition —
-não é regressão funcional de E1/E2 (a baseline sempre teve),
-não exige feature, model, schema ou migração nova, e não impede o
-ambiente normalizado de ficar verde. É reportado com patch corretivo
-proposto, conforme §1 exige, em vez de corrigido silenciosamente
-dentro da E3.12.
+**Defeito reportado em E3.12, resolvido em E3.12.1:** o bit de
+execução ausente nos 6 scripts de deploy (§10.2). Na E3.12 foi
+reportado e **não** corrigido, conforme §1 exigia. O patch 35
+(E3.12.1) o corrige no estado final do repositório —
+`git update-index --chmod=+x`, conteúdo byte-identical, baseline não
+reescrita.
+
+Nenhuma Stop Condition da E3.12.1 ocorreu: nenhum conteúdo de código
+de produção mudou, nenhuma migração foi criada, nenhuma feature foi
+introduzida, nenhum script teve conteúdo alterado, a suíte normalizada
+está sem falhas, o delta de regressão é zero, documento e manifest
+são numericamente idênticos, a cadeia de patches reproduz o tree,
+nenhum chmod manual é necessário após o clone, e nenhuma decisão COUT
+foi reaberta.
 
 ---
 
 ## 17. Gate
 
 ```
-E3.12_IMPLEMENTATION_GATE = PASS
+E3.12_IMPLEMENTATION_GATE   = PASS
+E3.12.1_IMPLEMENTATION_GATE = PASS
 ```
 
 Mas, conforme §55 e §58 do prompt canônico:

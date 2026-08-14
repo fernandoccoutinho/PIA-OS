@@ -1,15 +1,16 @@
 {
-  "manifest_version": "1.0",
+  "manifest_version": "1.1",
   "delivery": "E3",
-  "module": "E3.12 / AWP-E3-INTEGRATION",
+  "module": "E3.12 / AWP-E3-INTEGRATION + E3.12.1 final reproducibility corrective",
   "generated_by": "E3.12 final integration gate",
   "baseline_head": "7de327a80ae3f72a3683141a8e88eeca49f9f80c",
   "audited_head": "bf9788c0542ff0356e1950ec783ee628904f632c",
   "branch": "audit/e3-final-validation",
   "patch_chain": {
     "patches_before_e3_12": 33,
-    "this_patch": "e3-12-e3-final-integration-gate.patch",
-    "position": 34
+    "patch_34": "e3-12-e3-final-integration-gate.patch",
+    "patch_35": "e3-12-1-final-reproducibility-corrective.patch",
+    "total": 35
   },
   "alembic": {
     "single_head": "c9a3f61b74d2",
@@ -334,17 +335,44 @@
     "PROVIDER_NEUTRAL_DOMAIN": "PASS"
   },
   "test_evidence": {
+    "evidence_id": "E3_12_1_CANONICAL_TEST_RESULT",
+    "status": "NORMATIVE",
+    "raw_env_definition": "clone limpo + patches 1-35, nenhuma intervencao manual pos-clone, configuracao padrao do projeto (sem .env, sem env vars, sem chmod)",
+    "raw_env_full_suite": {
+      "collected": 1054,
+      "passed": 948,
+      "failed": 0,
+      "skipped": 106,
+      "deselected": 0,
+      "warnings": 7
+    },
+    "raw_skip_note": "os 106 skips sao testes com skipif de PostgreSQL real; sem DATABASE_URL eles corretamente nao rodam",
+    "normalized_env_definition": "identico ao RAW + ENVIRONMENT=testing e DATABASE_URL como variaveis de PROCESSO; sem .env, sem chmod, sem alteracao de source tree, sem deselect",
+    "normalized_full_suite": {
+      "collected": 1054,
+      "passed": 1053,
+      "failed": 0,
+      "skipped": 1,
+      "deselected": 0,
+      "warnings": 7
+    },
+    "normalized_full_suite_failed": 0,
+    "normalized_skip_note": "tests/unit/database/test_concurrency.py:90 - SingletonThreadPool do SQLite em memoria nao expoe checkedout(); skip declarado desde E1/E2",
+    "baseline_same_env": {
+      "failed": 6,
+      "passed": 448,
+      "skipped": 1
+    },
+    "baseline_failure_set": "test_script_exists_and_is_executable [6 scripts]",
+    "e3_failure_set": "vazio",
+    "e3_regression_delta": 0,
+    "e3_regression_note": "delta zero por conjunto vazio; apos o patch 35 a E3 e estritamente melhor que a baseline, corrigindo as 6 falhas dela",
     "cognitive_unit_collected": 493,
     "cognitive_integration_collected": 105,
-    "e3_12_gate_tests": 23,
-    "total_collected": 1054,
-    "raw_env_full_suite": "11 failed / 1019 passed / 1 skipped",
-    "raw_failures_classification": "6 = bit de execucao ausente no proprio tree git (DEFEITO DA BASELINE, reportado, patch corretivo proposto e NAO aplicado em E3.12); 5 = artefato de presenca do .env (ambiental, provado por isolamento)",
-    "normalized_full_suite": "1052 passed / 1 skipped / 1 deselected",
-    "normalized_full_suite_failed": 0,
-    "e1_e2_regression_delta": 0,
-    "global_coverage": "98.28%",
+    "total_tests_collected": 1054,
+    "global_coverage": "98.46%",
     "app_cognitive_coverage": "100%",
+    "coverage_note": "subiu de 98.28% porque o teste antes deselecionado agora executa; nenhuma mudanca de codigo",
     "ruff": "PASS",
     "black": "PASS",
     "mypy_total_errors": 7,
@@ -357,6 +385,7 @@
   "stop_conditions": "NONE",
   "gate": {
     "E3_12_IMPLEMENTATION_GATE": "PASS",
+    "E3_12_1_IMPLEMENTATION_GATE": "PASS",
     "E3_FINAL_FREEZE": "PENDING_INDEPENDENT_AUDIT",
     "GATE_E3_TO_E4": "PENDING",
     "READY_FOR_E4": false
@@ -371,7 +400,37 @@
       "regression_note": "a baseline sempre teve; E3_REGRESSION_DELTA permanece 0",
       "fixed_in_e3_12": false,
       "proposed_corrective_patch": "e3-12-1-baseline-deploy-scripts-exec-bit.patch (git update-index --chmod=+x; nenhum conteudo alterado)",
-      "handling": "normalizado apenas em tempo de execucao (§31B); mudancas de modo revertidas antes do commit do patch 34"
+      "handling": "normalizado apenas em tempo de execucao (§31B); mudancas de modo revertidas antes do commit do patch 34",
+      "fixed_in_e3_12_1": true,
+      "resolution": "patch 35 aplicou git update-index --chmod=+x; modo final 100755; conteudo byte-identical; baseline nao reescrita"
     }
-  ]
+  ],
+  "e3_12_1_corrective": {
+    "purpose": "tornar o estado versionado reproduzivel + produzir uma unica evidencia canonica de testes",
+    "deploy_script_mode_fix": "PASS",
+    "deploy_script_content_changed": "NO",
+    "scripts_fixed": [
+      "backend/deploy/scripts/backup.sh",
+      "backend/deploy/scripts/healthcheck.sh",
+      "backend/deploy/scripts/restore.sh",
+      "backend/deploy/scripts/start.sh",
+      "backend/deploy/scripts/stop.sh",
+      "backend/deploy/scripts/wait_for_db.sh"
+    ],
+    "script_modes_before": "100644",
+    "script_modes_after": "100755",
+    "script_hash_preservation": "PASS (6/6 sha256 identicos; blobs git inalterados)",
+    "history_rewritten": false,
+    "history_note": "baseline commit 7de327a permanece 100644; patch 35 corrige o ESTADO FINAL sem falsificar o registro historico",
+    "manual_chmod_required_after_clone": false
+  },
+  "superseded_evidence": {
+    "status": "HISTORICAL / SUPERSEDED",
+    "note": "contagens RAW publicadas antes da E3.12.1 divergiam entre relatorio externo e documentos commitados; nenhuma era falsa, cada uma media configuracao diferente. Substituidas integralmente por E3_12_1_CANONICAL_TEST_RESULT.",
+    "previous_raw_counts": [
+      "documentos commitados em E3.12: 11 failed / 1019 passed / 1 skipped",
+      "relatorio externo de E3.12: 7 failed / 1046 passed / 1 skipped"
+    ],
+    "previous_global_coverage": "98.28%"
+  }
 }
