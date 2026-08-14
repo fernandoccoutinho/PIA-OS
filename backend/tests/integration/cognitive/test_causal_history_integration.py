@@ -396,3 +396,58 @@ def test_chi9_no_transcript_columns_were_introduced():
         "updated_at",
     }
     assert not {c for c in event_columns if "transcript" in c or "content" in c or "prompt" in c}
+
+
+def test_chi10_cross_history_predecessor_persists_against_postgres():
+    """CHI10 (`E3.9.1`) — o elo causal entre histórias de sujeitos
+    diferentes persiste no banco real e não funde nada.
+
+    A FK de `predecessor_event_id` é global de propósito: transmissão
+    causal atravessa sujeitos (`history boundary != causal boundary`),
+    e exigir `child.history_id == predecessor.history_id` obrigaria a
+    fundir as duas histórias — apagando a distinção entre os dois
+    sujeitos.
+    """
+    source = _new_subject()
+    receiver = _new_subject()
+
+    with UnitOfWork() as uow:
+        manager = CausalHistoryManager(CausalHistoryRepository(uow.session))
+        emitted = manager.record(
+            subject_coid=source, event_type=CausalEventType.CREATED, payload_ref="ref://emitido"
+        )
+        received = manager.record(
+            subject_coid=receiver,
+            event_type=CausalEventType.ACCESSED,
+            predecessor=emitted,
+            payload_ref="ref://recebido",
+        )
+        uow.commit()
+        emitted_id, received_id = emitted.id, received.id
+
+    with engine.connect() as conn:
+        rows = dict(
+            conn.execute(
+                sa.text(
+                    "SELECT e.id, h.subject_coid FROM causal_history_events e "
+                    "JOIN causal_histories h ON h.id = e.history_id"
+                )
+            ).all()
+        )
+        link = conn.execute(
+            sa.text("SELECT predecessor_event_id FROM causal_history_events WHERE id = :i"),
+            {"i": received_id},
+        ).scalar_one()
+
+    assert link == emitted_id
+    assert rows[emitted_id] == source
+    assert rows[received_id] == receiver
+    assert rows[emitted_id] != rows[received_id]
+
+    with UnitOfWork() as uow:
+        manager = CausalHistoryManager(CausalHistoryRepository(uow.session))
+        assert [e.id for e in manager.events_for(source)] == [emitted_id]
+        assert [e.id for e in manager.events_for(receiver)] == [received_id]
+        stored = CausalHistoryRepository(uow.session).get_event(emitted_id)
+        assert stored is not None
+        assert [e.id for e in manager.successors(stored)] == [received_id]

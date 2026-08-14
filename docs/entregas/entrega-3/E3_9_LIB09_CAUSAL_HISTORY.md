@@ -93,6 +93,55 @@ INSERT, barrada por `CheckConstraint`
 (`ck_causal_history_events_no_self_predecessor`) e por guarda de
 domínio no repositório.
 
+### Topologia (decisões E3.9.1)
+
+```text
+ONE_HISTORY_PER_SUBJECT   = TRUE
+CROSS_HISTORY_PREDECESSOR = ALLOWED
+history boundary != causal boundary
+```
+
+**Um sujeito, no máximo uma história.** `CausalHistory` é o *agregado
+histórico daquele sujeito*, não uma coleção arbitrária de coleções.
+Garantido pelo índice único em `subject_coid`. Ramificação causal
+acontece **entre eventos**, nunca criando várias histórias
+concorrentes para o mesmo sujeito.
+
+**Predecessor pode atravessar histórias.** A FK de
+`predecessor_event_id` é global sobre `causal_history_events`,
+deliberadamente **sem** restrição
+`child.history_id == predecessor.history_id`. Transmissão causal
+atravessa sujeitos: uma fonte produz um evento, um receptor registra
+outro que o referencia.
+
+```text
+subject A / fonte
+    ↓ evento causal
+subject B / receptor
+```
+
+Proibir esse elo obrigaria a fundir as duas histórias para
+representar a transmissão — e fundir histórias apagaria a distinção
+entre os dois sujeitos, que é justamente o que o módulo existe para
+preservar. Referenciar **não** é fundir:
+
+```text
+cross-history predecessor != shared identity
+COID_A != COID_B  e  HISTORY_A != HISTORY_B  permanecem válidos
+mesmo com  event_B.predecessor_event_id = event_A.id
+```
+
+Consequência prática: um evento cujo predecessor está na história de
+outro sujeito **não** é raiz da própria história — ele tem
+predecessor declarado. `successors()` é global pelo mesmo motivo:
+filtrar por `history_id` esconderia exatamente a transmissão entre
+sujeitos que o contrato autoriza.
+
+Nenhuma migração foi necessária para `E3.9.1`: o schema de `E3.9` já
+implementava as duas decisões (índice único em `subject_coid`, FK
+global de predecessor). O que faltava era torná-las explícitas e
+testadas — `T1`-`T6` nos unitários e `CHI10` na integração.
+
 ### Múltiplos caminhos
 
 ```text
@@ -311,19 +360,23 @@ FULL_ACCESSIBILITY_MATRIX = E4
 ## Testes
 
 - **Unitários**
-  (`tests/unit/cognitive/services/test_causal_history_manager.py`, 22):
+  (`tests/unit/cognitive/services/test_causal_history_manager.py`, 28):
   `CH1`-`CH24`, incluindo Galaxy Trace (`CH15`), múltiplos caminhos
   (`CH19`), Broken Glass (`CH16`/`CH17`), não-fabricação (`CH18`),
   timestamp não gera causalidade (`CH8`), tempo de evento anterior ao
   registro (`CH9`), correção por anexo, e append que não muta
-  anteriores (`CH20`).
+  anteriores (`CH20`); e (`E3.9.1`) topologia — `T1` uma história por
+  sujeito, `T2` sujeitos distintos, `T3`/`T4` elo entre histórias sem
+  fusão, `T5` auto-predecessor segue rejeitado, `T6` propriedade de
+  DAG preservada mesmo com elos entre histórias.
 - **Integração PostgreSQL**
-  (`tests/integration/cognitive/test_causal_history_integration.py`, 9):
+  (`tests/integration/cognitive/test_causal_history_integration.py`, 10):
   round-trip; constraints do banco como autoridade final; concorrência
   real de append; leitura com zero escritas; imutabilidade de eventos
   anteriores; downgrade permitido com tabela vazia; **downgrade
   bloqueado com história registrada, sem perda**; metadata sincronizado;
-  ausência de colunas de transcript.
+  ausência de colunas de transcript; e (`E3.9.1`) elo causal entre
+  histórias persistindo sem fundir sujeitos.
 
-Estado: 423 unitários cognitivos, 58 de integração cognitiva, suíte
+Estado: 429 unitários cognitivos, 59 de integração cognitiva, suíte
 completa sem regressão E1/E2, `app.cognitive` em 100% de cobertura.

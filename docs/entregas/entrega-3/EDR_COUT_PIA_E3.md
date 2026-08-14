@@ -340,3 +340,24 @@ histórico é ele próprio um rastro preservado**. Simular a extinção de
 um rastro apagando o registro destruiria a evidência que o sistema
 existe para guardar — por isso história causal é append-only, e
 corrigir é anexar um evento que referencia o anterior.
+
+### Topologia da história causal (E3.9.1)
+
+```text
+ONE_HISTORY_PER_SUBJECT   = TRUE
+CROSS_HISTORY_PREDECESSOR = ALLOWED
+```
+
+`CausalHistory` é o agregado histórico **por sujeito**;
+`CausalHistoryEvent.predecessor_event_id` é relação causal **entre
+eventos**, não restrita ao mesmo sujeito. Daí:
+
+```text
+history boundary != causal boundary
+cross-history predecessor != shared identity
+```
+
+Transmissão causal atravessa sujeitos sem fundir suas identidades nem
+suas histórias. Um evento pode referenciar como predecessor um evento
+da história de outro sujeito, e `COID_A != COID_B` e
+`HISTORY_A != HISTORY_B` continuam valendo.

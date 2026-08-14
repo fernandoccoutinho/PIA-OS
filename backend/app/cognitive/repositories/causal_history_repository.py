@@ -85,7 +85,13 @@ class CausalHistoryRepository(BaseRepository[CausalHistory]):
         """Eventos que declaram `event_id` como predecessor causal —
         explicitamente, nunca por proximidade temporal. Vários
         sucessores para o mesmo predecessor é ramificação legítima, não
-        conflito a resolver."""
+        conflito a resolver.
+
+        A consulta é **global de propósito**, sem filtro por
+        `history_id`: sucessores podem pertencer à história de outro
+        sujeito (`CROSS_HISTORY_PREDECESSOR = ALLOWED`, `E3.9.1`), e
+        filtrar por história esconderia exatamente a transmissão
+        causal entre sujeitos que o contrato autoriza."""
         stmt = (
             select(CausalHistoryEvent)
             .where(CausalHistoryEvent.predecessor_event_id == event_id)
@@ -95,7 +101,11 @@ class CausalHistoryRepository(BaseRepository[CausalHistory]):
 
     def roots(self, history_id: uuid.UUID) -> list[CausalHistoryEvent]:
         """Eventos sem predecessor registrado. "Sem predecessor
-        registrado" nunca significa "não houve predecessor"."""
+        registrado" nunca significa "não houve predecessor".
+
+        Um evento cujo predecessor está na história de outro sujeito
+        **não** é raiz: ele tem predecessor declarado, ainda que
+        `history boundary != causal boundary`."""
         stmt = (
             select(CausalHistoryEvent)
             .where(

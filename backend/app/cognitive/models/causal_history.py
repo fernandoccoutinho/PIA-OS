@@ -61,11 +61,20 @@ from app.models.base_model import BaseModel
 class CausalHistory(BaseModel):
     """História causal de um sujeito cognitivo.
 
-    Um sujeito tem no máximo uma história (`UNIQUE(subject_coid)`): a
-    história é o agregado de tudo que foi preservado sobre ele, não
-    uma coleção arbitrária de coleções. Dois "ramos" causais coexistem
-    como eventos com predecessores diferentes **dentro** da mesma
-    história, não como histórias concorrentes.
+    `ONE_HISTORY_PER_SUBJECT = TRUE` (decisão `E3.9.1`): um sujeito
+    tem no máximo uma história (`UNIQUE(subject_coid)`). A história é
+    o **agregado histórico daquele sujeito**, não uma coleção
+    arbitrária de coleções — ramificação causal acontece entre
+    eventos, nunca criando várias histórias para o mesmo sujeito.
+
+    Isso **não** confina causalidade à história: um evento pode
+    declarar como predecessor um evento da história de outro sujeito
+    (`CROSS_HISTORY_PREDECESSOR = ALLOWED`). Ver
+    `CausalHistoryEvent.predecessor_event_id`:
+
+    ```text
+    history boundary != causal boundary
+    ```
     """
 
     __tablename__ = "causal_histories"
@@ -134,7 +143,24 @@ class CausalHistoryEvent(BaseModel):
     )
     """Predecessor causal **explícito**. `None` significa "nenhum
     predecessor registrado", nunca "não houve predecessor" — e nunca
-    autoriza inferir um a partir de `created_at`."""
+    autoriza inferir um a partir de `created_at`.
+
+    `CROSS_HISTORY_PREDECESSOR = ALLOWED` (decisão `E3.9.1`): a FK é
+    global sobre `causal_history_events`, deliberadamente **sem**
+    restrição `child.history_id == predecessor.history_id`.
+    Transmissão causal atravessa sujeitos — uma fonte produz um
+    evento, um receptor registra outro que o referencia — e proibir
+    isso obrigaria a fundir as duas histórias, o que apagaria a
+    distinção entre os dois sujeitos.
+
+    Referenciar não é fundir:
+
+    ```text
+    cross-history predecessor != shared identity
+    COID_A != COID_B  e  HISTORY_A != HISTORY_B
+    permanecem válidos mesmo com event_B.predecessor_event_id = event_A.id
+    ```
+    """
 
     occurred_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None

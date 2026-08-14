@@ -605,3 +605,158 @@ def test_occurred_at_may_be_later_than_registration_when_declared(causal):
     session.flush()
 
     assert event.occurred_at == future
+
+
+# ---------------------------------------------------------------------
+# E3.9.1 — topologia: cardinalidade história↔sujeito e predecessor
+# entre histórias. Nenhuma migração nova: o schema de E3.9 já
+# implementava as duas decisões (índice único em `subject_coid`, FK
+# global de predecessor); o que faltava era torná-las explícitas e
+# testadas.
+# ---------------------------------------------------------------------
+
+
+def test_t1_one_history_per_subject(causal):
+    """T1 — `ONE_HISTORY_PER_SUBJECT = TRUE`: um segundo
+    `CausalHistory` para o mesmo sujeito é rejeitado pelo índice
+    único."""
+    from app.repositories.exceptions import PersistenceError
+
+    session, objects, repository, manager = causal
+    subject = _add(objects, session)
+    manager.ensure_history(subject.id)
+    session.flush()
+
+    # O índice único é a autoridade: a segunda história nem chega a
+    # existir. `BaseRepository.add()` converte a violação em
+    # `PersistenceError` (comportamento de E2, não redefinido aqui).
+    with pytest.raises(PersistenceError):
+        repository.add_history(CausalHistory(subject_coid=subject.id))
+    session.rollback()
+
+
+def test_t2_different_subjects_have_different_histories(causal):
+    """T2 — sujeitos distintos têm histórias distintas, que coexistem."""
+    session, objects, _, manager = causal
+    subject_a = _add(objects, session)
+    subject_b = _add(objects, session)
+
+    history_a = manager.ensure_history(subject_a.id)
+    history_b = manager.ensure_history(subject_b.id)
+    session.flush()
+
+    assert history_a.id != history_b.id
+    assert history_a.subject_coid == subject_a.id
+    assert history_b.subject_coid == subject_b.id
+    assert session.query(CausalHistory).count() == 2
+
+
+def test_t3_t4_cross_history_predecessor_is_allowed_without_merging(causal):
+    """T3/T4 — `CROSS_HISTORY_PREDECESSOR = ALLOWED`: um evento pode
+    referenciar como predecessor um evento da história de outro
+    sujeito, e isso **não** funde identidades nem histórias.
+
+    ```text
+    history boundary != causal boundary
+    ```
+    """
+    session, objects, _, manager = causal
+    source = _add(objects, session)
+    receiver = _add(objects, session)
+
+    emitted = manager.record(
+        subject_coid=source.id, event_type=CausalEventType.CREATED, payload_ref="ref://emitido"
+    )
+    received = manager.record(
+        subject_coid=receiver.id,
+        event_type=CausalEventType.ACCESSED,
+        predecessor=emitted,
+        payload_ref="ref://recebido",
+    )
+    session.flush()
+
+    history_source = manager.history_for(source.id)
+    history_receiver = manager.history_for(receiver.id)
+    assert history_source is not None and history_receiver is not None
+
+    # T3 — o elo causal persistiu e é navegável nos dois sentidos.
+    assert received.predecessor_event_id == emitted.id
+    assert [e.id for e in manager.predecessors(received)] == [emitted.id]
+    assert [e.id for e in manager.successors(emitted)] == [received.id]
+
+    # T4 — e nada foi fundido:
+    assert emitted.history_id == history_source.id
+    assert received.history_id == history_receiver.id
+    assert history_source.id != history_receiver.id
+    assert source.id != receiver.id
+    # cada história continua contendo apenas os próprios eventos
+    assert [e.id for e in manager.events_for(source.id)] == [emitted.id]
+    assert [e.id for e in manager.events_for(receiver.id)] == [received.id]
+
+
+def test_t4b_cross_history_successor_is_not_a_root_of_its_own_history(causal):
+    """T4 (complemento) — um evento com predecessor em outra história
+    não é raiz da sua própria história: ele tem predecessor
+    declarado."""
+    session, objects, _, manager = causal
+    source = _add(objects, session)
+    receiver = _add(objects, session)
+
+    emitted = manager.record(subject_coid=source.id, event_type=CausalEventType.CREATED)
+    manager.record(
+        subject_coid=receiver.id, event_type=CausalEventType.ACCESSED, predecessor=emitted
+    )
+    session.flush()
+
+    assert manager.roots(receiver.id) == []
+    assert [e.id for e in manager.roots(source.id)] == [emitted.id]
+
+
+def test_t5_self_predecessor_remains_rejected_after_e3_9_1(causal):
+    """T5 — permitir predecessor entre histórias não afrouxou a
+    proteção contra auto-predecessor."""
+    session, objects, repository, manager = causal
+    subject = _add(objects, session)
+    manager.ensure_history(subject.id)
+    session.flush()
+    history = manager.history_for(subject.id)
+    assert history is not None
+
+    forced = CausalHistoryEvent(history_id=history.id, event_type=CausalEventType.ACCESSED)
+    forced.id = uuid.uuid4()
+    forced.predecessor_event_id = forced.id
+
+    with pytest.raises(CausalEventSelfPredecessorError):
+        repository.add_event(forced)
+
+
+def test_t6_dag_property_survives_cross_history_links(causal):
+    """T6 — a propriedade estrutural de DAG continua valendo, inclusive
+    entre histórias.
+
+    O que a sustenta: (a) o predecessor precisa **já existir** no
+    momento do append, então toda aresta aponta para trás; (b) não há
+    caminho de update — `update_event()` sempre rejeita, então um ciclo
+    não pode ser fechado depois. Permitir elo entre histórias amplia o
+    alcance das arestas, não a direção delas.
+    """
+    session, objects, repository, manager = causal
+    subject_a = _add(objects, session)
+    subject_b = _add(objects, session)
+
+    first = manager.record(subject_coid=subject_a.id, event_type=CausalEventType.CREATED)
+    second = manager.record(
+        subject_coid=subject_b.id, event_type=CausalEventType.TRANSFORMED, predecessor=first
+    )
+    session.flush()
+
+    # Fechar o ciclo exigiria mutar `first` para apontar para `second`
+    # — e não existe caminho legítimo para isso.
+    with pytest.raises(CausalHistoryImmutableError):
+        repository.update_event(first)
+
+    # Estado permanece acíclico: `first` continua sem predecessor.
+    reloaded = repository.get_event(first.id)
+    assert reloaded is not None
+    assert reloaded.predecessor_event_id is None
+    assert second.predecessor_event_id == first.id
