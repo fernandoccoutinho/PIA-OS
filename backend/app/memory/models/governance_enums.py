@@ -14,9 +14,15 @@ from enum import StrEnum
 class CognitiveOperation(StrEnum):
     """Operações cognitivas que uma policy pode regular.
 
-    São exatamente as sete que `E4_GOVERNANCE_BOUNDARIES.md` §9 lista
-    como o que governança "pode futuramente controlar" — nenhuma
-    inventada aqui.
+    Sete vieram da E4.3 — o que `E4_GOVERNANCE_BOUNDARIES.md` §9 lista
+    como o que governança "pode futuramente controlar". A oitava,
+    `ACCESSIBILITY_TRANSITION`, foi acrescentada pelo corretivo E4.3.3,
+    com EDR próprio, para fechar a lacuna que o preflight da E4.7
+    confirmou (`GOVERNANCE_OPERATION_GAP`). Nenhuma inventada aqui.
+
+    **Ampliar este enum de novo exige novo EDR.** E o alcance do curinga
+    histórico é definido por `EMPTY_OPERATIONS_SCOPE_V1`, não por "todos
+    os membros" — ver a nota daquele conjunto.
 
     Nomear uma operação **não** a implementa:
 
@@ -47,6 +53,74 @@ class CognitiveOperation(StrEnum):
 
     CONSOLIDATE = "consolidate"
     """Consolidar múltiplas fontes numa síntese."""
+
+    ACCESSIBILITY_TRANSITION = "accessibility_transition"
+    """Alterar o `AccessibilityState` de um `CognitiveObject` (E4.3.3).
+
+    **Distinta de `TRANSFORM`, e a distinção é material:**
+
+        ACCESSIBILITY TRANSITION != COGNITIVE TRANSFORMATION
+
+    `TRANSFORM` produz nova versão ou derivação. Uma transição de
+    acessibilidade altera um estado do **mesmo** objeto: não cria COID,
+    CLID, derivação, revisão, `TransformationRecord` nem `LineageEdge`,
+    não reescreve proveniência, não apaga história causal e não altera
+    existência.
+
+        ACCESSIBILITY != EXISTENCE
+        INACCESSIBLE != NONEXISTENT
+        CAUSALLY_EXTINCT != HISTORICAL_ERASURE
+
+    Reusar `TRANSFORM` daria autoridade sobre acessibilidade a quem
+    recebeu autoridade apenas para transformação cognitiva:
+
+        AUTHORIZATION TO TRANSFORM != AUTHORIZATION TO CHANGE ACCESSIBILITY
+
+    Nomear a operação **não** a implementa. A E4.3.3 cria a autoridade
+    representável; quem executa transições é a E4.7, que não existe:
+
+        PERMISSION != EXECUTION
+        AUTHORITY VOCABULARY != ACCESSIBILITY MANAGER
+    """
+
+
+EMPTY_OPERATIONS_SCOPE_V1: frozenset[CognitiveOperation] = frozenset(
+    {
+        CognitiveOperation.READ,
+        CognitiveOperation.REFERENCE,
+        CognitiveOperation.DERIVE,
+        CognitiveOperation.TRANSFORM,
+        CognitiveOperation.EXPOSE,
+        CognitiveOperation.SYNCHRONIZE,
+        CognitiveOperation.CONSOLIDATE,
+    }
+)
+"""Alcance do curinga histórico `operations=()` (corretivo E4.3.3).
+
+Uma regra publicada com `operations=frozenset()` foi escrita quando o
+vocabulário tinha **estas sete** operações. Ela continua alcançando
+todas elas — e apenas elas.
+
+    EMPTY OPERATIONS != ALL FUTURE OPERATIONS
+    OLD AUTHORIZATION != CONSENT TO A NEW CAPABILITY
+    FUTURE OPERATION DEFAULT = EXPLICIT OPT-IN REQUIRED
+
+**Enumerado literalmente, e nunca derivado do enum.** Escrever
+`set(CognitiveOperation)` reintroduziria exatamente o defeito: o
+conjunto cresceria sozinho a cada operação nova, e policies imutáveis
+publicadas no passado passariam a autorizar capacidades que ninguém
+lhes concedeu — sem novo ato de publicação.
+
+**Blacklist foi rejeitada.** Uma lista de "operações sensíveis" depende
+de alguém lembrar de classificar cada operação futura; esquecer uma
+devolveria a autorização retroativa em silêncio. O conjunto positivo
+faz o default seguro ser automático.
+
+`V1` no nome porque este é o envelope de autoridade das policies
+publicadas até a cadeia 53. Incluir uma operação futura aqui seria
+ampliar retroativamente o alcance de versões imutáveis, e exige EDR
+explícito — não é manutenção de rotina.
+"""
 
 
 class GovernanceEffect(StrEnum):

@@ -36,12 +36,16 @@ from app.cognitive.services.provenance_manager import ProvenanceManager
 from app.database import migrations
 from app.database.engine import engine
 from app.database.health import check_database_health
-from app.memory.errors.exceptions import GovernancePolicyVersionExistsError
+from app.memory.errors.exceptions import (
+    GovernancePolicyImmutableError,
+    GovernancePolicyVersionExistsError,
+)
 from app.memory.models.governance_enums import (
     CognitiveOperation,
     GovernanceEffect,
     GovernanceOutcome,
 )
+from app.memory.models.governance_policy import GovernancePolicy
 from app.memory.repositories.governance_policy_repository import GovernancePolicyRepository
 from app.memory.repositories.memory_domain_membership_repository import (
     MemoryDomainMembershipRepository,
@@ -50,6 +54,10 @@ from app.memory.repositories.memory_domain_repository import MemoryDomainReposit
 from app.memory.schemas.governance import GovernanceRule
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.services.governance_manager import GovernanceManager
+from app.memory.services.platform_safety_boundary import (
+    CapabilityDescriptor,
+    CapabilityEngagement,
+)
 from app.repositories.unit_of_work import UnitOfWork
 
 _GOVERNANCE_TABLES = ("governance_policies",)
@@ -651,3 +659,340 @@ def test_gi17_policy_references_domain_without_owning_it():
             ).scalar_one()
             == 0
         )
+
+
+# ======================================================================
+# E4.3.3 — Explicit Accessibility Transition Authority, contra o banco
+# ======================================================================
+
+
+def _chave_e433() -> str:
+    return f"e433-{uuid.uuid4().hex[:10]}"
+
+
+def _limpar_policy(chave: str) -> None:
+    with UnitOfWork() as uow:
+        uow.session.execute(
+            sa.text("DELETE FROM governance_policies WHERE policy_key = :k"), {"k": chave}
+        )
+        uow.commit()
+
+
+def _descritor_transicao() -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        operation=CognitiveOperation.ACCESSIBILITY_TRANSITION,
+        engagement=CapabilityEngagement.ANALYTICAL,
+    )
+
+
+def test_gi433_wildcard_policy_does_not_authorize_the_new_operation():
+    """O caso central: policy publicada com curinga histórico não ganha
+    autoridade sobre a capacidade nova.
+
+        OLD AUTHORIZATION != CONSENT TO A NEW CAPABILITY
+    """
+    chave = _chave_e433()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset(),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            # a mesma policy AUTORIZA uma operação histórica...
+            historica = manager.resolve(
+                descriptor=CapabilityDescriptor(operation=CognitiveOperation.READ),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+            # ...e NÃO alcança a nova
+            nova = manager.resolve(
+                descriptor=_descritor_transicao(),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+
+        assert historica.outcome is GovernanceOutcome.ADMISSIBLE
+        assert historica.execution_authorized is True
+
+        assert nova.outcome is GovernanceOutcome.NOT_APPLICABLE
+        assert nova.execution_authorized is False
+        assert nova.matched_rule_id is None
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi433_explicit_opt_in_authorizes_the_new_operation():
+    chave = _chave_e433()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="opt-in",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({CognitiveOperation.ACCESSIBILITY_TRANSITION}),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            resolucao = manager.resolve(
+                descriptor=_descritor_transicao(),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+            # e o opt-in explícito NÃO passa a autorizar READ
+            leitura = manager.resolve(
+                descriptor=CapabilityDescriptor(operation=CognitiveOperation.READ),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+
+        assert resolucao.outcome is GovernanceOutcome.ADMISSIBLE
+        assert resolucao.execution_authorized is True
+        assert resolucao.matched_rule_id == "opt-in"
+        assert resolucao.policy_key == chave
+
+        assert leitura.outcome is GovernanceOutcome.NOT_APPLICABLE
+        assert leitura.execution_authorized is False
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi433_explicit_deny_is_inadmissible_not_merely_not_applicable():
+    chave = _chave_e433()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="nega",
+                        effect=GovernanceEffect.DENY,
+                        operations=frozenset({CognitiveOperation.ACCESSIBILITY_TRANSITION}),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            resolucao = GovernanceManager(GovernancePolicyRepository(uow.session)).resolve(
+                descriptor=_descritor_transicao(),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        assert resolucao.outcome is GovernanceOutcome.INADMISSIBLE
+        assert resolucao.execution_authorized is False
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi433_published_policy_is_not_rewritten_by_the_corrective():
+    """O payload histórico continua byte a byte o mesmo, e a versão
+    publicada permanece imutável."""
+    chave = _chave_e433()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset(),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            antes = uow.session.execute(
+                sa.text("SELECT rules::text FROM governance_policies WHERE policy_key = :k"),
+                {"k": chave},
+            ).scalar_one()
+
+        # avaliar a nova operação não pode tocar a linha
+        with UnitOfWork() as uow:
+            GovernanceManager(GovernancePolicyRepository(uow.session)).resolve(
+                descriptor=_descritor_transicao(),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+
+        with UnitOfWork() as uow:
+            depois = uow.session.execute(
+                sa.text("SELECT rules::text FROM governance_policies WHERE policy_key = :k"),
+                {"k": chave},
+            ).scalar_one()
+        assert depois == antes
+        assert '"operations": []' in depois
+
+        # e continua imutável pelo repositório
+        with UnitOfWork() as uow:
+            repo = GovernancePolicyRepository(uow.session)
+            publicada = repo.get_version(chave, 1)
+            with pytest.raises(GovernancePolicyImmutableError):
+                repo.update(publicada)
+            with pytest.raises(GovernancePolicyImmutableError):
+                repo.delete(publicada)
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi433_new_version_can_grant_what_the_old_one_could_not():
+    """O caminho legítimo para autorizar a nova capacidade: publicar uma
+    versão nova, não reescrever a antiga."""
+    chave = _chave_e433()
+    try:
+        with UnitOfWork() as uow:
+            repo = GovernancePolicyRepository(uow.session)
+            repo.add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset(),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+                effective_until=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+            repo.add_policy(
+                policy_key=chave,
+                version=2,
+                rules=(
+                    GovernanceRule(
+                        rule_id="opt-in",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({CognitiveOperation.ACCESSIBILITY_TRANSITION}),
+                    ),
+                ),
+                effective_from=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            antiga = manager.resolve(
+                descriptor=_descritor_transicao(),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 3, 1, tzinfo=UTC),
+            )
+            nova = manager.resolve(
+                descriptor=_descritor_transicao(),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 9, 1, tzinfo=UTC),
+            )
+        assert antiga.outcome is GovernanceOutcome.NOT_APPLICABLE
+        assert nova.outcome is GovernanceOutcome.ADMISSIBLE
+        assert nova.policy_version == 2
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi433_new_operation_round_trips_through_postgresql():
+    chave = _chave_e433()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="opt-in",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({CognitiveOperation.ACCESSIBILITY_TRANSITION}),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            bruto = uow.session.execute(
+                sa.text("SELECT rules::text FROM governance_policies WHERE policy_key = :k"),
+                {"k": chave},
+            ).scalar_one()
+            assert '"accessibility_transition"' in bruto
+
+            publicada = GovernancePolicyRepository(uow.session).get_version(chave, 1)
+            regras = GovernancePolicy.deserialize_rules(publicada.rules)
+        assert regras[0].operations == frozenset({CognitiveOperation.ACCESSIBILITY_TRANSITION})
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi433_no_writes_during_resolution_of_the_new_operation():
+    chave = _chave_e433()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset(),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        escritas: list[str] = []
+
+        def _contar(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+                escritas.append(statement)
+
+        with UnitOfWork() as uow:
+            engine = uow.session.get_bind()
+            event.listen(engine, "before_cursor_execute", _contar)
+            try:
+                GovernanceManager(GovernancePolicyRepository(uow.session)).resolve(
+                    descriptor=_descritor_transicao(),
+                    context=MemoryContext(),
+                    policy_key=chave,
+                    moment=datetime(2024, 6, 1, tzinfo=UTC),
+                )
+                assert not uow.session.new
+                assert not uow.session.dirty
+                assert not uow.session.deleted
+            finally:
+                event.remove(engine, "before_cursor_execute", _contar)
+
+        assert escritas == []
+    finally:
+        _limpar_policy(chave)

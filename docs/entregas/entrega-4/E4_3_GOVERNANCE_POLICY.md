@@ -309,3 +309,26 @@ E4_3_IMPLEMENTATION = COMPLETE
 E4_3_FINAL_STATUS   = AWAITING_INDEPENDENT_AUDIT
 READY_FOR_E4_4      = FALSE
 ```
+
+---
+
+## Qualificação posterior — corretivo E4.3.3
+
+Onde este documento afirma que `operations = frozenset()` significa "não
+restringe por operação", leia-se: **não restringe dentro do escopo
+histórico** `EMPTY_OPERATIONS_SCOPE_V1` — as sete operações que existiam
+quando a E4.3 foi publicada.
+
+```text
+EMPTY OPERATIONS != ALL FUTURE OPERATIONS
+FUTURE OPERATION DEFAULT = EXPLICIT OPT-IN REQUIRED
+```
+
+O corretivo E4.3.3 acrescentou `ACCESSIBILITY_TRANSITION` ao vocabulário
+e fechou o envelope do curinga, para que policies publicadas não
+adquirissem autoridade sobre capacidades criadas depois delas. Ver
+`E4_3_3_EXPLICIT_ACCESSIBILITY_TRANSITION_AUTHORITY.md` e o EDR
+correspondente.
+
+Este registro **qualifica** a afirmação original; não a reescreve nem
+finge que a semântica sempre foi outra.

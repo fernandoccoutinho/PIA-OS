@@ -22,6 +22,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from app.memory.models.governance_enums import (
+    EMPTY_OPERATIONS_SCOPE_V1,
     CognitiveOperation,
     CriticalCapability,
     GovernanceEffect,
@@ -208,9 +209,31 @@ class GovernanceRule:
           aplica a um contexto sem `actor_ref`. O contrário faria
           ausência de informação valer como informação — e a ausência
           de ator é exatamente o caso em que não se deve concluir
-          nada.
+          nada;
+        - **`operations=()` alcança o escopo histórico, não o futuro**
+          (corretivo E4.3.3): as sete operações de
+          `EMPTY_OPERATIONS_SCOPE_V1`, e nenhuma acrescentada depois.
         """
-        if self.operations and operation not in self.operations:
+        # Corretivo E4.3.3 — o curinga tem alcance POSITIVO e congelado.
+        #
+        # Antes, a condição era `if self.operations and operation not in
+        # self.operations`: o conjunto vazio nunca filtrava, então
+        # qualquer membro acrescentado ao enum passava a casar
+        # automaticamente em toda policy antiga com curinga. Como
+        # versões publicadas são imutáveis (`PIA-8028`), o texto da
+        # policy não mudava — mas o **significado** dela mudava, sem
+        # novo ato de publicação.
+        #
+        #     EMPTY OPERATIONS  != ALL FUTURE OPERATIONS
+        #     OLD AUTHORIZATION != CONSENT TO A NEW CAPABILITY
+        #     FUTURE OPERATION DEFAULT = EXPLICIT OPT-IN REQUIRED
+        #
+        # Uma operação fora do escopo histórico só é alcançada por regra
+        # que a **enumere expressamente**.
+        if self.operations:
+            if operation not in self.operations:
+                return False
+        elif operation not in EMPTY_OPERATIONS_SCOPE_V1:
             return False
         if self.domain_ids and not (self.domain_ids & domain_ids):
             return False

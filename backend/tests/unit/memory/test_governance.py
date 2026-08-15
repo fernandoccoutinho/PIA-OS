@@ -9,11 +9,13 @@ zero escritas na avaliação) vivem em `tests/integration/memory/`.
 
 import dataclasses
 import inspect
+import pathlib
 import uuid
 
 import pytest
 
 from app.memory.models.governance_enums import (
+    EMPTY_OPERATIONS_SCOPE_V1,
     CognitiveOperation,
     GovernanceEffect,
     GovernanceOutcome,
@@ -59,8 +61,10 @@ def _evaluate(rules, operation, context, **kw):
 def test_gv1_cognitive_operation_vocabulary_is_closed():
     """O vocabulário de operações é fechado e não foi inventado.
 
-    São as sete que `E4_GOVERNANCE_BOUNDARIES.md` §9 lista como o que
-    governança pode controlar. Ampliar exige EDR.
+    Sete vieram da E4.3 — o que `E4_GOVERNANCE_BOUNDARIES.md` §9 lista
+    como o que governança pode controlar. A oitava veio do corretivo
+    E4.3.3, com EDR próprio, para fechar o `GOVERNANCE_OPERATION_GAP`
+    que o preflight da E4.7 confirmou. Ampliar de novo exige novo EDR.
     """
     assert {op.value for op in CognitiveOperation} == {
         "read",
@@ -70,6 +74,7 @@ def test_gv1_cognitive_operation_vocabulary_is_closed():
         "expose",
         "synchronize",
         "consolidate",
+        "accessibility_transition",
     }
 
 
@@ -573,3 +578,311 @@ def test_gv23_non_iterable_domain_ids_in_a_rule_is_rejected():
         GovernanceRule(rule_id="r", effect=GovernanceEffect.ADMIT, domain_ids=123)
     with pytest.raises(TypeError, match="iterável"):
         GovernanceRule(rule_id="r", effect=GovernanceEffect.ADMIT, domain_ids="abc")
+
+
+# ======================================================================
+# E4.3.3 — Explicit Accessibility Transition Authority
+# ======================================================================
+#
+# O preflight da E4.7 confirmou `GOVERNANCE_OPERATION_GAP`: nenhuma das
+# sete operações representava a transição de acessibilidade, e o curinga
+# `operations=()` alcançava qualquer membro que viesse a existir.
+#
+#     EMPTY OPERATIONS  != ALL FUTURE OPERATIONS
+#     OLD AUTHORIZATION != CONSENT TO A NEW CAPABILITY
+#     FUTURE OPERATION DEFAULT = EXPLICIT OPT-IN REQUIRED
+
+
+_OPERACOES_HISTORICAS = (
+    CognitiveOperation.READ,
+    CognitiveOperation.REFERENCE,
+    CognitiveOperation.DERIVE,
+    CognitiveOperation.TRANSFORM,
+    CognitiveOperation.EXPOSE,
+    CognitiveOperation.SYNCHRONIZE,
+    CognitiveOperation.CONSOLIDATE,
+)
+_TRANSICAO = CognitiveOperation.ACCESSIBILITY_TRANSITION
+_SEM_DIMENSOES = {"domain_ids": frozenset(), "actor_ref": None, "purpose": None}
+
+
+def _regra(rule_id: str, effect: GovernanceEffect, operations=frozenset(), **extra):
+    return GovernanceRule(rule_id=rule_id, effect=effect, operations=operations, **extra)
+
+
+# --- 12.1 Vocabulário -------------------------------------------------
+
+
+def test_e433_new_operation_token_is_exact():
+    assert _TRANSICAO.value == "accessibility_transition"
+
+
+def test_e433_historic_scope_has_exactly_the_seven_previous_operations():
+    assert frozenset(_OPERACOES_HISTORICAS) == EMPTY_OPERATIONS_SCOPE_V1
+    assert len(EMPTY_OPERATIONS_SCOPE_V1) == 7
+
+
+def test_e433_new_operation_is_outside_the_historic_scope():
+    assert _TRANSICAO not in EMPTY_OPERATIONS_SCOPE_V1
+
+
+def test_e433_historic_scope_is_really_immutable():
+    assert isinstance(EMPTY_OPERATIONS_SCOPE_V1, frozenset)
+    with pytest.raises(AttributeError):
+        EMPTY_OPERATIONS_SCOPE_V1.add(_TRANSICAO)  # type: ignore[attr-defined]
+
+
+def test_e433_scope_is_not_derived_from_the_enum():
+    """`set(CognitiveOperation)` reintroduziria o defeito: o conjunto
+    cresceria sozinho a cada operação nova."""
+    assert frozenset(CognitiveOperation) != EMPTY_OPERATIONS_SCOPE_V1
+    assert len(EMPTY_OPERATIONS_SCOPE_V1) < len(list(CognitiveOperation))
+
+
+# --- 12.2 Compatibilidade do curinga ---------------------------------
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_HISTORICAS)
+def test_e433_wildcard_still_matches_every_historic_operation(operacao):
+    """As sete continuam exatamente como antes do corretivo."""
+    assert _regra("r", GovernanceEffect.ADMIT).matches(operation=operacao, **_SEM_DIMENSOES)
+
+
+def test_e433_wildcard_does_not_match_the_new_operation():
+    """O defeito reproduzido na cadeia 53, agora fechado."""
+    assert not _regra("r", GovernanceEffect.ADMIT).matches(operation=_TRANSICAO, **_SEM_DIMENSOES)
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_HISTORICAS)
+def test_e433_rule_restricted_to_an_old_operation_never_matches_the_new(operacao):
+    assert not _regra("r", GovernanceEffect.ADMIT, operations=frozenset({operacao})).matches(
+        operation=_TRANSICAO, **_SEM_DIMENSOES
+    )
+
+
+def test_e433_explicit_opt_in_matches_only_the_new_operation():
+    regra = _regra("r", GovernanceEffect.ADMIT, operations=frozenset({_TRANSICAO}))
+    assert regra.matches(operation=_TRANSICAO, **_SEM_DIMENSOES)
+    for operacao in _OPERACOES_HISTORICAS:
+        assert not regra.matches(operation=operacao, **_SEM_DIMENSOES)
+
+
+def test_e433_no_sensitive_operations_blacklist_exists():
+    """Blacklist foi rejeitada: uma operação futura poderia ser
+    acrescentada sem entrar nela e voltaria a receber autorização
+    retroativa. O escopo positivo faz o default seguro ser automático.
+    """
+    import ast
+
+    import app.memory.models.governance_enums as enums_mod
+    import app.memory.schemas.governance as schema_mod
+
+    # Compara o CÓDIGO EXECUTÁVEL, não o texto bruto: as docstrings
+    # citam nominalmente `set(CognitiveOperation)` ao explicar por que
+    # NÃO derivar o escopo do enum. Mesmo falso positivo que a E4.3.1
+    # corrigiu em `gv16`.
+    for modulo in (enums_mod, schema_mod):
+        arvore = ast.parse(pathlib.Path(modulo.__file__).read_text(encoding="utf-8"))
+        for no in ast.walk(arvore):
+            corpo = getattr(no, "body", None)
+            if not isinstance(corpo, list):
+                continue
+            no.body = [
+                filho
+                for filho in corpo
+                if not (
+                    isinstance(filho, ast.Expr)
+                    and isinstance(filho.value, ast.Constant)
+                    and isinstance(filho.value.value, str)
+                )
+            ] or [ast.Pass()]
+        executavel = ast.unparse(arvore)
+        for proibido in (
+            "SENSITIVE_OPERATIONS",
+            "EXPLICIT_OPT_IN_OPERATIONS",
+            "BLACKLIST",
+            "set(CognitiveOperation)",
+            "frozenset(CognitiveOperation)",
+        ):
+            assert proibido not in executavel, f"encontrado: {proibido}"
+
+
+# --- 12.3 Avaliação ---------------------------------------------------
+
+
+@pytest.mark.parametrize("effect", [GovernanceEffect.ADMIT, GovernanceEffect.DENY])
+def test_e433_wildcard_only_policy_is_not_applicable_to_the_new_operation(effect):
+    """Ausência de opt-in nunca vira admissão — nem negação explícita.
+
+    NOT_APPLICABLE != INADMISSIBLE
+    NOT_APPLICABLE DOES NOT GRANT
+    """
+    decisao = _evaluate((_regra("r", effect),), _TRANSICAO, MemoryContext())
+    assert decisao.outcome is GovernanceOutcome.NOT_APPLICABLE
+    assert decisao.is_admissible is False
+    assert decisao.matched_rule_id is None
+
+
+def test_e433_explicit_admit_makes_the_new_operation_admissible():
+    decisao = _evaluate(
+        (_regra("r-at", GovernanceEffect.ADMIT, operations=frozenset({_TRANSICAO})),),
+        _TRANSICAO,
+        MemoryContext(),
+    )
+    assert decisao.outcome is GovernanceOutcome.ADMISSIBLE
+    assert decisao.matched_rule_id == "r-at"
+
+
+def test_e433_explicit_deny_makes_the_new_operation_inadmissible():
+    decisao = _evaluate(
+        (_regra("r-at", GovernanceEffect.DENY, operations=frozenset({_TRANSICAO})),),
+        _TRANSICAO,
+        MemoryContext(),
+    )
+    assert decisao.outcome is GovernanceOutcome.INADMISSIBLE
+    assert decisao.matched_rule_id == "r-at"
+
+
+def test_e433_deny_overrides_still_holds_for_the_new_operation():
+    decisao = _evaluate(
+        (
+            _regra("r-admit", GovernanceEffect.ADMIT, operations=frozenset({_TRANSICAO})),
+            _regra("r-deny", GovernanceEffect.DENY, operations=frozenset({_TRANSICAO})),
+        ),
+        _TRANSICAO,
+        MemoryContext(),
+    )
+    assert decisao.outcome is GovernanceOutcome.INADMISSIBLE
+
+
+def test_e433_other_dimensions_still_constrain_the_new_operation():
+    """A nova operação continua sujeita a domínio, ator e propósito."""
+    dominio = uuid.uuid4()
+    regra = _regra(
+        "r",
+        GovernanceEffect.ADMIT,
+        operations=frozenset({_TRANSICAO}),
+        domain_ids=frozenset({dominio}),
+        actor_refs=frozenset({"ana"}),
+        purposes=frozenset({"curadoria"}),
+    )
+    assert regra.matches(
+        operation=_TRANSICAO,
+        domain_ids=frozenset({dominio}),
+        actor_ref="ana",
+        purpose="curadoria",
+    )
+    # domínio divergente
+    assert not regra.matches(
+        operation=_TRANSICAO,
+        domain_ids=frozenset({uuid.uuid4()}),
+        actor_ref="ana",
+        purpose="curadoria",
+    )
+    # ator ausente não casa regra que restringe ator
+    assert not regra.matches(
+        operation=_TRANSICAO,
+        domain_ids=frozenset({dominio}),
+        actor_ref=None,
+        purpose="curadoria",
+    )
+    # propósito divergente
+    assert not regra.matches(
+        operation=_TRANSICAO,
+        domain_ids=frozenset({dominio}),
+        actor_ref="ana",
+        purpose="outro",
+    )
+
+
+# --- 12.4 Serialização ------------------------------------------------
+
+
+def test_e433_serialization_writes_the_exact_token():
+    from app.memory.models.governance_policy import GovernancePolicy
+
+    payload = GovernancePolicy.serialize_rules(
+        (_regra("r", GovernanceEffect.ADMIT, operations=frozenset({_TRANSICAO})),)
+    )
+    assert payload[0]["operations"] == ["accessibility_transition"]
+
+
+def test_e433_round_trip_is_deterministic():
+    from app.memory.models.governance_policy import GovernancePolicy
+
+    original = (_regra("r", GovernanceEffect.ADMIT, operations=frozenset({_TRANSICAO})),)
+    ida = GovernancePolicy.serialize_rules(original)
+    volta = GovernancePolicy.deserialize_rules(ida)
+    assert volta == original
+    assert GovernancePolicy.serialize_rules(volta) == ida
+
+
+def test_e433_historic_empty_payload_stays_empty_and_does_not_match():
+    """Payload histórico continua vazio na leitura, e o vazio agora tem
+    alcance definido."""
+    from app.memory.models.governance_policy import GovernancePolicy
+
+    historico = [
+        {
+            "rule_id": "r1",
+            "effect": "admit",
+            "operations": [],
+            "domain_ids": [],
+            "actor_refs": [],
+            "purposes": [],
+        }
+    ]
+    regras = GovernancePolicy.deserialize_rules(historico)
+    assert regras[0].operations == frozenset()
+    assert not regras[0].matches(operation=_TRANSICAO, **_SEM_DIMENSOES)
+    assert regras[0].matches(operation=CognitiveOperation.READ, **_SEM_DIMENSOES)
+    # e a releitura não reescreve o payload
+    assert GovernancePolicy.serialize_rules(regras)[0]["operations"] == []
+
+
+def test_e433_unknown_token_is_still_refused_by_the_closed_vocabulary():
+    from app.memory.models.governance_policy import GovernancePolicy
+
+    with pytest.raises((ValueError, TypeError, KeyError)):
+        GovernancePolicy.deserialize_rules(
+            [
+                {
+                    "rule_id": "r",
+                    "effect": "admit",
+                    "operations": ["teleport"],
+                    "domain_ids": [],
+                    "actor_refs": [],
+                    "purposes": [],
+                }
+            ]
+        )
+
+
+# --- 12.7 Não-regressão de autoridade cruzada ------------------------
+
+
+def test_e433_authority_for_the_new_operation_does_not_grant_read():
+    regra = _regra("r", GovernanceEffect.ADMIT, operations=frozenset({_TRANSICAO}))
+    assert not regra.matches(operation=CognitiveOperation.READ, **_SEM_DIMENSOES)
+
+
+def test_e433_authority_for_read_does_not_grant_the_new_operation():
+    regra = _regra("r", GovernanceEffect.ADMIT, operations=frozenset({CognitiveOperation.READ}))
+    assert not regra.matches(operation=_TRANSICAO, **_SEM_DIMENSOES)
+
+
+def test_e433_transform_is_not_used_as_an_alias():
+    """`ACCESSIBILITY TRANSITION != COGNITIVE TRANSFORMATION`."""
+    assert _TRANSICAO is not CognitiveOperation.TRANSFORM
+    assert _TRANSICAO.value != CognitiveOperation.TRANSFORM.value
+    regra = _regra(
+        "r", GovernanceEffect.ADMIT, operations=frozenset({CognitiveOperation.TRANSFORM})
+    )
+    assert not regra.matches(operation=_TRANSICAO, **_SEM_DIMENSOES)
+
+
+def test_e433_docs_no_longer_claim_empty_means_any_future_operation():
+    import app.memory.schemas.governance as schema_mod
+
+    fonte = pathlib.Path(schema_mod.__file__).read_text(encoding="utf-8")
+    assert "EMPTY_OPERATIONS_SCOPE_V1" in fonte
