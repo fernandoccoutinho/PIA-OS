@@ -23,6 +23,7 @@ from app.memory.errors.codes import (
     PIA_8027_GOVERNANCE_POLICY_VERSION_EXISTS,
     PIA_8028_GOVERNANCE_POLICY_IMMUTABLE,
     PIA_8032_CONSOLIDATION_VERIFICATION_FAILED,
+    PIA_8033_RETRIEVAL_DUPLICATE_COID,
 )
 
 
@@ -160,4 +161,24 @@ class ConsolidationVerificationError(PIAOSException):
                 + "; ".join(reasons)
             ),
             detail={"target_coid": str(target_coid), "reasons": list(reasons)},
+        )
+
+
+class RetrievalDuplicateCoidError(PIAOSException):
+    """A composição da vista produziu o mesmo COID mais de uma vez (`E4.6`).
+
+    Diagnóstico explícito em vez de escolha silenciosa: a E4.6 não elege
+    qual ocorrência apresentar.
+    """
+
+    error_code = PIA_8033_RETRIEVAL_DUPLICATE_COID
+
+    def __init__(self, coid: uuid.UUID) -> None:
+        self.coid = coid
+        super().__init__(
+            message=(
+                f"COID {coid} apareceu mais de uma vez na composição da vista "
+                "admissível — defeito de composição, não duplicação legítima"
+            ),
+            detail={"coid": str(coid)},
         )

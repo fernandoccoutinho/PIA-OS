@@ -161,3 +161,30 @@ mexer num contrato de E1/E2 fora do escopo deste módulo.)
 
 `PIA-8032` é o próximo código **global** livre — a faixa `PIA-8xxx` é
 única no projeto, e a E3.4.2 ocupou `PIA-8029`..`PIA-8031`."""
+
+
+PIA_8033_RETRIEVAL_DUPLICATE_COID = ErrorCode(
+    code="PIA-8033",
+    default_message="retrieval_duplicate_coid",
+    category=ErrorCategory.SYSTEM,
+    http_status=500,
+    severity=ErrorSeverity.ERROR,
+)
+"""A Search devolveu o mesmo COID mais de uma vez para a mesma vista
+(`E4.6`).
+
+A E4.6 **não desduplica** patrimônio: objetos com o mesmo CLID, uma
+consolidação e suas fontes, revisões `CURRENT` e `SUPERSEDED` — todos
+permanecem distintos, porque são cognitivamente distintos.
+
+    DIVERGENCE != INVALIDITY
+    CONSOLIDATION != SOURCE REPLACEMENT
+
+O mesmo **COID** repetido é outra coisa: é a mesma identidade aparecendo
+duas vezes, o que só pode ser defeito de composição — da porta, do
+recorte de domínio ou da paginação em lotes. Escolher uma das ocorrências
+em silêncio seria decidir qual versão do patrimônio o chamador vê, sem
+que ninguém tenha pedido isso.
+
+Categoria `SYSTEM`, e não `VALIDATION`: o chamador não pediu nada
+inválido; a composição interna é que produziu resultado incoerente."""

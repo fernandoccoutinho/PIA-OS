@@ -1,0 +1,436 @@
+# E4_6_MEMORY_RETRIEVAL
+
+**Módulo:** E4.6 — Memory Retrieval
+**Baseline:** `PATCH_CHAIN = 50` · HEAD `8cc795312662…` ✓ ·
+PARENT `007ee5bec502…` ✓ · TREE `00aa609e412e…` ✓ ·
+PATCH_ID `7075ebeb523e…` ✓ · bundle SHA-256 `ae4027bd…761f` ✓ ·
+migration head `4ca61776b982` ✓ · `git status` limpo ✓ ·
+trees protegidos `cognitive be407b46` e `alembic f01a1f81` ✓
+**Patch:** `e4-6-memory-retrieval.patch` (51º)
+
+Suíte da baseline reexecutada antes de qualquer alteração:
+**1638 passed / 1 skipped / 0 failed**.
+
+---
+
+## 1. O que o módulo é
+
+Compositor **transitório** de uma vista admissível do patrimônio
+cognitivo persistido:
+
+```text
+Memory(Context) = Admissible_Context(Persistent(CognitivePatrimony))
+```
+
+Compõe `MemoryDomain` (E4.1), `MemoryContext` (E4.2), Governance (E4.3),
+`AccessibilityState` (E3.6) e Search (E3.8), e produz uma
+`ADMISSIBLE MEMORY VIEW`.
+
+```text
+RETRIEVAL CHANGES VIEW
+RETRIEVAL DOES NOT REWRITE PATRIMONY
+
+RETRIEVAL != GOVERNANCE   RETRIEVAL != SEARCH    RETRIEVAL != MEMORY
+RETRIEVAL != STORAGE      RETRIEVAL != RANKING   RETRIEVAL != EXISTENCE
+NOT RETRIEVED != FORGOTTEN
+NO RESULT     != NEVER EXISTED
+DENIED        != EMPTY RESULT
+```
+
+A E3 permanece a única fonte da verdade do patrimônio.
+
+---
+
+## 2. A porta estrutural — e por que ela é tipada
+
+`app/memory` não importa `app.cognitive`. O §10 exigia composição
+**tipada**, sem reflexão e sem `Any`. A inspeção do código real mostrou
+que isso é alcançável, e o achado que destrava tudo é este:
+
+> `AccessibilityState` e `RevisionStatus` são `StrEnum` na E3.
+
+Portanto uma property de protocolo tipada como `str` é satisfeita
+**covariantemente** por um atributo `Mapped[AccessibilityState]`. A E4.6
+lê o token sem importar o enum.
+
+```python
+CriteriaT_contra = TypeVar("CriteriaT_contra", contravariant=True)
+
+class CognitiveObjectView(Protocol):        # id, clid, accessibility,
+    ...                                      # revision_status, created_at,
+                                             # deleted_at — só properties
+
+class CognitiveSearchPort(Protocol[CriteriaT_contra]):
+    def search(self, criteria, *, limit=None, offset=None) -> Sequence[CognitiveObjectView]: ...
+```
+
+- **critérios opacos**: `CriteriaT_contra` é contravariante e a E4.6
+  nunca inspeciona os critérios. O vocabulário continua sendo o da E3.8
+  (`coid`, `clid`, `accessibility`, `revision_status`, `trace_id`,
+  `created_from`, `created_until`, `include_deleted`), e recriá-lo aqui
+  produziria um segundo `SearchCriteria` que divergiria do primeiro;
+- **resultado estrutural**: satisfeito pelo `CognitiveObject` real sem
+  que ele saiba da porta;
+- **retorno covariante**: `Sequence[...]` aceita `list[CognitiveObject]`.
+
+Verificado, não presumido: `isinstance(SearchEngine(...), CognitiveSearchPort)`
+e `isinstance(CognitiveObject(), CognitiveObjectView)` são asserções de
+teste, unitário e de integração.
+
+Precedente: as portas da E4.5. A diferença é que lá a forma do recibo
+era conhecida; aqui os critérios precisam permanecer desconhecidos.
+
+**Nenhuma Stop Condition do §20.6 foi acionada.**
+
+Custo declarado — o mesmo que a E4.4 assumiu ao ler a E3 por descritores
+de tabela: acoplamento por **forma**, não por tipo nominal. Se a E3
+renomear um campo ou trocar o tipo base de um enum, isto quebra aqui, e
+é o mypy que deve apontar.
+
+---
+
+## 3. Ordem canônica da operação
+
+```text
+1. validar limit/offset e o descritor
+2. exigir CognitiveOperation.READ
+3. validar o MemoryContext (contrato da E4.2)
+4. GovernanceManager.resolve() — caminho canônico
+5. se não autorizado: resultado explícito, SEM Search e SEM memberships
+6. escopo contextual de domínios (união)
+7. Search da E3 em lotes determinísticos
+8. filtros de admissibilidade
+9. paginação DEPOIS dos filtros
+10. projeção em value objects imutáveis
+```
+
+**Governança precede qualquer toque no patrimônio** — inclusive a
+leitura de memberships destinada a compor a vista. Sob recusa, a
+quantidade de objetos, ou o fato de existirem, já seria informação
+vazada. Provado com contador de chamadas em `SearchEngine.search` e em
+`list_memberships_of_domain`, nos três desfechos de recusa.
+
+Só `resolution.execution_authorized is True` autoriza a Search. A
+assinatura pública não oferece por onde injetar autoridade externa: só
+`policy_key` — não há `policy`, `resolution`, `authorized` nem `rules`,
+verificado por inspeção da assinatura.
+
+```text
+ACTOR PRESENCE != AUTHORIZATION       POLICY ABSENCE != ADMISSION
+NOT_APPLICABLE != ADMISSIBLE          INADMISSIBLE   != EMPTY SEARCH
+PROHIBITED     != LOCAL DENIAL
+```
+
+Um descritor de outra operação é recusado **antes** da resolução: não é
+pedido de leitura que a governança deva julgar, é pedido endereçado ao
+módulo errado.
+
+---
+
+## 4. Recusa não é vista vazia
+
+```text
+NEGADO      → search_executed=False, items=(), has_more=None
+AUTORIZADO  → search_executed=True,  items=tupla,  has_more=bool
+```
+
+Deliberadamente **não existe campo de contagem**. Registrar
+`matched_count = 0` numa recusa afirmaria que uma busca ocorreu e nada
+encontrou — vazando que o patrimônio está vazio sob aqueles critérios.
+Silêncio sobre existência é parte da recusa, e há teste verificando que o
+atributo não existe.
+
+Busca autorizada com `items = ()` é resultado **legítimo** e continua
+distinguível pela combinação `search_executed=True` / `has_more=False`.
+
+A `GovernanceResolution` é preservada íntegra, inclusive as alternativas
+admissíveis da fronteira de segurança: a E4.6 não inventa, não remove e
+não reclassifica nenhuma.
+
+Todos os invariantes vivem em `__post_init__`, valem no construtor direto
+e em `dataclasses.replace()` — sexta vez que o projeto aplica a lição
+(E4.2.1, E4.3.2, E4.4.1, E3.4.2.1, E4.5.1):
+
+```text
+frozen=True ALONE != DEEP IMMUTABILITY
+```
+
+---
+
+## 5. Domínios — união
+
+```text
+MULTI_DOMAIN_CONTEXT = UNION OF DECLARED DOMAIN MEMBERSHIPS
+scope(D1, D2) = members(D1) ∪ members(D2)
+```
+
+O contexto declara um conjunto de **perspectivas**, não uma conjunção de
+requisitos. Exigir pertencimento simultâneo introduziria interseção
+restritiva que o contrato não indica — e a interseção que a governança já
+faz é outra decisão, sobre outra coisa.
+
+| Situação | Comportamento |
+|---|---|
+| contexto com domínios | só COIDs em ao menos um domínio declarado |
+| contexto sem domínios | nenhum filtro de domínio |
+| COID em dois domínios | aparece **uma** vez |
+| objeto zero-domain | aparece sem recorte; não aparece com recorte |
+| domínio desconhecido | diagnóstico da E4.2, **não** vista vazia |
+
+`session_id`, `actor_ref` e `purpose` não filtram objeto: influenciam
+governança, não a identidade do patrimônio.
+
+**Limitação declarada:** o escopo é materializado uma vez, com uma
+consulta por domínio declarado, e cresce com o total de membros desses
+domínios. Uma versão incremental exigiria consulta por candidato — troca
+de custo, não de semântica.
+
+---
+
+## 6. Accessibility na vista
+
+```text
+ACTIVE, LATENT           → retrievable
+INACCESSIBLE             → not exposed
+CAUSALLY_EXTINCT         → not exposed
+soft-deleted             → not exposed
+```
+
+Comparação por **igualdade exata** dos tokens persistidos
+(`"active"`, `"latent"`), sem normalização — mesma disciplina congelada
+na E4.5.1 para `qualifier`.
+
+O filtro de soft-deleted é **defensivo**: vale mesmo que um critério
+traga `include_deleted=True`, porque auditoria histórica pertence aos
+caminhos próprios da E3/E4.4. Provado em integração.
+
+```text
+INACCESSIBLE     != NONEXISTENT
+CAUSALLY_EXTINCT != HISTORICALLY ERASED
+FILTERED OUT     != DELETED
+```
+
+Os objetos excluídos permanecem **íntegros no banco** — verificado por
+contagem direta após o retrieval.
+
+A E4.6 lê estados e não executa transições. Não altera estado, não
+reativa objeto, não infere extinção, não cria `AccessibilityPolicy` e não
+antecipa a matriz de transições da E4.7 — da qual **não depende**.
+
+---
+
+## 7. Paginação depois dos filtros
+
+O erro que este desenho evita: aplicar `limit`/`offset` ao conjunto bruto
+da Search e filtrar depois produz páginas incompletas, buracos entre
+páginas e `has_more` errado, porque há candidatos que os filtros
+contextuais descartam.
+
+Implementação: Search em lotes determinísticos (`SEARCH_BATCH_SIZE = 100`,
+independente do `limit` público) → filtros → descarta `offset` sobre
+itens **já admissíveis** → coleta `limit + 1` → deriva `has_more`.
+
+```text
+DEFAULT_LIMIT = 50    MAX_LIMIT = 100    limit >= 1    offset >= 0
+```
+
+O total contextual **não** é exposto: apurá-lo exigiria varrer
+integralmente todos os candidatos, e `has_more` basta nesta etapa.
+
+Nada reordena. A ordenação é a canônica da E3 (`created_at ASC, id ASC`)
+e **ordem não é ranking**.
+
+Há testes construídos para que uma paginação "filtrar depois do limit"
+falhe de forma determinística: admissíveis e inadmissíveis intercalados,
+com asserção de que cada página tem exatamente 2 itens — no unitário e
+contra PostgreSQL.
+
+---
+
+## 8. Distinções preservadas
+
+Nada é privilegiado em silêncio: nem `CURRENT` sobre `SUPERSEDED`, nem
+consolidação sobre suas fontes, nem objeto com CLID sobre objeto sem
+CLID, nem objeto com evidência de continuidade sobre objeto sem ela.
+
+```text
+MISSING CONTINUITY EVIDENCE != RETRIEVAL INADMISSIBILITY
+CONSOLIDATION != SOURCE REPLACEMENT
+DIVERGENCE != INVALIDITY
+```
+
+A E4.6 nem sequer recebe o `PersistenceManager` — verificado por
+inspeção da assinatura do construtor.
+
+**Nenhuma desduplicação** por CLID, equivalência, conteúdo presumido,
+cadeia de revisão, consolidação ou similaridade. Só o mesmo **COID**
+repetido é tratado como defeito, e produz diagnóstico explícito
+(`PIA-8033`) em vez de escolha silenciosa de qual ocorrência apresentar.
+
+Ausentes por construção, verificado sobre o **código executável** (AST
+sem literais de string): score, rank, relevance, top-k, embedding,
+vector, similarity, popularity, recency, trust, weight.
+
+---
+
+## 9. Somente leitura
+
+```text
+MEMORY_RETRIEVAL_PERSISTENCE = TRANSIENT
+NEW_PERSISTENT_ENTITY = NO   MIGRATION_REQUIRED = NO
+DATABASE_WRITES_DURING_RETRIEVAL = 0
+```
+
+Sem `commit()`, `flush()` ou `session.add()`. Sem tabela de retrieval,
+saved search, cache persistente, query history, view materializada,
+índice vetorial, transcript, log cognitivo, evento causal, experiência
+validada, policy, domínio ou membership.
+
+Provado por listener de cursor contra PostgreSQL, nos dois caminhos
+(autorizado e negado), com verificação adicional de que a sessão fica sem
+`new`, `dirty` ou `deleted`.
+
+Erro de busca **não** vira lista vazia: a exceção sobe. Erro de busca não
+é aprendizado; resultado vazio não é experiência validada.
+
+---
+
+## 10. Erro novo
+
+`PIA-8033 RETRIEVAL_DUPLICATE_COID`, categoria `SYSTEM`. Confirmado como
+próximo código **global** livre por varredura dos dois catálogos (E4.5
+ocupou `PIA-8032`). É realmente levantado e tem testes — não é reserva
+preventiva. Próximo livre: `PIA-8034`.
+
+---
+
+## 11. Testes — contagens coletadas
+
+| Arquivo | Testes |
+|---|---|
+| `tests/unit/memory/test_retrieval.py` | **84** |
+| `tests/integration/memory/test_retrieval_integration.py` | **16** |
+| **Total E4.6** | **100** |
+
+### Classificação honesta
+
+A E4.6 não existia na cadeia 50. Executei os dois arquivos contra ela:
+**a coleta falha inteira**, com
+`ModuleNotFoundError: No module named 'app.memory.ports.retrieval'`.
+
+```text
+FALHAM POR DEFEITO CORRIGIDO ........................ 0
+FALHAM APENAS PORQUE O MÓDULO NÃO EXISTIA ........... 100
+```
+
+Nenhum teste é apresentado como provador de defeito, porque nenhum o é.
+
+Por **inspeção** — não por execução, já que a coleta não chega a rodar —
+cinco são guardas de regressão cujas asserções não tocam código da E4.6 e
+passariam nos dois lados se o módulo existisse: G17 (`r37`), drift de
+schema (`ri23`), migration head (`ri24`), ausência de tabela nova
+(`ri25`) e vocabulário de governança intocado (`r38d`). Registro a
+diferença entre inspeção e execução em vez de apresentar as duas como
+equivalentes.
+
+### Três defeitos meus, corrigidos
+
+**(a)** O helper de resolução montava proveniência de policy parcial;
+o invariante tudo-ou-nada da E4.3.2 corretamente recusa — `policy_id`
+faz parte da identidade.
+
+**(b)** Assumi `trace_id` como campo de `CognitiveObject` e `publish()`
+como método do repositório de policy. Nenhum dos dois existe:
+`trace_id` vive em `ProvenanceRecord` (a Search casa por junção) e o
+método é `add_policy()`. Corrigi inspecionando, não adivinhando.
+
+**(c)** O extrator de código executável removia apenas a **primeira**
+string de cada bloco, deixando passar as "docstrings de atributo" —
+string solta após uma constante de módulo. Uma delas contém
+`FILTERED OUT != DELETED`, e o teste de ausência de escrita acusou
+`DELETE`. Passou a remover toda expressão que seja só literal de string:
+elas documentam sem executar nada.
+
+E uma remoção: `admissible_accessibility_tokens()` ficou sem chamador —
+código morto por antecipação, revelado pela exigência de 100% e
+**removido**, não testado para existir. Mesmo padrão da E4.3.
+
+---
+
+## 12. Limitações declaradas
+
+- O escopo de domínios é materializado por consulta por domínio (§5).
+- Não há total contextual, apenas `has_more` (§7).
+- A conformidade estrutural é verificada por `isinstance`, que para
+  protocolos de dados checa presença de membros, não tipos; a checagem
+  de tipos é do mypy.
+- A E4.6 depende da forma dos campos da E3, não de seus tipos nominais —
+  renomear um campo quebra aqui.
+
+---
+
+## 13. Resultados
+
+```text
+FULL_SUITE = 1738 passed / 1 skipped / 0 failed   (baseline: 1638)
+RAW_SUITE  = 1499 passed / 240 skipped / 0 failed
+
+E3 = 598/598   E3.4.2/.1 = 134/134   E4.1 = 40/40   E4.2 = 42/42
+E4.3 = 108/108 E4.4 = 74/74          E4.5 = 187/187    (todos delta 0)
+E4.6 = 100 passed
+
+GLOBAL_COVERAGE = 98,96%   (baseline 98,91% — não decresceu)
+APP_COGNITIVE_COVERAGE = 100%    APP_MEMORY_COVERAGE = 100%
+RUFF = PASS   BLACK = PASS
+MYPY_TOTAL_ERRORS = 7 (idênticos à baseline)   MYPY_NEW_ERRORS = 0
+git diff --check = limpo   SCHEMA_ORM_DRIFT = 0
+MIGRATION_HEAD = 4ca61776b982 (inalterada, single-head)
+DATABASE_WRITES_DURING_RETRIEVAL = 0
+PostgreSQL 16.14 real
+```
+
+Trees protegidos byte a byte:
+`backend/app/cognitive = be407b46f679a009e0f7f7e9f01fb784f08dea54`,
+`backend/alembic = f01a1f812eb11695b9daeb6b1707e6477e9330fa`.
+
+### Escopo
+
+Produção (5): `ports/retrieval.py`, `ports/__init__.py`,
+`schemas/retrieval.py`, `services/retrieval_manager.py`, mais
+`errors/codes.py` e `errors/exceptions.py` (só o `PIA-8033`).
+Testes (2). Doc (1). Nenhum repository, model ORM, tabela, coluna, enum
+ou migração.
+
+---
+
+## 14. Stop Conditions
+
+```text
+STOP_CONDITIONS = NONE
+```
+
+Nenhuma das 16 do §20 ocorreu. Em particular: baseline conferiu
+integralmente; E3 e Alembic intactos; nenhuma semântica congelada de
+E4.1–E4.5 alterada; nenhum import de `app.cognitive` em produção da E4;
+G17 preservado; a composição tipada com a Search E3.8 foi possível **sem**
+reflexão e **sem** `Any`; nenhum SQL paralelo substituindo a Search;
+paginação correta após os filtros contextuais; nenhuma tabela, coluna,
+migração ou entidade persistente; nenhuma dependência de E4.7 ou E4.8;
+nenhum score, vector DB ou ranking; nenhum documento congelado corrigido
+em silêncio; nenhum enum da E3 ampliado; nenhuma regressão; PostgreSQL
+real disponível e todos os gates executados.
+
+---
+
+## 15. Gate
+
+```text
+E4_6_IMPLEMENTATION = COMPLETE
+E4_6_FINAL_STATUS   = AWAITING_INDEPENDENT_AUDIT
+PATCH_CHAIN = 51
+
+E4_7_IMPLEMENTATION = NOT_STARTED
+READY_FOR_E4_7      = FALSE
+```
+
+O implementador não declara `PASS FINAL`. E4.7 não é iniciada.

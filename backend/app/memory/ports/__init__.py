@@ -15,8 +15,11 @@ from app.memory.ports.consolidation import (
     MultiInputTransformationPort,
     MultiInputTransformationReceiptPort,
 )
+from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
 
 __all__ = [
+    "CognitiveObjectView",
+    "CognitiveSearchPort",
     "MultiInputTransformationPort",
     "MultiInputTransformationReceiptPort",
 ]
