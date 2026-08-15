@@ -1304,15 +1304,21 @@ def test_e461_hit_missing_a_required_attribute_is_a_contract_violation():
     manager, _, _, _ = _manager_infiel(objetos=[Incompleto()])
     with pytest.raises(RetrievalContractViolationError) as exc:
         _executar(manager)
-    assert len(exc.value.reasons) == 3
-    assert all("atributo obrigatório" in m for m in exc.value.reasons)
+    # A partir do corretivo E4.6.2 o acesso é tipado direto, sem
+    # `hasattr`: o `AttributeError` interrompe na PRIMEIRA ausência, e o
+    # diagnóstico reporta um motivo, não todos. É o custo declarado de
+    # abandonar a reflexão que o contrato da porta proíbe.
+    assert len(exc.value.reasons) == 1
+    assert "não satisfaz CognitiveObjectView" in exc.value.reasons[0]
 
 
 def test_e461_non_iterable_search_result_is_a_contract_violation():
     manager, _, _, _ = _manager_infiel(nao_iteravel=True)
     with pytest.raises(RetrievalContractViolationError) as exc:
         _executar(manager)
-    assert any("não é uma coleção" in m for m in exc.value.reasons)
+    # Mensagem passou a falar em `Sequence` no corretivo E4.6.2: o
+    # contrato da porta é mais estrito que "iterável".
+    assert any("não é uma Sequence" in m for m in exc.value.reasons)
 
 
 def test_e461_malformed_hit_is_detected_even_when_it_would_be_filtered_out():
@@ -1415,3 +1421,231 @@ def test_e461_pia_8033_still_means_only_duplicate_coid():
     with pytest.raises(RetrievalDuplicateCoidError) as exc:
         _executar(manager)
     assert exc.value.code == "PIA-8033"
+
+
+# ======================================================================
+# E4.6.2 — Search Sequence & No-Reflection Contract
+# ======================================================================
+#
+# Duas lacunas da E4.6.1:
+#
+#   F — o manager aceitava qualquer iterável, embora a porta declare
+#       `Sequence`; generator, set e dict passavam, e a ordem podia
+#       divergir da oficial da Search.
+#   G — a validação defensiva usava `hasattr`/`getattr`, contrariando o
+#       contrato que a própria porta declara.
+#
+#     SEQUENCE != ARBITRARY ITERABLE
+#     UNORDERED COLLECTION != DETERMINISTIC SEARCH RESULT
+
+
+class _PortaComRetorno:
+    """Devolve o lote no tipo pedido, respeitando limit/offset."""
+
+    def __init__(self, objetos, tipo: str) -> None:
+        self.objetos = list(objetos)
+        self.tipo = tipo
+        self.chamadas: list[dict] = []
+
+    def search(self, criteria, *, limit=None, offset=None):
+        self.chamadas.append({"limit": limit, "offset": offset})
+        inicio = offset or 0
+        fatia = self.objetos[inicio : inicio + (limit or len(self.objetos))]
+        if self.tipo == "generator":
+            return (o for o in fatia)
+        if self.tipo == "set":
+            return set(fatia)
+        if self.tipo == "dict":
+            return {o: 1 for o in fatia}
+        if self.tipo == "str":
+            return "abc"
+        if self.tipo == "bytes":
+            return b"abc"
+        if self.tipo == "tuple":
+            return tuple(fatia)
+        return fatia
+
+
+def _manager_com_retorno(objetos, tipo: str):
+    porta = _PortaComRetorno(objetos, tipo)
+    manager = MemoryRetrievalManager(
+        porta,
+        GovernanceFalso(_resolucao(), eco_policy=False),
+        ContextoFalso(),
+        MembershipsFalsas(),
+    )
+    return manager, porta
+
+
+# --- Defeito F: contrato de retorno ----------------------------------
+
+
+@pytest.mark.parametrize("tipo", ["generator", "set", "dict"])
+def test_e462_non_sequence_return_is_a_contract_violation(tipo):
+    """Uma `Sequence` tem **ordem**, e a ordem da Search da E3 é o
+    contrato determinístico do qual a paginação depende."""
+    manager, _ = _manager_com_retorno(_objetos(5), tipo)
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert exc.value.code == "PIA-8034"
+    assert any("não é uma Sequence" in m for m in exc.value.reasons)
+
+
+@pytest.mark.parametrize("tipo", ["str", "bytes"])
+def test_e462_str_and_bytes_remain_invalid_even_being_sequences(tipo):
+    """`str` e `bytes` implementam `Sequence`, mas são sequências de
+    caracteres, não de objetos cognitivos."""
+    manager, _ = _manager_com_retorno(_objetos(3), tipo)
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert exc.value.code == "PIA-8034"
+
+
+@pytest.mark.parametrize("tipo", ["list", "tuple"])
+def test_e462_list_and_tuple_remain_accepted(tipo):
+    objetos = _objetos(5)
+    manager, _ = _manager_com_retorno(objetos, tipo)
+    resultado = _executar(manager)
+    assert resultado.coids == tuple(o.id for o in objetos)
+
+
+def test_e462_official_search_order_is_preserved_exactly():
+    """A E4.6 preserva a ordem oficial; não fabrica outra."""
+    objetos = _objetos(12)
+    manager, _ = _manager_com_retorno(objetos, "list")
+    resultado = _executar(manager, limit=MAX_LIMIT)
+    assert resultado.coids == tuple(o.id for o in objetos)
+
+
+def test_e462_correction_does_not_materialize_or_sort_the_violation():
+    """Converter um generator em `list`, ou ordenar um `set`, esconderia
+    a violação e fabricaria uma ordem que a Search não produziu.
+
+    Prova por ausência estrutural sobre o código executável: o coletor
+    não constrói `list(...)` a partir do retorno nem o ordena.
+    """
+    executavel = _coletar_executavel()
+    for proibido in ("list(bruto)", "sorted(bruto)", "sorted(lote)", ".sort("):
+        assert proibido not in executavel, f"conversão/ordenação encontrada: {proibido}"
+
+
+def test_e462_violation_is_detected_before_any_item_is_collected():
+    """O retorno inválido é recusado antes de qualquer filtro ou coleta —
+    não vira vista vazia."""
+    manager, porta = _manager_com_retorno(_objetos(5), "set")
+    with pytest.raises(RetrievalContractViolationError):
+        _executar(manager)
+    assert len(porta.chamadas) == 1
+
+
+# --- Defeito G: ausência de reflexão ---------------------------------
+
+
+def _coletar_executavel() -> str:
+    """Código executável de `_coletar` e `_validar_hit`, sem docstrings.
+
+    As docstrings desses métodos citam nominalmente `hasattr` e `getattr`
+    ao explicar o que **não** fazem; comparar o texto bruto produziria
+    falso positivo, o mesmo erro que a E4.3.1 corrigiu em `gv16`.
+    """
+    import app.memory.services.retrieval_manager as manager_mod
+
+    arvore = ast.parse(pathlib.Path(manager_mod.__file__).read_text(encoding="utf-8"))
+    partes = []
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.FunctionDef) and no.name in {"_coletar", "_validar_hit"}:
+            corpo = [
+                filho
+                for filho in no.body
+                if not (
+                    isinstance(filho, ast.Expr)
+                    and isinstance(filho.value, ast.Constant)
+                    and isinstance(filho.value.value, str)
+                )
+            ]
+            no.body = corpo or [ast.Pass()]
+            partes.append(ast.unparse(no))
+    assert len(partes) == 2, "os dois métodos precisam existir para a inspeção valer"
+    return "\n".join(partes)
+
+
+@pytest.mark.parametrize(
+    "proibido",
+    ["hasattr(", "getattr(", "vars(", "__dict__", "inspect.", "cast(", "type: ignore"],
+)
+def test_e462_no_reflection_in_the_collector_or_the_hit_validator(proibido):
+    """O contrato que a própria porta declara — e que a E4.6.1 violava
+    enquanto o documentava."""
+    assert proibido not in _coletar_executavel()
+
+
+def test_e462_port_contract_and_executable_code_no_longer_contradict():
+    """A porta declara "nenhum getattr, nenhuma reflexão". Agora o código
+    executável cumpre o que a documentação afirma."""
+    import app.memory.ports.retrieval as porta_mod
+
+    fonte_da_porta = pathlib.Path(porta_mod.__file__).read_text(encoding="utf-8")
+    assert "nenhuma reflexão" in fonte_da_porta
+    executavel = _coletar_executavel()
+    assert "getattr" not in executavel
+    assert "hasattr" not in executavel
+
+
+def test_e462_typed_field_access_still_diagnoses_invalid_types():
+    """A validação continua defensiva, só que sem reflexão."""
+    manager, _, _, _ = _manager_infiel(objetos=[ObjetoFalso(id=uuid.uuid4(), created_at="ontem")])
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert any("created_at deve ser datetime" in m for m in exc.value.reasons)
+
+
+def test_e462_typed_field_access_still_diagnoses_unknown_tokens():
+    manager, _, _, _ = _manager_infiel(
+        objetos=[ObjetoFalso(id=uuid.uuid4(), accessibility="quantum")]
+    )
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert any("não pertence ao vocabulário" in m for m in exc.value.reasons)
+
+
+def test_e462_multiple_invalid_fields_still_accumulate_reasons():
+    """Campos **presentes** e malformados continuam acumulando motivos;
+    só a ausência de atributo é que passou a interromper na primeira."""
+    manager, _, _, _ = _manager_infiel(
+        objetos=[ObjetoFalso(id="nao-uuid", clid="nao-uuid", accessibility=123, created_at="ontem")]
+    )
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert len(exc.value.reasons) >= 4
+
+
+def test_e462_hits_are_still_validated_before_the_filters():
+    """Um hit inadmissível **e** malformado continua sendo violação, não
+    exclusão silenciosa."""
+    manager, _, _, _ = _manager_infiel(
+        objetos=[ObjetoFalso(id=uuid.uuid4(), accessibility="inaccessible", created_at="ontem")]
+    )
+    with pytest.raises(RetrievalContractViolationError):
+        _executar(manager)
+
+
+def test_e462_pia_8033_remains_reserved_for_duplicate_coid():
+    objeto = _objetos(1)[0]
+    manager, _, _, _, _ = _manager(objetos=[objeto, objeto])
+    with pytest.raises(RetrievalDuplicateCoidError) as exc:
+        _executar(manager)
+    assert exc.value.code == "PIA-8033"
+
+
+def test_e462_real_search_engine_still_satisfies_the_port():
+    """O `SearchEngine` da E3.8 devolve `list`, que é `Sequence` — a
+    correção não o exclui."""
+    from app.cognitive.services.search_engine import SearchEngine
+
+    assert isinstance(SearchEngine.__new__(SearchEngine), CognitiveSearchPort)
+    import inspect as _inspect
+    from collections.abc import Sequence as _Sequence
+
+    anotacao = _inspect.signature(SearchEngine.search).return_annotation
+    assert anotacao.__origin__ is list
+    assert issubclass(list, _Sequence)

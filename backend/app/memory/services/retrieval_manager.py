@@ -49,6 +49,7 @@ experiência validada.
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Generic, TypeVar
@@ -81,17 +82,6 @@ from app.utils.logger import get_logger
 logger = get_logger("app.memory.services.retrieval_manager")
 
 CriteriaT = TypeVar("CriteriaT")
-
-_CAMPOS_DO_CONTRATO: tuple[str, ...] = (
-    "id",
-    "clid",
-    "accessibility",
-    "revision_status",
-    "created_at",
-    "deleted_at",
-)
-"""Campos que a porta promete em `CognitiveObjectView`, verificados em
-cada candidato antes de qualquer filtro (corretivo E4.6.1)."""
 
 SEARCH_BATCH_SIZE = 100
 """Tamanho do lote lido da Search da E3 a cada passagem.
@@ -446,14 +436,30 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
 
         while len(admissiveis) <= limit:
             bruto = self._search.search(criteria, limit=SEARCH_BATCH_SIZE, offset=posicao)
-            if isinstance(bruto, str | bytes) or not hasattr(bruto, "__iter__"):
+            # `CognitiveSearchPort` declara `Sequence`, e a diferença é
+            # semântica, não formal: uma `Sequence` tem **ordem**, e a
+            # ordem da Search da E3 é o contrato determinístico do qual a
+            # paginação depende.
+            #
+            #     SEQUENCE != ARBITRARY ITERABLE
+            #     UNORDERED COLLECTION != DETERMINISTIC SEARCH RESULT
+            #
+            # `str` e `bytes` são `Sequence` e continuam inválidos: são
+            # sequências de caracteres, não de objetos cognitivos.
+            #
+            # Nada é convertido nem reordenado aqui. Fazer `list(bruto)`
+            # de um generator faria a violação parecer válida, e ordenar
+            # um `set` fabricaria uma ordem que a Search não produziu —
+            # nos dois casos a E4.6 estaria escondendo o defeito da porta
+            # em vez de reportá-lo.
+            if isinstance(bruto, str | bytes) or not isinstance(bruto, Sequence):
                 raise RetrievalContractViolationError(
                     (
-                        "a porta de Search devolveu "
-                        f"{type(bruto).__name__}, que não é uma coleção de objetos",
+                        f"a porta de Search devolveu {type(bruto).__name__}, que não é "
+                        "uma Sequence — a ordem determinística da E3 é parte do contrato",
                     )
                 )
-            lote = list(bruto)
+            lote = bruto
             if not lote:
                 break
             posicao += len(lote)
@@ -488,7 +494,7 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
 
     @staticmethod
     def _validar_hit(objeto: CognitiveObjectView) -> None:
-        """Confere que o candidato satisfaz o contrato da porta (E4.6.1).
+        """Confere que o candidato satisfaz o contrato da porta.
 
         ```text
         id              = uuid.UUID
@@ -506,34 +512,41 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         Nada é normalizado — sem `lower()`, `upper()`, `casefold()` ou
         coerção. Mesma disciplina congelada na E4.5.1 para `qualifier`.
 
-        Acumula todos os motivos: um hit malformado costuma sê-lo em mais
-        de um campo.
+        **Acesso tipado direto, sem reflexão** (corretivo E4.6.2). A
+        versão anterior usava `hasattr`/`getattr`, contrariando o
+        contrato que a própria porta declara — documentação e código
+        executável se contradiziam. Os campos são lidos pelo nome, como
+        `CognitiveObjectView` os declara, e um objeto que não os ofereça
+        levanta `AttributeError`, convertido aqui em diagnóstico
+        explícito.
 
-        O parâmetro é tipado como `CognitiveObjectView` — o que a porta
-        **promete**. A leitura por `getattr` existe porque esta função
-        verifica justamente o caso em que a promessa não se cumpre;
-        anotar `object` ou `Any` aqui seria abrir mão da tipagem da
-        porta, e é o oposto do que a fronteira estrutural exige.
+        Custo declarado da mudança: `AttributeError` interrompe na
+        **primeira** ausência, então um hit sem vários campos reporta um
+        motivo, não todos. Mantê-los todos exigiria a reflexão que o
+        contrato proíbe; entre reportar menos e violar o contrato,
+        reporta-se menos.
         """
-        ausentes = tuple(
-            atributo for atributo in _CAMPOS_DO_CONTRATO if not hasattr(objeto, atributo)
-        )
-        if ausentes:
+        try:
+            identidade = objeto.id
+            continuidade = objeto.clid
+            acessibilidade = objeto.accessibility
+            revisao = objeto.revision_status
+            criado_em = objeto.created_at
+            apagado_em = objeto.deleted_at
+        except AttributeError as exc:
             raise RetrievalContractViolationError(
-                tuple(f"hit sem o atributo obrigatório {a!r}" for a in ausentes)
-            )
+                (f"hit não satisfaz CognitiveObjectView: {exc}",)
+            ) from exc
 
-        bruto: dict[str, object] = {a: getattr(objeto, a) for a in _CAMPOS_DO_CONTRATO}
         motivos: list[str] = []
 
-        if not isinstance(bruto["id"], uuid.UUID):
-            motivos.append(f"id deve ser uuid.UUID, recebido {type(bruto['id']).__name__}")
-        if bruto["clid"] is not None and not isinstance(bruto["clid"], uuid.UUID):
+        if not isinstance(identidade, uuid.UUID):
+            motivos.append(f"id deve ser uuid.UUID, recebido {type(identidade).__name__}")
+        if continuidade is not None and not isinstance(continuidade, uuid.UUID):
             motivos.append(
-                f"clid deve ser uuid.UUID ou None, recebido {type(bruto['clid']).__name__}"
+                f"clid deve ser uuid.UUID ou None, recebido {type(continuidade).__name__}"
             )
 
-        acessibilidade = bruto["accessibility"]
         if not isinstance(acessibilidade, str):
             motivos.append(f"accessibility deve ser str, recebido {type(acessibilidade).__name__}")
         elif acessibilidade not in KNOWN_ACCESSIBILITY_TOKENS:
@@ -542,7 +555,6 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
                 f"{sorted(KNOWN_ACCESSIBILITY_TOKENS)}"
             )
 
-        revisao = bruto["revision_status"]
         if revisao is not None:
             if not isinstance(revisao, str):
                 motivos.append(
@@ -554,14 +566,11 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
                     f"{sorted(KNOWN_REVISION_TOKENS)}"
                 )
 
-        if not isinstance(bruto["created_at"], datetime):
+        if not isinstance(criado_em, datetime):
+            motivos.append(f"created_at deve ser datetime, recebido {type(criado_em).__name__}")
+        if apagado_em is not None and not isinstance(apagado_em, datetime):
             motivos.append(
-                f"created_at deve ser datetime, recebido {type(bruto['created_at']).__name__}"
-            )
-        if bruto["deleted_at"] is not None and not isinstance(bruto["deleted_at"], datetime):
-            motivos.append(
-                "deleted_at deve ser datetime ou None, recebido "
-                f"{type(bruto['deleted_at']).__name__}"
+                f"deleted_at deve ser datetime ou None, recebido {type(apagado_em).__name__}"
             )
 
         if motivos:

@@ -619,3 +619,143 @@ PATCH_CHAIN = 52
 E4_7_IMPLEMENTATION = NOT_STARTED
 READY_FOR_E4_7 = FALSE
 ```
+
+---
+
+## 17. Corretivo E4.6.2 — Search Sequence & No-Reflection Contract
+
+**Patch 53.** Duas lacunas remanescentes da E4.6.1, ambas reproduzidas
+contra a cadeia 52 antes de qualquer correção.
+
+### Defeito F — contrato de retorno subvalidado
+
+`CognitiveSearchPort` declara `Sequence`, mas o coletor aceitava
+qualquer iterável:
+
+```text
+GENERATOR_ACCEPTED = TRUE
+SET_ACCEPTED = TRUE
+DICT_ACCEPTED = TRUE
+CANONICAL_ORDER_PRESERVED = FALSE   (com 30 objetos)
+```
+
+Com 4 objetos a ordem coincidiu por acaso; com 30 a divergência
+apareceu. Registro os dois resultados porque a reprodução com poucos
+elementos **não** demonstra o defeito — é o tipo de verificação que
+passa por sorte.
+
+`Sequence` não é detalhe formal:
+
+```text
+SEQUENCE             != ARBITRARY ITERABLE
+UNORDERED COLLECTION != DETERMINISTIC SEARCH RESULT
+```
+
+Uma `Sequence` tem **ordem**, e a ordem da Search da E3 é o contrato
+determinístico do qual a paginação da E4.6 depende. Um `set` entrega os
+mesmos objetos numa ordem que ninguém definiu; um generator não é
+reposicionável.
+
+**Por que não converter nem ordenar.** `list(bruto)` faria um generator
+parecer válido, e `sorted(...)` de um `set` fabricaria uma ordem que a
+Search não produziu — a E4.6 estaria escondendo o defeito da porta em
+vez de reportá-lo, e apresentaria como "ordem oficial" algo que inventou.
+A E4.6 **preserva** a ordem oficial; não fabrica outra. Há teste de
+ausência estrutural verificando que o coletor não constrói `list(bruto)`
+nem ordena.
+
+`str` e `bytes` continuam inválidos, embora implementem `Sequence`: são
+sequências de caracteres, não de objetos cognitivos.
+
+### Defeito G — reflexão contrária ao contrato
+
+`_coletar` usava `hasattr`; `_validar_hit` usava `hasattr` **e**
+`getattr`. E `app/memory/ports/retrieval.py` declara, na própria
+docstring, "nenhum `getattr`, nenhuma reflexão".
+
+**A documentação e o código executável se contradiziam — e a
+contradição era minha, com uma docstring escrita para justificá-la.** A
+E4.6.1 acrescentou um parágrafo explicando por que o `getattr` seria
+aceitável ali. Não era: o contrato já dizia o contrário, e um comentário
+não revoga um contrato.
+
+A validação passou a ler os seis campos por **acesso tipado direto**,
+dentro de um `try/except AttributeError` convertido em `PIA-8034`. Sem
+`Any`, `cast`, `type: ignore`, `vars`, `__dict__`, `inspect`, `getattr`
+ou `hasattr` — verificado por inspeção AST do código executável dos dois
+métodos, com as docstrings removidas (elas citam nominalmente o que o
+módulo não faz).
+
+**Custo declarado.** `AttributeError` interrompe na **primeira**
+ausência, então um hit sem vários campos passa a reportar um motivo em
+vez de todos. Campos **presentes** e malformados continuam acumulando
+motivos. Entre reportar menos e violar o contrato que a própria porta
+declara, reporta-se menos — e o teste da E4.6.1 que asserava três
+motivos foi ajustado para refletir isso, não removido.
+
+### Diagnóstico
+
+Apenas `PIA-8034`. Nenhum código novo. `PIA-8033` continua exclusivo de
+COID duplicado, com teste que o confirma.
+
+### Testes
+
+| Arquivo | Cadeia 52 | Cadeia 53 | Δ |
+|---|---|---|---|
+| `tests/unit/memory/test_retrieval.py` | 128 | **152** | +24 |
+| `tests/integration/memory/test_retrieval_integration.py` | 25 | **31** | +6 |
+| **Total** | **153** | **183** | **+30** |
+
+Classificação **obtida por execução** contra a cadeia 52:
+
+```text
+FALHAM NA 52, PASSAM NA 53 ......... 8 unitários + 4 integração = 12
+PASSAM NOS DOIS LADOS (guardas) .... 16 unitários + 2 integração = 18
+```
+
+Nenhuma falha por símbolo novo ou erro de coleta: os arquivos coletam
+integralmente na cadeia 52, porque o corretivo não introduziu nome
+público novo — só endureceu comportamento. Os 18 guardas verificam o que
+já funcionava (list/tuple aceitos, tipos e tokens diagnosticados, ordem
+oficial preservada, composição real intacta) e agora ficam travados
+contra regressão.
+
+Dois testes da E4.6.1 foram **ajustados**, não removidos: um asserava
+três motivos para atributos ausentes (agora um, pelo custo declarado
+acima) e outro asserava a mensagem "não é uma coleção", que passou a
+dizer "não é uma `Sequence`" — o contrato é mais estrito que "iterável".
+
+### Contradição documental corrigida
+
+A seção 2 deste documento continha o parágrafo da E4.6.1 que justificava
+o `getattr`. Foi removido no mesmo patch: documentação que descreve
+comportamento inexistente é pior que documentação ausente.
+
+### Resultados
+
+```text
+FULL_SUITE = 1821 passed / 1 skipped / 0 failed   (candidata: 1791)
+RAW_SUITE  = 1567 passed / 255 skipped / 0 failed
+
+E3 = 598/598   E3.4.2/.1 = 134/134   E4.1 = 40/40   E4.2 = 42/42
+E4.3 = 108/108 E4.4 = 74/74          E4.5 = 187/187    (todos delta 0)
+E4.6 + .1 + .2 = 183 passed
+
+GLOBAL_COVERAGE = 98,98%   (não reduziu)
+APP_COGNITIVE_COVERAGE = 100%    APP_MEMORY_COVERAGE = 100%
+RUFF = PASS   BLACK = PASS   MYPY_NEW_ERRORS = 0
+SCHEMA_ORM_DRIFT = 0   MIGRATION_HEAD = 4ca61776b982
+DATABASE_WRITES_DURING_RETRIEVAL = 0
+```
+
+Stop Condition 1 verificada explicitamente: o `SearchEngine` real
+devolve `list`, que **é** `Sequence` — a correção não o exclui, e há
+teste de integração que confere isso contra o banco.
+
+```text
+E4_6_2_IMPLEMENTATION = COMPLETE
+E4_6_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
+PATCH_CHAIN = 53
+E4_7_IMPLEMENTATION = NOT_STARTED
+READY_FOR_E4_7 = FALSE
+```

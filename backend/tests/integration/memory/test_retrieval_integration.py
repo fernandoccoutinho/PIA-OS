@@ -875,3 +875,174 @@ def test_ri461_untampered_real_composition_remains_intact():
         assert resultado.governance_resolution.operation is CognitiveOperation.READ
     finally:
         _limpar(coids, [], [chave])
+
+
+# ======================================================================
+# E4.6.2 — Sequence & no-reflection, contra o banco real
+# ======================================================================
+
+
+class _PortaNaoSequencial:
+    """Delega ao `SearchEngine` real e reembrulha o retorno.
+
+    A Search real executa e devolve `list`; só o **tipo do invólucro**
+    muda. É o defeito F na forma em que ele apareceria de verdade: uma
+    implementação de porta que devolve algo ordenado por acaso, ou nada
+    ordenado.
+    """
+
+    def __init__(self, real, tipo: str) -> None:
+        self._real = real
+        self._tipo = tipo
+        self.chamadas = 0
+
+    def search(self, criteria, *, limit=None, offset=None):
+        self.chamadas += 1
+        hits = list(self._real.search(criteria, limit=limit, offset=offset))
+        if self._tipo == "generator":
+            return (h for h in hits)
+        if self._tipo == "set":
+            return set(hits)
+        return {h: 1 for h in hits}
+
+
+@pytest.mark.parametrize("tipo", ["generator", "set", "dict"])
+def test_ri462_non_sequence_return_from_a_real_port_is_a_violation(tipo):
+    """Defeito F contra o banco: a Search real executou, o invólucro é
+    que viola o contrato.
+
+        SEQUENCE != ARBITRARY ITERABLE
+        UNORDERED COLLECTION != DETERMINISTIC SEARCH RESULT
+    """
+    from app.memory.errors.exceptions import RetrievalContractViolationError
+
+    trace = _trace()
+    coids = _criar_objetos(4, trace_id=trace)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    try:
+        with UnitOfWork() as uow:
+            _, porta_real = _compor(uow.session)
+            porta = _PortaNaoSequencial(porta_real, tipo)
+            manager = MemoryRetrievalManager(
+                porta,
+                GovernanceManager(GovernancePolicyRepository(uow.session)),
+                ContextManager(MemoryDomainRepository(uow.session)),
+                MemoryDomainMembershipRepository(uow.session),
+            )
+            with pytest.raises(RetrievalContractViolationError) as exc:
+                manager.retrieve(
+                    context=MemoryContext(),
+                    descriptor=_descritor(),
+                    criteria=SearchCriteria(trace_id=trace),
+                    policy_key=chave,
+                )
+        assert exc.value.code == "PIA-8034"
+        assert porta.chamadas == 1, "a Search real precisa ter executado"
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri462_real_search_returns_a_sequence_and_composition_is_intact():
+    """§Stop Condition 1 verificada: o `SearchEngine` real devolve
+    `list`, que é `Sequence` — a correção não o exclui."""
+    from collections.abc import Sequence
+
+    trace = _trace()
+    coids = _criar_objetos(3, trace_id=trace)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    try:
+        with UnitOfWork() as uow:
+            manager, porta = _compor(uow.session)
+            bruto = porta.search(SearchCriteria(trace_id=trace))
+            assert isinstance(bruto, Sequence)
+            assert not isinstance(bruto, str | bytes)
+
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+            )
+        assert set(resultado.coids) == set(coids)
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri462_official_order_and_pagination_survive_repeated_runs():
+    """§15 — ordem e paginação oficiais preservadas, verificadas várias
+    vezes para descartar coincidência de ordenação de UUID."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(7, trace_id=trace)
+    try:
+        observadas: list[tuple[uuid.UUID, ...]] = []
+        for _ in range(5):
+            paginas: list[uuid.UUID] = []
+            with UnitOfWork() as uow:
+                manager, _ = _compor(uow.session)
+                for offset in range(0, 8, 3):
+                    pagina = manager.retrieve(
+                        context=MemoryContext(),
+                        descriptor=_descritor(),
+                        criteria=SearchCriteria(trace_id=trace),
+                        policy_key=chave,
+                        limit=3,
+                        offset=offset,
+                    )
+                    paginas.extend(pagina.coids)
+            observadas.append(tuple(paginas))
+
+        assert len(set(observadas)) == 1, "ordem instável entre execuções"
+        completo = observadas[0]
+        assert len(completo) == 7
+        assert len(set(completo)) == 7
+        assert set(completo) == set(coids)
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri462_no_writes_during_a_violating_retrieval():
+    """§16 — nem o caminho de violação escreve."""
+    from app.memory.errors.exceptions import RetrievalContractViolationError
+
+    trace = _trace()
+    coids = _criar_objetos(3, trace_id=trace)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    try:
+        escritas: list[str] = []
+
+        def _contar(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+                escritas.append(statement)
+
+        with UnitOfWork() as uow:
+            engine = uow.session.get_bind()
+            sa.event.listen(engine, "before_cursor_execute", _contar)
+            try:
+                _, porta_real = _compor(uow.session)
+                manager = MemoryRetrievalManager(
+                    _PortaNaoSequencial(porta_real, "set"),
+                    GovernanceManager(GovernancePolicyRepository(uow.session)),
+                    ContextManager(MemoryDomainRepository(uow.session)),
+                    MemoryDomainMembershipRepository(uow.session),
+                )
+                with pytest.raises(RetrievalContractViolationError):
+                    manager.retrieve(
+                        context=MemoryContext(),
+                        descriptor=_descritor(),
+                        criteria=SearchCriteria(trace_id=trace),
+                        policy_key=chave,
+                    )
+                assert not uow.session.new
+                assert not uow.session.dirty
+                assert not uow.session.deleted
+            finally:
+                sa.event.remove(engine, "before_cursor_execute", _contar)
+
+        assert escritas == []
+    finally:
+        _limpar(coids, [], [chave])
