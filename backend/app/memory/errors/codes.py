@@ -107,3 +107,41 @@ criar versão nova — reproduzido antes da correção.
 É a mesma dívida que a E3.3.1 fechou em `LineageEdge`, onde a
 docstring dizia "append-only por construção" sem que nada aplicasse a
 regra."""
+
+
+PIA_8032_CONSOLIDATION_VERIFICATION_FAILED = ErrorCode(
+    code="PIA-8032",
+    default_message="consolidation_verification_failed",
+    category=ErrorCategory.SYSTEM,
+    http_status=500,
+    severity=ErrorSeverity.ERROR,
+)
+"""O recibo devolvido pela porta E3 e o `PersistenceAssessment` da E4.4
+descrevem coisas diferentes sobre o mesmo alvo (`E4.5`).
+
+A E4.5 não conclui uma consolidação com base apenas no recibo de quem
+escreveu. O assessment da E4.4 é a prova **independente**, lida do
+patrimônio dentro da mesma transação, de que
+
+    S1 ← {M1, ..., Mn}
+
+ficou de fato materializado. Divergência entre os dois significa que a
+consolidação não é o que o recibo afirma, e a única resposta correta é
+interromper:
+
+    AUTO_DESTRUCTIVE_REPAIR = FORBIDDEN
+    MISMATCH != AUTHORIZATION TO FABRICATE OR REPAIR HISTORY
+
+Nada é reparado, nada é apagado, nada é absorvido — a exceção sobe e o
+rollback da `UnitOfWork` do chamador desfaz a operação inteira.
+
+Categoria `SYSTEM`, e não `VALIDATION`: chegar aqui não significa que o
+chamador pediu algo inválido — isso já foi recusado no preflight — e
+sim que a escrita e a leitura do patrimônio discordam entre si.
+(`ErrorCategory` é vocabulário fechado em `app/core/error_codes.py` e
+não tem `INTERNAL`; `SYSTEM` é a categoria existente que descreve uma
+inconsistência interna, e ampliá-lo por conveniência da E4.5 seria
+mexer num contrato de E1/E2 fora do escopo deste módulo.)
+
+`PIA-8032` é o próximo código **global** livre — a faixa `PIA-8xxx` é
+única no projeto, e a E3.4.2 ocupou `PIA-8029`..`PIA-8031`."""

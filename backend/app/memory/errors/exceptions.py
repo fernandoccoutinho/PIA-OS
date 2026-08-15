@@ -22,6 +22,7 @@ from app.memory.errors.codes import (
     PIA_8026_CONTEXT_UNKNOWN_DOMAIN_REFERENCE,
     PIA_8027_GOVERNANCE_POLICY_VERSION_EXISTS,
     PIA_8028_GOVERNANCE_POLICY_IMMUTABLE,
+    PIA_8032_CONSOLIDATION_VERIFICATION_FAILED,
 )
 
 
@@ -133,4 +134,30 @@ class GovernancePolicyImmutableError(PIAOSException):
                 "recusada; publique uma nova versão."
             ),
             detail={"policy_id": str(policy_id) if policy_id else None, "operation": operation},
+        )
+
+
+class ConsolidationVerificationError(PIAOSException):
+    """A verificação de pós-condição da consolidação falhou (`E4.5`).
+
+    Levantada quando o recibo da porta E3 e o `PersistenceAssessment`
+    da E4.4 discordam sobre o alvo. Carrega os motivos **todos de uma
+    vez**: uma divergência raramente vem sozinha, e reportar a primeira
+    obrigaria a auditoria a descobrir as demais uma execução por vez.
+
+    Não repara, não apaga, não compensa. Sobe para que o rollback do
+    chamador desfaça a consolidação inteira.
+    """
+
+    error_code = PIA_8032_CONSOLIDATION_VERIFICATION_FAILED
+
+    def __init__(self, target_coid: uuid.UUID, reasons: tuple[str, ...]) -> None:
+        self.target_coid = target_coid
+        self.reasons = reasons
+        super().__init__(
+            message=(
+                f"verificação de consolidação falhou para o alvo {target_coid}: "
+                + "; ".join(reasons)
+            ),
+            detail={"target_coid": str(target_coid), "reasons": list(reasons)},
         )
