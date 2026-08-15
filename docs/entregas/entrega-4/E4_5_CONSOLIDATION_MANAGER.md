@@ -138,20 +138,84 @@ Verificado, e qualquer divergência acumula motivo:
 | 5 | conjunto de `related_coid` igual às fontes |
 | 6 | referências das evidências iguais aos `lineage_edge_ids` |
 | 7 | **correspondência posicional** fonte ↔ edge |
-| 8 | exatamente um `TRANSFORMATION_OUTPUT`, com a referência do recibo |
-| 9 | conjunto de `CAUSAL_EVENT` igual aos `causal_event_ids` |
-| 10 | CLID coerente entre assessment e recibo |
+| 8 | **todas** as `LINEAGE_PARENT` com `qualifier == "merge"` |
+| 9 | exatamente um `TRANSFORMATION_OUTPUT` |
+| 10 | referência da transformação igual a `transformation_id` |
+| 11 | ids dos `CAUSAL_EVENT` iguais aos `causal_event_ids` |
+| 12 | **cardinalidade causal exata**, checada antes do conjunto |
+| 13 | **todos** os eventos com `qualifier == "TRANSFORMED"` |
+| 14 | `assessment.clid == target_clid` |
 
 A verificação nº 7 não é redundante com a 5 e a 6: os dois conjuntos
-podem bater com o **pareamento trocado**, e um teste dedicado
-(`cs39c`) monta exatamente esse caso.
+podem bater com o **pareamento trocado**, e um teste dedicado monta
+exatamente esse caso. A nº 12 pelo mesmo motivo: comparar só conjuntos
+mascararia um evento sobrando.
 
-**A linhagem é casada por `reference` e `related_coid`, nunca por
-`qualifier`.** A E3 persiste enums com duas convenções —
-`lineage_edges.relation_type` grava o `.value` e
-`causal_history_events.event_type` grava o NOME, achado registrado na
-E4.4 — e casar por essa string faria a E4.5 herdar uma assimetria que
-não é dela.
+### Contrato de qualifier (corretivo E4.5.1)
+
+```text
+LINEAGE QUALIFIER CONTRACT = EXACT PERSISTED TOKEN "merge"
+CAUSAL QUALIFIER CONTRACT  = EXACT PERSISTED TOKEN "TRANSFORMED"
+
+PERSISTED ENUM ASYMMETRY = KNOWN AND PRESERVED
+ASYMMETRY != AUTHORIZATION TO IGNORE SEMANTICS
+```
+
+> **Correção.** A primeira versão deste documento afirmava que a
+> linhagem seria casada "nunca por `qualifier`", alegando que verificar
+> a string faria a E4.5 herdar a assimetria de serialização de enums da
+> E3. **A afirmação estava errada e foi removida.** A E4.4.1 congelou
+> que `qualifier` carrega o token exatamente como persistido, lido sem
+> normalização — e é justamente isso que torna a igualdade exata
+> verificável aqui, sem importar enum algum da E3 e sem normalizar
+> nada. O que a omissão produziu foi uma verificação incompleta: uma
+> `LineageEdge(BRANCH)` certificava uma consolidação, e um
+> `CausalHistoryEvent(COMPARED)` passava por `TRANSFORMED`.
+
+A capitalização diferente entre os dois tokens é contrato persistido,
+não descuido: `lineage_edges.relation_type` usa `values_callable` e
+grava o `.value` (`"merge"`); `causal_history_events.event_type` não usa
+e grava o NOME do membro (`"TRANSFORMED"`). A comparação é de igualdade
+exata — nenhum `lower()`, `upper()` ou `casefold()` existe no código de
+produção, e há teste que verifica essa ausência.
+
+Recusados explicitamente: `"MERGE"`, `"Merge"`, `"branch"`,
+`"derived_from"`, `"transformed"`, `"Transformed"`, `"COMPARED"`,
+`"CREATED"`.
+
+```text
+BRANCH != MERGE            DIVERGENCE  != CONSOLIDATION
+EVENT IDENTITY != EVENT TYPE
+```
+
+### Centralização (corretivo E4.5.1)
+
+A semântica de coerência vive numa **única** função pura,
+`verificar_coerencia_consolidacao`, em
+`app/memory/schemas/consolidation.py`. Ela devolve todos os motivos de
+incoerência e é usada pelos dois caminhos:
+
+- `ConsolidationResult.__post_init__` → `ValueError` (tipo inválido
+  continua `TypeError`);
+- `ConsolidationManager` → `ConsolidationVerificationError`
+  (`PIA-8032`, categoria `SYSTEM`).
+
+**O construtor direto impõe exatamente a mesma coerência material do
+caminho canônico.** Antes deste corretivo o value object verificava
+três regras e o manager sete — duas implementações da mesma semântica,
+que divergiram como se espera que divirjam:
+
+```text
+INVARIANT IN MANAGER ONLY != VALUE OBJECT INVARIANT
+PUBLIC CONSTRUCTOR        != BYPASS PATH
+```
+
+Como o manager verifica **antes** de construir o resultado, nenhum
+`ValueError` cru escapa do caminho canônico — provado por teste
+dedicado, inclusive contra o banco real.
+
+`TransformationKind` continua fora do assessment da E4.4 (que não o
+expõe) e segue verificado apenas na integração, contra o writer oficial.
 
 O assessment avalia **o alvo**, nunca as fontes: nenhuma fonte é
 consultada, pontuada, ranqueada ou admitida por evidência prévia.
@@ -462,3 +526,104 @@ READY_FOR_E4_6      = FALSE
 ```
 
 O implementador não declara `PASS FINAL`. E4.6 não é iniciada.
+
+---
+
+## 17. Corretivo E4.5.1 — Consolidation Verification Invariants
+
+**Patch 49.** A auditoria independente devolveu `E4_5_AUDIT = FAIL` com
+três defeitos, todos reproduzidos contra o patch 48 antes de qualquer
+correção.
+
+| Defeito | Reprodução contra o patch 48 |
+|---|---|
+| **A** — `BRANCH` aceita como `MERGE` | assessment com `qualifier="branch"` certificou a consolidação |
+| **B** — evento não-`TRANSFORMED` aceito | `qualifier="COMPARED"` passou por `TRANSFORMED` |
+| **C** — construtor público contorna a verificação | as 4 variantes (branch, COMPARED, transformação errada, pareamento trocado) foram aceitas pelo construtor direto |
+
+### Causa raiz
+
+Uma só. Eu tratei a assimetria de serialização de enums da E3 como
+razão para **não** verificar o `qualifier`. A conclusão correta era a
+oposta: a E4.4.1 congelou `qualifier` como token persistido lido sem
+normalização, e é exatamente isso que torna a igualdade exata
+verificável sem importar enum e sem normalizar. Evitei uma dependência
+que não existia e paguei com uma verificação incompleta.
+
+O defeito C decorre da mesma decisão: como a verificação material vivia
+só no manager, o value object nunca a teve — e o docstring dele afirmava
+"já escrito **e já verificado**", uma afirmação que a API pública
+contradizia. Quinta ocorrência da mesma classe (E4.2.1, E4.3.2, E4.4.1,
+E3.4.2.1).
+
+### Contagens coletadas
+
+| Arquivo | Patch 48 | Patch 49 | Δ |
+|---|---|---|---|
+| `tests/unit/memory/test_consolidation.py` | 87 | **130** | +43 |
+| `tests/integration/memory/test_consolidation_integration.py` | 25 | **31** | +6 |
+| **Total** | **112** | **161** | **+49** |
+
+### Classificação — obtida por execução contra o patch 48
+
+Os 49 testes novos foram efetivamente executados contra o código
+anterior. O arquivo unitário não coleta no patch 48 (as constantes de
+qualifier não existem), então a classificação foi feita numa cópia com
+as constantes substituídas por literais — caso contrário não haveria
+classificação empírica alguma, apenas afirmação.
+
+```text
+FALHAM NO 48, PASSAM NO 49 ............................ 28 unitários + 3 integração
+PASSAM NOS DOIS LADOS (guardas de regressão) .......... 15 unitários + 1 integração
+FALHAM NO 48 APENAS POR ImportError ................... 2 integração
+```
+
+Os **2 por `ImportError`** são
+`test_ci451_real_writer_persists_merge_qualifier_on_every_edge` e
+`..._transformed_qualifier_on_every_event`. Eles importam as constantes
+novas, que não existem no 48 — a falha **não é comportamental**: o
+writer já gravava `"merge"` e `"TRANSFORMED"` corretamente antes do
+corretivo. Registro isso explicitamente porque contá-los como
+provadores de defeito seria falso.
+
+Os 15 unitários que passam nos dois lados verificam comportamento que já
+existia (aceitação de assessment correto, tuplas defensivas, hash,
+pareamento correto, `PIA-8032` para divergências que o manager **já**
+pegava) e agora ficam travados contra regressão.
+
+### Efeito colateral registrado
+
+Um teste da E4.5 (`test_cs52`) asserava a frase `"difere da do recibo"`.
+Com a função compartilhada, a mensagem passou a dizer `"declarada"` —
+do ponto de vista de uma função usada também pelo construtor direto, os
+campos são declarados, não "do recibo". A asserção passou a casar
+`"transformação registrada"`, que é o conteúdo estável. Nenhum teste foi
+removido ou enfraquecido.
+
+### Resultados do corretivo
+
+```text
+FULL_SUITE = 1612 passed / 1 skipped / 0 failed   (candidata: 1563)
+RAW_SUITE  = 1395 passed / 218 skipped / 0 failed
+
+E3 = 598/598   E3.4.2/.1 = 134/134   E4.1 = 40/40
+E4.2 = 42/42   E4.3 = 108/108        E4.4 = 74/74      (todos delta 0)
+E4.5 + E4.5.1 = 161 passed
+
+GLOBAL_COVERAGE = 98,91%   (não reduziu)
+APP_COGNITIVE_COVERAGE = 100%    APP_MEMORY_COVERAGE = 100%
+RUFF = PASS   BLACK = PASS   MYPY_NEW_ERRORS = 0
+SCHEMA_ORM_DRIFT = 0   MIGRATION_HEAD = 4ca61776b982
+```
+
+Escopo do patch 49: `schemas/consolidation.py`,
+`services/consolidation_manager.py`, os 2 arquivos de teste e este
+documento. Nenhuma mudança em E3, E4.4, `ErrorCategory`, migração,
+tabela, enum, `coverage.ini` ou `pytest.ini`.
+
+```text
+E4_5_1_IMPLEMENTATION = COMPLETE
+E4_5_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
+PATCH_CHAIN = 49
+READY_FOR_E4_6 = FALSE
+```

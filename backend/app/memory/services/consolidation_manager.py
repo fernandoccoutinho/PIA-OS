@@ -75,12 +75,11 @@ from app.memory.ports.consolidation import (
     MultiInputTransformationPort,
     MultiInputTransformationReceiptPort,
 )
-from app.memory.schemas.consolidation import ConsolidationResult
-from app.memory.schemas.persistence import (
-    PersistenceAssessment,
-    PersistenceEvidenceKind,
-    PersistenceOutcome,
+from app.memory.schemas.consolidation import (
+    ConsolidationResult,
+    verificar_coerencia_consolidacao,
 )
+from app.memory.schemas.persistence import PersistenceAssessment
 from app.memory.services.persistence_manager import PersistenceManager
 from app.utils.logger import get_logger
 
@@ -286,130 +285,41 @@ class ConsolidationManager:
 
     # --- Verificação independente (E4.4) --------------------------------
 
+    @staticmethod
     def _verificar(
-        self,
         recibo: MultiInputTransformationReceiptPort,
         assessment: PersistenceAssessment,
     ) -> None:
         """Confronta o recibo com a leitura independente do patrimônio.
 
-        Acumula **todos** os motivos antes de levantar: uma divergência
-        raramente vem sozinha, e reportar só a primeira obrigaria a
-        auditoria a descobrir as demais uma execução por vez.
+        Delega à função pura `verificar_coerencia_consolidacao`, a
+        **mesma** que `ConsolidationResult.__post_init__` usa (corretivo
+        E4.5.1). Antes, o manager tinha implementação própria e mais
+        completa que a do value object — duas implementações da mesma
+        semântica, que divergiram exatamente como se espera que
+        divirjam.
 
-        A correspondência de linhagem é feita por `reference` (id da
-        edge) e `related_coid` (a fonte), **nunca** por `qualifier`. A
-        E3 persiste enums com duas convenções — `relation_type` grava o
-        `.value` e `event_type` grava o NOME (achado registrado na
-        E4.4) — e casar por essa string faria a E4.5 herdar uma
-        assimetria que não é dela.
+        Converte qualquer divergência em `ConsolidationVerificationError`
+        (`PIA-8032`, categoria `SYSTEM`). A verificação acontece **antes**
+        de construir o `ConsolidationResult`, então nenhum `ValueError`
+        cru do value object escapa por este caminho: quem chama a E4.5
+        recebe sempre o erro de domínio.
 
-        Nada é reparado aqui. `AUTO_DESTRUCTIVE_REPAIR = FORBIDDEN`.
+        Nada é reparado, reclassificado ou absorvido — a exceção sobe e o
+        rollback da `UnitOfWork` do chamador desfaz a consolidação
+        inteira.
+
+            AUTO_DESTRUCTIVE_REPAIR = FORBIDDEN
+            MISMATCH != AUTHORIZATION TO FABRICATE OR REPAIR HISTORY
         """
-        motivos: list[str] = []
-
-        if assessment.coid != recibo.target_coid:
-            motivos.append(
-                f"assessment é sobre {assessment.coid}, não sobre o alvo " f"{recibo.target_coid}"
-            )
-        if assessment.outcome is not PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE:
-            motivos.append(f"outcome {assessment.outcome} — esperado RECORDED_CONTINUITY_EVIDENCE")
-        if assessment.subject_deleted:
-            motivos.append("alvo recém-criado aparece como soft-deleted")
-
-        motivos.extend(self._verificar_linhagem(recibo, assessment))
-        motivos.extend(self._verificar_transformacao(recibo, assessment))
-        motivos.extend(self._verificar_causalidade(recibo, assessment))
-        motivos.extend(self._verificar_clid(recibo, assessment))
-
+        motivos = verificar_coerencia_consolidacao(
+            source_coids=tuple(recibo.source_coids),
+            target_coid=recibo.target_coid,
+            target_clid=recibo.target_clid,
+            transformation_id=recibo.transformation_id,
+            lineage_edge_ids=tuple(recibo.lineage_edge_ids),
+            causal_event_ids=tuple(recibo.causal_event_ids),
+            assessment=assessment,
+        )
         if motivos:
-            raise ConsolidationVerificationError(recibo.target_coid, tuple(motivos))
-
-    @staticmethod
-    def _verificar_linhagem(
-        recibo: MultiInputTransformationReceiptPort, assessment: PersistenceAssessment
-    ) -> list[str]:
-        """Uma `LINEAGE_PARENT` por fonte, com pareamento posicional."""
-        motivos: list[str] = []
-        evidencias = assessment.evidence_of(PersistenceEvidenceKind.LINEAGE_PARENT)
-
-        if len(evidencias) != len(recibo.source_coids):
-            motivos.append(
-                f"{len(evidencias)} evidências LINEAGE_PARENT para "
-                f"{len(recibo.source_coids)} fontes"
-            )
-
-        relacionados = {e.related_coid for e in evidencias}
-        if relacionados != set(recibo.source_coids):
-            motivos.append(
-                "conjunto de fontes na linhagem difere do recibo: "
-                f"{sorted(str(c) for c in relacionados)}"
-            )
-
-        referencias = {e.reference for e in evidencias}
-        esperadas = {str(e) for e in recibo.lineage_edge_ids}
-        if referencias != esperadas:
-            motivos.append("ids das edges na linhagem diferem dos do recibo")
-
-        # Correspondência posicional: a edge da posição i tem de apontar
-        # para a fonte da posição i. Sem esta checagem, os dois conjuntos
-        # poderiam bater com o pareamento trocado.
-        por_referencia = {e.reference: e.related_coid for e in evidencias}
-        for fonte, edge_id in zip(recibo.source_coids, recibo.lineage_edge_ids, strict=False):
-            registrado = por_referencia.get(str(edge_id))
-            if registrado is not None and registrado != fonte:
-                motivos.append(
-                    f"edge {edge_id} deveria apontar para a fonte {fonte}, "
-                    f"mas aponta para {registrado}"
-                )
-        return motivos
-
-    @staticmethod
-    def _verificar_transformacao(
-        recibo: MultiInputTransformationReceiptPort, assessment: PersistenceAssessment
-    ) -> list[str]:
-        """Exatamente uma `TRANSFORMATION_OUTPUT`, a do recibo."""
-        motivos: list[str] = []
-        evidencias = assessment.evidence_of(PersistenceEvidenceKind.TRANSFORMATION_OUTPUT)
-        if len(evidencias) != 1:
-            motivos.append(
-                f"{len(evidencias)} evidências TRANSFORMATION_OUTPUT — esperada exatamente 1"
-            )
-        elif evidencias[0].reference != str(recibo.transformation_id):
-            motivos.append(
-                f"transformação registrada {evidencias[0].reference} difere da do recibo "
-                f"{recibo.transformation_id}"
-            )
-        return motivos
-
-    @staticmethod
-    def _verificar_causalidade(
-        recibo: MultiInputTransformationReceiptPort, assessment: PersistenceAssessment
-    ) -> list[str]:
-        """Os eventos causais do alvo são exatamente os do recibo."""
-        evidencias = assessment.evidence_of(PersistenceEvidenceKind.CAUSAL_EVENT)
-        registrados = {e.reference for e in evidencias}
-        esperados = {str(e) for e in recibo.causal_event_ids}
-        if registrados != esperados:
-            return ["eventos causais registrados diferem dos do recibo"]
-        return []
-
-    @staticmethod
-    def _verificar_clid(
-        recibo: MultiInputTransformationReceiptPort, assessment: PersistenceAssessment
-    ) -> list[str]:
-        """CLID coerente entre recibo e assessment.
-
-        A E4.5 **não decide** CLID: a regra é da E3.4.2 (todas as fontes
-        com o mesmo CLID não nulo → o alvo herda; qualquer divergência →
-        `None`). Aqui só se confere que os dois lados contam a mesma
-        história — `None` dos dois lados é coerência, não falha.
-
-            MIXED HISTORIES != SINGLE CONTINUITY
-        """
-        if assessment.clid != recibo.target_clid:
-            return [
-                f"CLID do assessment ({assessment.clid}) difere do recibo "
-                f"({recibo.target_clid})"
-            ]
-        return []
+            raise ConsolidationVerificationError(recibo.target_coid, motivos)

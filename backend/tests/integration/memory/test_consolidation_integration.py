@@ -778,3 +778,220 @@ def test_ci30b_traceability_s1_can_be_reconstructed_from_its_sources():
         assert por_registro == set(fontes)
     finally:
         _limpar(criados)
+
+
+# ======================================================================
+# E4.5.1 — endurecimento da verificação pós-escrita
+# ======================================================================
+
+
+def test_ci451_real_writer_persists_merge_qualifier_on_every_edge():
+    """§7.26 — o writer oficial grava `"merge"` minúsculo.
+
+    Confirma contra o banco o token que a verificação passou a exigir.
+    Se a E3 algum dia mudar a serialização, é este teste que quebra —
+    e é onde a mudança precisa ser discutida.
+    """
+    from app.memory.schemas.consolidation import LINEAGE_MERGE_QUALIFIER
+
+    fontes = _criar_fontes(3, clid=uuid.uuid4())
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.consolidate(source_coids=fontes, declared_losses=["x"])
+            uow.commit()
+            criados.append(resultado.target_coid)
+
+        with UnitOfWork() as uow:
+            gravados = [
+                linha[0]
+                for linha in uow.session.execute(
+                    sa.text("SELECT relation_type FROM lineage_edges WHERE child_coid = :t"),
+                    {"t": str(resultado.target_coid)},
+                ).all()
+            ]
+        assert len(gravados) == 3
+        assert set(gravados) == {LINEAGE_MERGE_QUALIFIER}
+
+        linhagem = resultado.persistence_assessment.evidence_of(
+            PersistenceEvidenceKind.LINEAGE_PARENT
+        )
+        assert {e.qualifier for e in linhagem} == {LINEAGE_MERGE_QUALIFIER}
+    finally:
+        _limpar(criados)
+
+
+def test_ci451_real_writer_persists_transformed_qualifier_on_every_event():
+    """§7.27 — o writer oficial grava `"TRANSFORMED"` maiúsculo.
+
+    A capitalização difere da linhagem porque `event_type` não usa
+    `values_callable` — assimetria conhecida, preservada e agora
+    verificada dos dois lados.
+    """
+    from app.memory.schemas.consolidation import CAUSAL_TRANSFORMED_QUALIFIER
+
+    fontes = _criar_fontes(2)
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.consolidate(source_coids=fontes, declared_losses=["x"])
+            uow.commit()
+            criados.append(resultado.target_coid)
+
+        with UnitOfWork() as uow:
+            gravados = [
+                linha[0]
+                for linha in uow.session.execute(
+                    sa.text(
+                        "SELECT e.event_type FROM causal_history_events e "
+                        "JOIN causal_histories h ON h.id = e.history_id "
+                        "WHERE h.subject_coid = :t"
+                    ),
+                    {"t": str(resultado.target_coid)},
+                ).all()
+            ]
+        assert gravados == [CAUSAL_TRANSFORMED_QUALIFIER]
+
+        causais = resultado.persistence_assessment.evidence_of(PersistenceEvidenceKind.CAUSAL_EVENT)
+        assert {e.qualifier for e in causais} == {CAUSAL_TRANSFORMED_QUALIFIER}
+    finally:
+        _limpar(criados)
+
+
+def test_ci451_real_consolidation_remains_valid_after_hardening():
+    """§7.28 — o endurecimento não recusa a consolidação legítima.
+
+    Verificação de fim a fim: se a exigência de qualifier estivesse
+    errada, é aqui que apareceria.
+    """
+    clid = uuid.uuid4()
+    fontes = _criar_fontes(3, clid=clid)
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.consolidate(
+                source_coids=fontes,
+                declared_losses=["variações de ramo"],
+                declared_preservations=["tese central"],
+            )
+            uow.commit()
+            criados.append(resultado.target_coid)
+
+        assert resultado.target_clid == clid
+        assert resultado.source_count == 3
+        assert (
+            resultado.persistence_assessment.outcome
+            is PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE
+        )
+        with UnitOfWork() as uow:
+            registro = TransformationRepository(uow.session).get_by_id(resultado.transformation_id)
+            assert registro.transformation_kind is TransformationKind.DERIVATION
+    finally:
+        _limpar(criados)
+
+
+@pytest.mark.parametrize("divergencia", ["lineage_qualifier", "causal_qualifier"])
+def test_ci451_injected_divergence_after_write_raises_pia_8032_and_rolls_back(
+    monkeypatch, divergencia
+):
+    """§7.29 a §7.31 — divergência injetada **depois** da escrita.
+
+    A injeção troca só o qualifier do assessment, mantendo tudo o mais
+    coerente: é o cenário exato dos defeitos A e B, e o que a E4.5
+    aceitava em silêncio.
+    """
+    import dataclasses
+
+    from app.memory.schemas.persistence import PersistenceAssessment
+
+    fontes = _criar_fontes(3, clid=uuid.uuid4())
+    try:
+        antes = _censo(fontes)
+        objetos_antes = _contar("cognitive_objects")
+        edges_antes = _contar("lineage_edges")
+        registros_antes = _contar("transformation_records")
+        eventos_antes = _contar("causal_history_events")
+        historias_antes = _contar("causal_histories")
+
+        alvo_kind = (
+            PersistenceEvidenceKind.LINEAGE_PARENT
+            if divergencia == "lineage_qualifier"
+            else PersistenceEvidenceKind.CAUSAL_EVENT
+        )
+        token_falso = "branch" if divergencia == "lineage_qualifier" else "COMPARED"
+        original = PersistenceManager.assess
+        chamadas = {"n": 0}
+
+        def _adulterado(self, coid):  # noqa: ANN001
+            chamadas["n"] += 1
+            avaliacao: PersistenceAssessment = original(self, coid)
+            adulterada = tuple(
+                dataclasses.replace(e, qualifier=token_falso) if e.kind is alvo_kind else e
+                for e in avaliacao.evidence
+            )
+            return dataclasses.replace(avaliacao, evidence=adulterada)
+
+        monkeypatch.setattr(PersistenceManager, "assess", _adulterado)
+
+        with pytest.raises(ConsolidationVerificationError) as exc, UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            manager.consolidate(source_coids=fontes, declared_losses=["x"])
+            uow.commit()
+        assert exc.value.code == "PIA-8032"
+        monkeypatch.undo()
+
+        assert chamadas["n"] > 0, "assess nunca foi alcançado — prova vazia"
+
+        # §7.30 — rollback integral
+        assert _contar("cognitive_objects") == objetos_antes, "alvo órfão sobreviveu"
+        assert _contar("lineage_edges") == edges_antes, "linhagem parcial sobreviveu"
+        assert _contar("transformation_records") == registros_antes
+        assert _contar("causal_history_events") == eventos_antes
+        assert _contar("causal_histories") == historias_antes
+
+        # §7.31 — nenhuma fonte alterada
+        depois = _censo(fontes)
+        assert depois == antes, "fonte foi mutada"
+        assert [linha[1] for linha in depois] == [linha[1] for linha in antes]
+    finally:
+        _limpar(fontes)
+
+
+def test_ci451_no_value_error_escapes_the_canonical_path_against_the_real_database():
+    """O chamador recebe `PIA-8032`, nunca o `ValueError` do value
+    object — mesmo com a divergência vindo do banco real."""
+    import dataclasses
+
+    fontes = _criar_fontes(2)
+    try:
+        original = PersistenceManager.assess
+
+        def _adulterado(self, coid):  # noqa: ANN001
+            avaliacao = original(self, coid)
+            adulterada = tuple(
+                (
+                    dataclasses.replace(e, qualifier="branch")
+                    if e.kind is PersistenceEvidenceKind.LINEAGE_PARENT
+                    else e
+                )
+                for e in avaliacao.evidence
+            )
+            return dataclasses.replace(avaliacao, evidence=adulterada)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(PersistenceManager, "assess", _adulterado)
+            with UnitOfWork() as uow:
+                manager, _ = _compor(uow.session)
+                try:
+                    manager.consolidate(source_coids=fontes, declared_losses=["x"])
+                except ConsolidationVerificationError:
+                    pass
+                except ValueError as exc:  # pragma: no cover - falha do contrato
+                    pytest.fail(f"ValueError cru escapou do caminho canônico: {exc}")
+                else:  # pragma: no cover - falha do contrato
+                    pytest.fail("divergência de qualifier não foi detectada")
+    finally:
+        _limpar(fontes)

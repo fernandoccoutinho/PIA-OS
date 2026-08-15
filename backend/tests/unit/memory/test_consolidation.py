@@ -25,7 +25,12 @@ import pytest
 
 from app.memory.errors.exceptions import ConsolidationVerificationError
 from app.memory.ports import MultiInputTransformationReceiptPort
-from app.memory.schemas.consolidation import ConsolidationResult
+from app.memory.schemas.consolidation import (
+    CAUSAL_TRANSFORMED_QUALIFIER,
+    LINEAGE_MERGE_QUALIFIER,
+    ConsolidationResult,
+    verificar_coerencia_consolidacao,
+)
 from app.memory.schemas.persistence import (
     PersistenceAssessment,
     PersistenceEvidence,
@@ -962,4 +967,414 @@ def test_cs52_manager_detects_a_wrong_transformation_reference():
 
     with pytest.raises(ConsolidationVerificationError) as exc:
         manager.consolidate(source_coids=list(recibo.source_coids), declared_losses=["x"])
-    assert any("difere da do recibo" in motivo for motivo in exc.value.reasons)
+    # Mensagem passou a dizer "declarada" em vez de "do recibo" no corretivo
+    # E4.5.1: a função é compartilhada com o construtor direto, e do ponto
+    # de vista dela os campos são "declarados", não "do recibo".
+    assert any("transformação registrada" in motivo for motivo in exc.value.reasons)
+
+
+# ======================================================================
+# E4.5.1 — endurecimento da verificação pós-escrita
+# ======================================================================
+#
+# Três defeitos da auditoria independente:
+#   A — `LINEAGE_PARENT` com qualifier "branch" certificava consolidação
+#   B — `CAUSAL_EVENT` com qualifier "COMPARED" era aceito
+#   C — o construtor público contornava a verificação material inteira
+#
+# Os tokens são comparados por **igualdade exata**, com a capitalização
+# em que a E3 de fato os persiste:
+#
+#     relation_type → values_callable → "merge"      (minúsculo)
+#     event_type    → nome do membro  → "TRANSFORMED" (maiúsculo)
+
+
+def _assessment_com(
+    recibo,
+    *,
+    ql=None,
+    qc=None,
+    pares=None,
+    ref_transformacao=None,
+    eventos=None,
+    clid=None,
+    extra_saida=False,
+):
+    """Assessment internamente válido, com uma divergência controlada.
+
+    Montado à mão em vez de por `dataclasses.replace`, porque os
+    invariantes da E4.4.1 recusam combinações incoerentes — e o caso
+    interessante é justamente o assessment que a E4.4 aceitaria.
+    """
+    ql = LINEAGE_MERGE_QUALIFIER if ql is None else ql
+    qc = CAUSAL_TRANSFORMED_QUALIFIER if qc is None else qc
+    pares = pares or list(zip(recibo.source_coids, recibo.lineage_edge_ids, strict=True))
+    eventos = recibo.causal_event_ids if eventos is None else eventos
+
+    evidencias = [
+        PersistenceEvidence(
+            kind=PersistenceEvidenceKind.LINEAGE_PARENT,
+            reference=str(edge),
+            related_coid=fonte,
+            qualifier=ql,
+        )
+        for fonte, edge in pares
+    ]
+    evidencias.append(
+        PersistenceEvidence(
+            kind=PersistenceEvidenceKind.TRANSFORMATION_OUTPUT,
+            reference=str(ref_transformacao or recibo.transformation_id),
+        )
+    )
+    if extra_saida:
+        evidencias.append(
+            PersistenceEvidence(
+                kind=PersistenceEvidenceKind.TRANSFORMATION_OUTPUT,
+                reference=str(uuid.uuid4()),
+            )
+        )
+    evidencias.extend(
+        PersistenceEvidence(
+            kind=PersistenceEvidenceKind.CAUSAL_EVENT, reference=str(e), qualifier=qc
+        )
+        for e in eventos
+    )
+    if clid is not None:
+        evidencias.append(
+            PersistenceEvidence(kind=PersistenceEvidenceKind.CLID, reference=str(clid))
+        )
+    return PersistenceAssessment(
+        coid=recibo.target_coid,
+        outcome=PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE,
+        evidence=tuple(evidencias),
+        clid=clid,
+        subject_deleted=False,
+    )
+
+
+def _construir(recibo, avaliacao) -> ConsolidationResult:
+    return ConsolidationResult(
+        source_coids=recibo.source_coids,
+        target_coid=recibo.target_coid,
+        target_clid=recibo.target_clid,
+        transformation_id=recibo.transformation_id,
+        lineage_edge_ids=recibo.lineage_edge_ids,
+        causal_event_ids=recibo.causal_event_ids,
+        predecessor_event_ids=recibo.predecessor_event_ids,
+        persistence_assessment=avaliacao,
+    )
+
+
+# --- Value object: recusas (§7.1 a §7.11) -----------------------------
+
+
+@pytest.mark.parametrize("qualifier", ["branch", "derived_from", "parent", "transformed_from"])
+def test_e451_direct_constructor_rejects_non_merge_lineage(qualifier):
+    """Defeito A pelo construtor: `BRANCH != MERGE`."""
+    recibo = _recibo()
+    with pytest.raises(ValueError, match="BRANCH != MERGE"):
+        _construir(recibo, _assessment_com(recibo, ql=qualifier))
+
+
+@pytest.mark.parametrize("qualifier", ["MERGE", "Merge", "mErGe", " merge"])
+def test_e451_direct_constructor_rejects_wrongly_cased_lineage_qualifier(qualifier):
+    """Igualdade exata: nada de `lower()` para "consertar" o token."""
+    recibo = _recibo()
+    with pytest.raises(ValueError, match="LineageEdge"):
+        _construir(recibo, _assessment_com(recibo, ql=qualifier))
+
+
+def test_e451_direct_constructor_rejects_edge_pointing_to_the_wrong_source():
+    """Conjuntos batem, pareamento trocado — a divergência que só a
+    verificação posicional pega."""
+    recibo = _recibo()
+    trocado = [
+        (recibo.source_coids[1], recibo.lineage_edge_ids[0]),
+        (recibo.source_coids[0], recibo.lineage_edge_ids[1]),
+    ]
+    with pytest.raises(ValueError, match="deveria apontar para a fonte"):
+        _construir(recibo, _assessment_com(recibo, pares=trocado))
+
+
+def test_e451_direct_constructor_rejects_unknown_edge_id():
+    recibo = _recibo()
+    pares = [
+        (recibo.source_coids[0], uuid.uuid4()),
+        (recibo.source_coids[1], recibo.lineage_edge_ids[1]),
+    ]
+    with pytest.raises(ValueError, match="ids das edges"):
+        _construir(recibo, _assessment_com(recibo, pares=pares))
+
+
+def test_e451_direct_constructor_rejects_wrong_transformation_reference():
+    recibo = _recibo()
+    with pytest.raises(ValueError, match="transformação registrada"):
+        _construir(recibo, _assessment_com(recibo, ref_transformacao=uuid.uuid4()))
+
+
+def test_e451_direct_constructor_rejects_more_than_one_transformation_output():
+    recibo = _recibo()
+    with pytest.raises(ValueError, match="TRANSFORMATION_OUTPUT"):
+        _construir(recibo, _assessment_com(recibo, extra_saida=True))
+
+
+def test_e451_direct_constructor_rejects_unknown_causal_event_id():
+    recibo = _recibo()
+    with pytest.raises(ValueError, match="eventos causais registrados"):
+        _construir(recibo, _assessment_com(recibo, eventos=(uuid.uuid4(),)))
+
+
+def test_e451_direct_constructor_rejects_divergent_causal_cardinality():
+    """Cardinalidade é checada antes do conjunto.
+
+    O caso de evidência **idêntica** repetida é impossível de montar:
+    `PersistenceAssessment` canonicaliza e desduplica a evidência
+    (`_canonical_evidence`, E4.4.1). A divergência construtível é um
+    evento a mais — dois eventos gravados para um declarado —, e é ela
+    que a checagem de cardinalidade pega antes que a comparação de
+    conjuntos a mascare.
+    """
+    recibo = _recibo()
+    eventos = (recibo.causal_event_ids[0], uuid.uuid4())
+    with pytest.raises(ValueError, match="evidências CAUSAL_EVENT"):
+        _construir(recibo, _assessment_com(recibo, eventos=eventos))
+
+
+@pytest.mark.parametrize("qualifier", ["COMPARED", "CREATED", "ACCESSED"])
+def test_e451_direct_constructor_rejects_non_transformed_causal_event(qualifier):
+    """Defeito B pelo construtor: `EVENT IDENTITY != EVENT TYPE`."""
+    recibo = _recibo()
+    with pytest.raises(ValueError, match="CausalHistoryEvent"):
+        _construir(recibo, _assessment_com(recibo, qc=qualifier))
+
+
+@pytest.mark.parametrize("qualifier", ["transformed", "Transformed", "tRaNsFoRmEd"])
+def test_e451_direct_constructor_rejects_wrongly_cased_causal_qualifier(qualifier):
+    recibo = _recibo()
+    with pytest.raises(ValueError, match="CausalHistoryEvent"):
+        _construir(recibo, _assessment_com(recibo, qc=qualifier))
+
+
+def test_e451_direct_constructor_rejects_divergent_clid():
+    recibo = _recibo(target_clid=uuid.uuid4())
+    with pytest.raises(ValueError, match="CLID do assessment"):
+        _construir(recibo, _assessment_com(recibo, clid=uuid.uuid4()))
+
+
+# --- Value object: aceitações (§7.12 a §7.17) -------------------------
+
+
+def test_e451_all_merge_edges_are_accepted():
+    recibo = _recibo(source_coids=_fontes(3))
+    resultado = _construir(recibo, _assessment_com(recibo))
+    linhagem = resultado.evidence_of(PersistenceEvidenceKind.LINEAGE_PARENT)
+    assert len(linhagem) == 3
+    assert {e.qualifier for e in linhagem} == {LINEAGE_MERGE_QUALIFIER}
+
+
+def test_e451_all_transformed_causal_events_are_accepted():
+    recibo = _recibo(causal_event_ids=(uuid.uuid4(), uuid.uuid4()))
+    recibo = dataclasses.replace(recibo, predecessor_event_ids=tuple(_fontes(2)))
+    resultado = _construir(recibo, _assessment_com(recibo))
+    causais = resultado.evidence_of(PersistenceEvidenceKind.CAUSAL_EVENT)
+    assert {e.qualifier for e in causais} == {CAUSAL_TRANSFORMED_QUALIFIER}
+
+
+def test_e451_correct_source_to_edge_pairing_is_accepted():
+    recibo = _recibo(source_coids=_fontes(3))
+    resultado = _construir(recibo, _assessment_com(recibo))
+    for posicao, fonte in enumerate(resultado.source_coids):
+        assert resultado.lineage_edge_for(fonte) == resultado.lineage_edge_ids[posicao]
+
+
+def test_e451_coherent_transformation_and_clid_are_accepted():
+    clid = uuid.uuid4()
+    recibo = _recibo(target_clid=clid)
+    resultado = _construir(recibo, _assessment_com(recibo, clid=clid))
+    assert resultado.target_clid == clid
+    assert resultado.persistence_assessment.clid == clid
+
+
+def test_e451_defensive_tuple_conversion_still_works_after_hardening():
+    recibo = _recibo()
+    avaliacao = _assessment_com(recibo)
+    fontes = list(recibo.source_coids)
+    resultado = ConsolidationResult(
+        source_coids=fontes,
+        target_coid=recibo.target_coid,
+        target_clid=None,
+        transformation_id=recibo.transformation_id,
+        lineage_edge_ids=list(recibo.lineage_edge_ids),
+        causal_event_ids=list(recibo.causal_event_ids),
+        persistence_assessment=avaliacao,
+    )
+    assert isinstance(resultado.source_coids, tuple)
+    fontes.append(uuid.uuid4())
+    assert len(resultado.source_coids) == 2
+
+
+def test_e451_hash_and_structural_equality_still_hold_after_hardening():
+    recibo = _recibo()
+    avaliacao = _assessment_com(recibo)
+    a = _construir(recibo, avaliacao)
+    b = _construir(recibo, avaliacao)
+    assert a == b
+    assert hash(a) == hash(b)
+
+
+# --- Manager: caminho canônico (§7.18 a §7.25) ------------------------
+
+
+def _manager_com(recibo, avaliacao):
+    return ConsolidationManager(PortaFalsa(recibo=recibo), PersistenceFalso(assessment=avaliacao))
+
+
+def _consolidar(recibo, avaliacao):
+    return _manager_com(recibo, avaliacao).consolidate(
+        source_coids=list(recibo.source_coids), declared_losses=["x"]
+    )
+
+
+def test_e451_manager_rejects_branch_lineage_with_pia_8032():
+    """Defeito A pelo caminho canônico."""
+    recibo = _recibo()
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar(recibo, _assessment_com(recibo, ql="branch"))
+    assert exc.value.code == "PIA-8032"
+    assert any("BRANCH != MERGE" in motivo for motivo in exc.value.reasons)
+
+
+def test_e451_manager_rejects_compared_causal_event_with_pia_8032():
+    """Defeito B pelo caminho canônico."""
+    recibo = _recibo()
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar(recibo, _assessment_com(recibo, qc="COMPARED"))
+    assert exc.value.code == "PIA-8032"
+    assert any("CausalHistoryEvent" in motivo for motivo in exc.value.reasons)
+
+
+def test_e451_manager_rejects_divergent_transformation_with_pia_8032():
+    recibo = _recibo()
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar(recibo, _assessment_com(recibo, ref_transformacao=uuid.uuid4()))
+    assert exc.value.code == "PIA-8032"
+
+
+def test_e451_manager_rejects_swapped_pairing_with_pia_8032():
+    recibo = _recibo()
+    trocado = [
+        (recibo.source_coids[1], recibo.lineage_edge_ids[0]),
+        (recibo.source_coids[0], recibo.lineage_edge_ids[1]),
+    ]
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar(recibo, _assessment_com(recibo, pares=trocado))
+    assert exc.value.code == "PIA-8032"
+
+
+def test_e451_manager_rejects_divergent_clid_with_pia_8032():
+    recibo = _recibo(target_clid=uuid.uuid4())
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar(recibo, _assessment_com(recibo, clid=uuid.uuid4()))
+    assert exc.value.code == "PIA-8032"
+
+
+def test_e451_manager_accumulates_every_reason():
+    """Divergências múltiplas viram motivos múltiplos, de uma vez."""
+    recibo = _recibo()
+    avaliacao = _assessment_com(recibo, ql="branch", qc="COMPARED", ref_transformacao=uuid.uuid4())
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar(recibo, avaliacao)
+    assert len(exc.value.reasons) >= 3
+
+
+@pytest.mark.parametrize(
+    "divergencia",
+    [
+        {"ql": "branch"},
+        {"qc": "COMPARED"},
+        {"ref_transformacao": "novo"},
+        {"clid": "novo"},
+        {"eventos": "outro"},
+    ],
+)
+def test_e451_no_raw_value_error_escapes_the_canonical_path(divergencia):
+    """O manager verifica ANTES de construir, então quem chama a E4.5
+    recebe sempre o erro de domínio — nunca o `ValueError` do value
+    object."""
+    recibo = _recibo(target_clid=uuid.uuid4() if "clid" in divergencia else None)
+    argumentos = dict(divergencia)
+    if argumentos.get("ref_transformacao") == "novo":
+        argumentos["ref_transformacao"] = uuid.uuid4()
+    if argumentos.get("clid") == "novo":
+        argumentos["clid"] = uuid.uuid4()
+    if argumentos.get("eventos") == "outro":
+        argumentos["eventos"] = (uuid.uuid4(),)
+    elif recibo.target_clid is not None:
+        argumentos.setdefault("clid", recibo.target_clid)
+
+    with pytest.raises(ConsolidationVerificationError):
+        _consolidar(recibo, _assessment_com(recibo, **argumentos))
+
+
+def test_e451_manager_accepts_a_correct_assessment():
+    recibo = _recibo()
+    resultado = _consolidar(recibo, _assessment_com(recibo))
+    assert isinstance(resultado, ConsolidationResult)
+    assert resultado.target_coid == recibo.target_coid
+
+
+# --- Centralização ----------------------------------------------------
+
+
+def test_e451_manager_and_value_object_share_one_implementation():
+    """A causa raiz do defeito: duas implementações da mesma semântica
+    divergem com o tempo — e divergiram. Agora o manager não tem
+    verificação própria."""
+    executavel = _codigo_executavel()
+    assert "verificar_coerencia_consolidacao" in executavel
+    for metodo_removido in (
+        "_verificar_linhagem",
+        "_verificar_transformacao",
+        "_verificar_causalidade",
+        "_verificar_clid",
+    ):
+        assert metodo_removido not in executavel
+
+
+def test_e451_pure_function_returns_every_reason_and_is_side_effect_free():
+    recibo = _recibo()
+    motivos = verificar_coerencia_consolidacao(
+        source_coids=recibo.source_coids,
+        target_coid=recibo.target_coid,
+        target_clid=recibo.target_clid,
+        transformation_id=recibo.transformation_id,
+        lineage_edge_ids=recibo.lineage_edge_ids,
+        causal_event_ids=recibo.causal_event_ids,
+        assessment=_assessment_com(recibo, ql="branch", qc="COMPARED"),
+    )
+    assert isinstance(motivos, tuple)
+    assert len(motivos) >= 2
+    assert (
+        verificar_coerencia_consolidacao(
+            source_coids=recibo.source_coids,
+            target_coid=recibo.target_coid,
+            target_clid=recibo.target_clid,
+            transformation_id=recibo.transformation_id,
+            lineage_edge_ids=recibo.lineage_edge_ids,
+            causal_event_ids=recibo.causal_event_ids,
+            assessment=_assessment_com(recibo),
+        )
+        == ()
+    )
+
+
+def test_e451_qualifier_tokens_are_exactly_as_persisted():
+    """A assimetria é conhecida e preservada, não normalizada."""
+    assert LINEAGE_MERGE_QUALIFIER == "merge"
+    assert CAUSAL_TRANSFORMED_QUALIFIER == "TRANSFORMED"
+
+
+def test_e451_no_qualifier_normalization_in_production_code():
+    executavel = _codigo_executavel()
+    for proibido in (".lower()", ".upper()", ".casefold()", ".title()"):
+        assert proibido not in executavel, f"normalização encontrada: {proibido}"
