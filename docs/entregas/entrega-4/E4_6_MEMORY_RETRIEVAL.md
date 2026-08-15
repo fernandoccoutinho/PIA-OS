@@ -434,3 +434,188 @@ READY_FOR_E4_7      = FALSE
 ```
 
 O implementador não declara `PASS FINAL`. E4.7 não é iniciada.
+
+---
+
+## 16. Corretivo E4.6.1 — Retrieval Authority & Contract Fidelity
+
+**Patch 52.** A auditoria devolveu cinco defeitos, todos reproduzidos
+contra a cadeia 51 antes de qualquer correção.
+
+| Defeito | Reprodução contra a cadeia 51 |
+|---|---|
+| **A** — autorização de outra operação | pedido `READ`, resolução `operation=TRANSFORM` → `SEARCH_CALLS=1`, `EXECUTION_AUTHORIZED=True` |
+| **B** — resolução de outra policy | pedido `"requested-policy"`, resolução `"other-policy"` → Search executada |
+| **C** — substituição de contexto | `validate()` devolveu outro ator/propósito → vista construída sobre a perspectiva substituída |
+| **D** — violação da porta vira vista vazia | `accessibility=123`, `deleted_at="yesterday"`, token desconhecido → `search_executed=True, items=()` |
+| **E** — value object incoerente | construtor aceitou `operation=TRANSFORM` com `len(items)=2 > limit=1`, e `revision_status="garbage"` |
+
+### Causa raiz
+
+Quatro fronteiras sem pós-condição:
+
+```text
+REQUEST ↔ VALIDATED CONTEXT
+REQUEST ↔ GOVERNANCE RESOLUTION
+SEARCH PORT ↔ COGNITIVE OBJECT VIEW
+RESULT PAGE ↔ PAGINATION CONTRACT
+```
+
+O erro comum é meu e é um só: **`execution_authorized` não diz qual
+operação nem qual policy produziram a autorização.** Eu tratei o
+booleano como se fosse a decisão inteira. E, no lado da porta, filtrei o
+hit antes de validar sua forma — o que transforma dado malformado em
+ausência legítima.
+
+```text
+AUTHORIZATION TO TRANSFORM != AUTHORIZATION TO READ
+REQUESTED POLICY           != RESOLVED POLICY
+CONTEXT VALIDATION         != CONTEXT SUBSTITUTION
+PORT CONTRACT VIOLATION    != EMPTY VIEW
+MALFORMED EVIDENCE         != NO MATCH
+```
+
+### Correções
+
+**Fidelidade pedido↔resolução.** Antes de memberships e Search: a
+resolução tem de ser `GovernanceResolution`, sobre `READ`, sobre a mesma
+operação do descritor e — quando carregar identidade de policy — sobre a
+policy solicitada. Comparação exata, sem normalizar nomes. Todos os
+motivos acumulados.
+
+A identidade de policy só é exigida quando a resolução a carrega:
+`PROHIBITED` nunca tem proveniência local (a fronteira decide antes de a
+policy ser consultada) e `NOT_APPLICABLE` pode não tê-la quando nenhuma
+versão vigente existe. Exigi-la nesses casos recusaria recusas legítimas
+— há teste para os dois.
+
+**Fidelidade do contexto.** Tipo inválido agora produz `TypeError`, não
+`AttributeError` lá adiante. `validate()` devolvendo contexto diferente é
+`PIA-8034` **antes** da governança. E, mesmo quando devolve objeto
+estruturalmente igual, quem segue é o **objeto original do pedido**:
+
+```text
+VALIDATOR CONFIRMS
+VALIDATOR DOES NOT REWRITE
+```
+
+**Validação dos hits.** Cada candidato é validado **antes** de qualquer
+filtro, contra o contrato completo e contra os vocabulários fechados da
+E3 (`active/latent/inaccessible/causally_extinct` e
+`None/current/superseded`). Token desconhecido é violação, não objeto a
+excluir: excluí-lo em silêncio esconderia que a E3 mudou o vocabulário
+sob os pés da E4.6. Retorno não iterável também é violação. Nada é
+normalizado.
+
+**Invariantes do value object.** `RetrievedMemoryItem` restringe
+`revision_status` ao vocabulário. `MemoryRetrievalResult` passa a exigir
+`operation is READ`, `limit <= MAX_LIMIT`, `len(items) <= limit` e —
+para página parcial — `has_more is False`, já que o coletor canônico
+preencheria a página antes de declarar que há mais.
+
+**Centralização.** `DEFAULT_LIMIT` e `MAX_LIMIT` migraram para
+`schemas/retrieval.py` e o manager importa de lá. Duas cópias da mesma
+constante divergiriam — a lição da E4.5.1 sobre duas implementações da
+mesma regra. Sem ciclo: a dependência já apontava nessa direção.
+
+`PIA-8034 RetrievalContractViolationError`, categoria `SYSTEM`, próximo
+código global livre. `PIA-8033` continua significando **exclusivamente**
+COID duplicado, com teste que o confirma. Próximo livre: `PIA-8035`.
+
+### Ordem corrigida
+
+```text
+1. validar context, descriptor e paginação
+2. ContextManager.validate()
+3. confirmar que o contexto não foi substituído
+4. GovernanceManager.resolve()
+5. fidelidade pedido ↔ resolução
+6. se não autorizado: recusa
+7. escopo de domínio
+8. Search
+9. validar cada hit
+10. filtrar e paginar
+11. construir resultado
+```
+
+Nenhum `ValueError` cru do value object escapa pelo caminho canônico: o
+manager detecta a divergência antes e a converte em `PIA-8034`.
+
+### Testes
+
+| Arquivo | Cadeia 51 | Cadeia 52 | Δ |
+|---|---|---|---|
+| `tests/unit/memory/test_retrieval.py` | 84 | **128** | +44 |
+| `tests/integration/memory/test_retrieval_integration.py` | 16 | **25** | +9 |
+| **Total** | **100** | **153** | **+53** |
+
+Classificação **obtida por execução** contra a cadeia 51 (com os
+símbolos novos substituídos por stubs, senão o módulo nem coleta):
+
+```text
+FALHAM NA 51, PASSAM NA 52 ......... 34 unitários + 8 integração = 42
+PASSAM NOS DOIS LADOS (guardas) .... 10 unitários + 1 integração = 11
+```
+
+Os 11 guardas verificam comportamento que já existia — recusas sem
+Search, vocabulário aceito, composição real intacta — e agora ficam
+travados contra regressão.
+
+### Efeito colateral legítimo
+
+O corretivo quebrou testes da E4.6 que **já eram incoerentes**: os dublês
+fixavam `policy_key="pk"` enquanto o pedido ia sem policy — exatamente o
+defeito B, escrito no harness. O dublê de governança passou a **ecoar** a
+policy solicitada, como o `GovernanceManager` real faz, e um wrapper
+`_executar()` concentra a policy padrão. Nenhum teste foi removido ou
+enfraquecido; o que mudou foi o harness parar de simular a violação.
+
+### Três defeitos meus, no processo
+
+**(a)** Um passe de substituição em massa apagou a linha
+`policy_key=_POLICY_KEY,` de dentro do próprio helper — o texto era
+idêntico ao das injeções que eu removia — deixando proveniência parcial.
+
+**(b)** Um regex trocou `manager.retrieve(` por `_executar(manager, `
+inclusive **dentro** do próprio `_executar`, produzindo recursão
+infinita.
+
+**(c)** Dois testes novos desempacotavam 4 valores de `_manager()`, que
+devolve 5, e um passava `context=None` — que o wrapper substitui pelo
+default, impedindo o caso de chegar ao manager.
+
+Todos apareceram na execução, não na revisão. Registro porque um relatório
+que só mostra o resultado final esconde onde o processo é frágil.
+
+### Divergência registrada
+
+O `PATCH_SHA256` declarado no §1 deste prompt tem **63** dígitos
+hexadecimais (`3105a81f…216da5`) — está truncado em um caractere. O valor
+real do patch 51 é `3105a81f…216da5e2`. O prefixo confere integralmente e
+o `BUNDLE_SHA256` está correto, então a baseline foi validada; registro
+em vez de corrigir em silêncio.
+
+### Resultados
+
+```text
+FULL_SUITE = 1791 passed / 1 skipped / 0 failed   (candidata: 1738)
+RAW_SUITE  = 1543 passed / 249 skipped / 0 failed
+
+E3 = 598/598   E3.4.2/.1 = 134/134   E4.1 = 40/40   E4.2 = 42/42
+E4.3 = 108/108 E4.4 = 74/74          E4.5 = 187/187    (todos delta 0)
+E4.6 + E4.6.1 = 153 passed
+
+GLOBAL_COVERAGE = 98,98%   (candidata 98,96% — não reduziu)
+APP_COGNITIVE_COVERAGE = 100%    APP_MEMORY_COVERAGE = 100%
+RUFF = PASS   BLACK = PASS   MYPY_NEW_ERRORS = 0
+SCHEMA_ORM_DRIFT = 0   MIGRATION_HEAD = 4ca61776b982
+DATABASE_WRITES_DURING_RETRIEVAL = 0
+```
+
+```text
+E4_6_1_IMPLEMENTATION = COMPLETE
+E4_6_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
+PATCH_CHAIN = 52
+E4_7_IMPLEMENTATION = NOT_STARTED
+READY_FOR_E4_7 = FALSE
+```

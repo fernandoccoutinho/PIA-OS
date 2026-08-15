@@ -24,6 +24,7 @@ from app.memory.errors.codes import (
     PIA_8028_GOVERNANCE_POLICY_IMMUTABLE,
     PIA_8032_CONSOLIDATION_VERIFICATION_FAILED,
     PIA_8033_RETRIEVAL_DUPLICATE_COID,
+    PIA_8034_RETRIEVAL_CONTRACT_VIOLATION,
 )
 
 
@@ -181,4 +182,23 @@ class RetrievalDuplicateCoidError(PIAOSException):
                 "admissível — defeito de composição, não duplicação legítima"
             ),
             detail={"coid": str(coid)},
+        )
+
+
+class RetrievalContractViolationError(PIAOSException):
+    """Pós-condição do Retrieval violada (`E4.6.1`).
+
+    Carrega **todos** os motivos detectados, não o primeiro: uma
+    resposta incoerente raramente diverge num só ponto, e reportar
+    apenas o primeiro obrigaria a auditoria a descobrir os demais uma
+    execução por vez.
+    """
+
+    error_code = PIA_8034_RETRIEVAL_CONTRACT_VIOLATION
+
+    def __init__(self, reasons: tuple[str, ...]) -> None:
+        self.reasons = reasons
+        super().__init__(
+            message="contrato do Retrieval violado: " + "; ".join(reasons),
+            detail={"reasons": list(reasons)},
         )

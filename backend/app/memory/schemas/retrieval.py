@@ -40,8 +40,35 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.memory.models.governance_enums import CognitiveOperation
 from app.memory.schemas.governance import GovernanceResolution
 from app.memory.schemas.memory_context import MemoryContext
+
+DEFAULT_LIMIT = 50
+MAX_LIMIT = 100
+"""Contrato de paginação, **único** para schema e manager (E4.6.1).
+
+Vive aqui, e não no manager, porque o `MemoryRetrievalResult` precisa
+validar `limit <= MAX_LIMIT` no construtor direto. Duas cópias da mesma
+constante divergiriam com o tempo — foi o que a E4.5.1 aprendeu ao
+encontrar duas implementações da mesma verificação. O manager importa
+daqui; a direção da dependência já era essa, então não há ciclo.
+"""
+
+KNOWN_ACCESSIBILITY_TOKENS: frozenset[str] = frozenset(
+    {"active", "latent", "inaccessible", "causally_extinct"}
+)
+"""Vocabulário **completo** de `AccessibilityState`, como a E3 persiste.
+
+Distinto do subconjunto exposto na vista: um token fora desta lista não
+é um objeto a excluir em silêncio, é violação do contrato da porta.
+
+    UNKNOWN TOKEN != OBJECT TO FILTER OUT
+"""
+
+KNOWN_REVISION_TOKENS: frozenset[str] = frozenset({"current", "superseded"})
+"""Vocabulário completo de `RevisionStatus`. `None` também é válido e
+significa "não participa de cadeia de revisão controlada"."""
 
 RETRIEVABLE_ACCESSIBILITY_TOKENS: frozenset[str] = frozenset({"active", "latent"})
 """Tokens de `AccessibilityState` expostos na vista admissível normal.
@@ -102,6 +129,11 @@ class RetrievedMemoryItem:
                 )
             if not self.revision_status.strip():
                 raise ValueError("revision_status, quando informado, não pode ser vazio")
+            if self.revision_status not in KNOWN_REVISION_TOKENS:
+                raise ValueError(
+                    f"revision_status {self.revision_status!r} não pertence ao vocabulário "
+                    f"da E3 {sorted(KNOWN_REVISION_TOKENS)} (corretivo E4.6.1)"
+                )
         if not isinstance(self.created_at, datetime):
             raise TypeError(
                 f"created_at deve ser datetime, recebido {type(self.created_at).__name__}"
@@ -174,8 +206,25 @@ class MemoryRetrievalResult:
                 raise TypeError(f"{campo} deve ser int, recebido {type(valor).__name__}")
         if self.limit < 0:
             raise ValueError("limit não pode ser negativo")
+        if self.limit > MAX_LIMIT:
+            raise ValueError(f"limit não pode exceder MAX_LIMIT ({MAX_LIMIT}): {self.limit}")
         if self.offset < 0:
             raise ValueError("offset não pode ser negativo")
+        # A resolução tem de ser sobre a operação que este módulo executa.
+        # Uma autorização de TRANSFORM não autoriza um READ, e o estado
+        # correspondente não é produzível pelo caminho canônico.
+        #
+        #     AUTHORIZATION TO TRANSFORM != AUTHORIZATION TO READ
+        if self.governance_resolution.operation is not CognitiveOperation.READ:
+            raise ValueError(
+                f"a resolução é sobre {self.governance_resolution.operation}, e a E4.6 "
+                "executa apenas CognitiveOperation.READ (corretivo E4.6.1)"
+            )
+        if len(self.items) > self.limit:
+            raise ValueError(
+                f"a página carrega {len(self.items)} itens para limit={self.limit} — "
+                "o coletor canônico nunca ultrapassa o limite"
+            )
         if self.has_more is not None and not isinstance(self.has_more, bool):
             raise TypeError(
                 f"has_more deve ser bool ou None, recebido {type(self.has_more).__name__}"
@@ -200,6 +249,14 @@ class MemoryRetrievalResult:
             )
         if self.limit < 1:
             raise ValueError("busca executada exige limit >= 1")
+        # Página parcial não pode afirmar que há mais: o coletor canônico
+        # preenche a página antes de declarar `has_more`, então esta
+        # combinação descreve uma operação que não aconteceu.
+        if self.has_more and len(self.items) != self.limit:
+            raise ValueError(
+                f"has_more=True com página parcial ({len(self.items)} de {self.limit}) — "
+                "o coletor preencheria a página antes de declarar que há mais"
+            )
 
     def _validar_negado(self) -> None:
         if self.search_executed:

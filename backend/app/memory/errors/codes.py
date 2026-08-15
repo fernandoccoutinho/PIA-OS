@@ -188,3 +188,39 @@ que ninguém tenha pedido isso.
 
 Categoria `SYSTEM`, e não `VALIDATION`: o chamador não pediu nada
 inválido; a composição interna é que produziu resultado incoerente."""
+
+
+PIA_8034_RETRIEVAL_CONTRACT_VIOLATION = ErrorCode(
+    code="PIA-8034",
+    default_message="retrieval_contract_violation",
+    category=ErrorCategory.SYSTEM,
+    http_status=500,
+    severity=ErrorSeverity.ERROR,
+)
+"""Uma pós-condição do Retrieval foi violada (`E4.6.1`).
+
+Cobre as fronteiras que a E4.6 original deixava sem verificação:
+
+```text
+REQUEST ↔ VALIDATED CONTEXT      o validador confirmou, mas substituiu
+REQUEST ↔ GOVERNANCE RESOLUTION  autorizou outra operação ou outra policy
+SEARCH PORT ↔ COGNITIVE VIEW     hit malformado, ou retorno não iterável
+```
+
+O ponto comum das três: verificar apenas
+`resolution.execution_authorized` não diz **qual operação** nem **qual
+policy** produziram aquela autorização, e filtrar um hit antes de
+validar sua forma transforma dado malformado em ausência legítima.
+
+    AUTHORIZATION TO TRANSFORM != AUTHORIZATION TO READ
+    REQUESTED POLICY           != RESOLVED POLICY
+    CONTEXT VALIDATION         != CONTEXT SUBSTITUTION
+    PORT CONTRACT VIOLATION    != EMPTY VIEW
+    MALFORMED EVIDENCE         != NO MATCH
+
+Categoria `SYSTEM`, não `VALIDATION`: o chamador não pediu nada
+inválido — quem devolveu resposta incoerente foi um colaborador
+interno.
+
+Distinto de `PIA-8033`, que continua significando **exclusivamente**
+COID duplicado."""

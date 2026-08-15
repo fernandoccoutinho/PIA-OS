@@ -628,3 +628,250 @@ def test_ri25c_criteria_from_e38_travel_opaque_through_e46():
         assert set(resultado.coids) == set(coids)
     finally:
         _limpar(coids, [], [chave])
+
+
+# ======================================================================
+# E4.6.1 — fidelidade de autoridade contra o banco real
+# ======================================================================
+
+
+class _PortaAdulterada:
+    """Delega ao `SearchEngine` real e adultera um campo do hit.
+
+    A adulteração ocorre **depois** de a Search real executar, então o
+    candidato existe de fato — é a forma devolvida que viola o contrato.
+    """
+
+    def __init__(self, real, *, campo: str, valor: object) -> None:
+        self._real = real
+        self._campo = campo
+        self._valor = valor
+        self.chamadas = 0
+
+    def search(self, criteria, *, limit=None, offset=None):
+        self.chamadas += 1
+        hits = list(self._real.search(criteria, limit=limit, offset=offset))
+        return [_HitAdulterado(hit, self._campo, self._valor) for hit in hits]
+
+
+class _HitAdulterado:
+    """Espelha um hit real trocando um único campo."""
+
+    def __init__(self, real, campo: str, valor: object) -> None:
+        self._real = real
+        self._campo = campo
+        self._valor = valor
+
+    def __getattr__(self, nome: str):
+        if nome == self._campo:
+            return self._valor
+        return getattr(self._real, nome)
+
+
+def test_ri461_transform_resolution_never_authorizes_a_real_read(monkeypatch):
+    """Defeito A contra o banco: Search e memberships intocadas."""
+    import dataclasses
+
+    from app.memory.errors.exceptions import RetrievalContractViolationError
+    from app.memory.schemas.governance import GovernanceResolution
+
+    trace = _trace()
+    coids = _criar_objetos(3, trace_id=trace)
+    dominio = _criar_dominio(f"d-{uuid.uuid4().hex[:8]}", coids)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    try:
+        buscas = {"n": 0}
+        memberships = {"n": 0}
+        original_search = SearchEngine.search
+        original_mem = MemoryDomainMembershipRepository.list_memberships_of_domain
+        original_resolve = GovernanceManager.resolve
+
+        def _contar_busca(self, *a, **kw):  # noqa: ANN001
+            buscas["n"] += 1
+            return original_search(self, *a, **kw)
+
+        def _contar_mem(self, *a, **kw):  # noqa: ANN001
+            memberships["n"] += 1
+            return original_mem(self, *a, **kw)
+
+        def _resolver_torto(self, **kw):  # noqa: ANN001
+            real: GovernanceResolution = original_resolve(self, **kw)
+            return dataclasses.replace(real, operation=CognitiveOperation.TRANSFORM)
+
+        monkeypatch.setattr(SearchEngine, "search", _contar_busca)
+        monkeypatch.setattr(
+            MemoryDomainMembershipRepository, "list_memberships_of_domain", _contar_mem
+        )
+        monkeypatch.setattr(GovernanceManager, "resolve", _resolver_torto)
+
+        with pytest.raises(RetrievalContractViolationError) as exc, UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            manager.retrieve(
+                context=MemoryContext(domain_ids=(dominio,)),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+            )
+        monkeypatch.undo()
+
+        assert exc.value.code == "PIA-8034"
+        assert buscas["n"] == 0, "Search foi chamada com resolução de outra operação"
+        assert memberships["n"] == 0
+    finally:
+        _limpar(coids, [dominio], [chave])
+
+
+def test_ri461_resolved_policy_must_match_the_requested_one(monkeypatch):
+    """Defeito B contra o banco."""
+    import dataclasses
+
+    from app.memory.errors.exceptions import RetrievalContractViolationError
+
+    trace = _trace()
+    coids = _criar_objetos(2, trace_id=trace)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    try:
+        buscas = {"n": 0}
+        original_search = SearchEngine.search
+        original_resolve = GovernanceManager.resolve
+
+        def _contar_busca(self, *a, **kw):  # noqa: ANN001
+            buscas["n"] += 1
+            return original_search(self, *a, **kw)
+
+        def _resolver_outra(self, **kw):  # noqa: ANN001
+            return dataclasses.replace(original_resolve(self, **kw), policy_key="outra-policy")
+
+        monkeypatch.setattr(SearchEngine, "search", _contar_busca)
+        monkeypatch.setattr(GovernanceManager, "resolve", _resolver_outra)
+
+        with pytest.raises(RetrievalContractViolationError) as exc, UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+            )
+        monkeypatch.undo()
+        assert exc.value.code == "PIA-8034"
+        assert buscas["n"] == 0
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri461_context_manager_cannot_substitute_the_requested_context(monkeypatch):
+    """Defeito C contra o banco: a substituição é detectada antes da
+    governança."""
+    from app.memory.errors.exceptions import RetrievalContractViolationError
+
+    trace = _trace()
+    coids = _criar_objetos(2, trace_id=trace)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    try:
+        buscas = {"n": 0}
+        resolucoes = {"n": 0}
+        original_search = SearchEngine.search
+        original_resolve = GovernanceManager.resolve
+
+        def _contar_busca(self, *a, **kw):  # noqa: ANN001
+            buscas["n"] += 1
+            return original_search(self, *a, **kw)
+
+        def _contar_resolve(self, **kw):  # noqa: ANN001
+            resolucoes["n"] += 1
+            return original_resolve(self, **kw)
+
+        monkeypatch.setattr(SearchEngine, "search", _contar_busca)
+        monkeypatch.setattr(GovernanceManager, "resolve", _contar_resolve)
+        monkeypatch.setattr(
+            ContextManager,
+            "validate",
+            lambda self, context: MemoryContext(actor_ref="other", purpose="substituted"),
+        )
+
+        with pytest.raises(RetrievalContractViolationError) as exc, UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            manager.retrieve(
+                context=MemoryContext(actor_ref="user", purpose="requested"),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+            )
+        monkeypatch.undo()
+        assert exc.value.code == "PIA-8034"
+        assert resolucoes["n"] == 0, "governança foi consultada com contexto substituído"
+        assert buscas["n"] == 0
+    finally:
+        _limpar(coids, [], [chave])
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor"),
+    [
+        ("accessibility", 123),
+        ("accessibility", "quantum"),
+        ("deleted_at", "yesterday"),
+        ("revision_status", "garbage"),
+        ("created_at", "ontem"),
+    ],
+)
+def test_ri461_malformed_real_hit_is_a_violation_not_an_empty_view(campo, valor):
+    """Defeito D contra o banco: o candidato existe, a forma é que viola.
+
+    Antes do corretivo isto saía como `search_executed=True, items=()` —
+    uma violação de contrato mascarada de busca legítima sem resultados.
+    """
+    from app.memory.errors.exceptions import RetrievalContractViolationError
+
+    trace = _trace()
+    coids = _criar_objetos(2, trace_id=trace)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    try:
+        with UnitOfWork() as uow:
+            _, porta_real = _compor(uow.session)
+            porta = _PortaAdulterada(porta_real, campo=campo, valor=valor)
+            manager = MemoryRetrievalManager(
+                porta,
+                GovernanceManager(GovernancePolicyRepository(uow.session)),
+                ContextManager(MemoryDomainRepository(uow.session)),
+                MemoryDomainMembershipRepository(uow.session),
+            )
+            with pytest.raises(RetrievalContractViolationError) as exc:
+                manager.retrieve(
+                    context=MemoryContext(),
+                    descriptor=_descritor(),
+                    criteria=SearchCriteria(trace_id=trace),
+                    policy_key=chave,
+                )
+        assert exc.value.code == "PIA-8034"
+        assert porta.chamadas == 1, "a Search real precisa ter executado"
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri461_untampered_real_composition_remains_intact():
+    """O endurecimento não recusa o caminho legítimo."""
+    trace = _trace()
+    coids = _criar_objetos(3, trace_id=trace)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+            )
+        assert resultado.search_executed is True
+        assert set(resultado.coids) == set(coids)
+        assert resultado.governance_resolution.policy_key == chave
+        assert resultado.governance_resolution.operation is CognitiveOperation.READ
+    finally:
+        _limpar(coids, [], [chave])

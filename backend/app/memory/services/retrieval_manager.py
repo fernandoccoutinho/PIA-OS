@@ -53,7 +53,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Generic, TypeVar
 
-from app.memory.errors.exceptions import RetrievalDuplicateCoidError
+from app.memory.errors.exceptions import (
+    RetrievalContractViolationError,
+    RetrievalDuplicateCoidError,
+)
 from app.memory.models.governance_enums import CognitiveOperation
 from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
 from app.memory.repositories.memory_domain_membership_repository import (
@@ -62,6 +65,10 @@ from app.memory.repositories.memory_domain_membership_repository import (
 from app.memory.schemas.governance import GovernanceResolution
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.schemas.retrieval import (
+    DEFAULT_LIMIT,
+    KNOWN_ACCESSIBILITY_TOKENS,
+    KNOWN_REVISION_TOKENS,
+    MAX_LIMIT,
     RETRIEVABLE_ACCESSIBILITY_TOKENS,
     MemoryRetrievalResult,
     RetrievedMemoryItem,
@@ -75,8 +82,17 @@ logger = get_logger("app.memory.services.retrieval_manager")
 
 CriteriaT = TypeVar("CriteriaT")
 
-DEFAULT_LIMIT = 50
-MAX_LIMIT = 100
+_CAMPOS_DO_CONTRATO: tuple[str, ...] = (
+    "id",
+    "clid",
+    "accessibility",
+    "revision_status",
+    "created_at",
+    "deleted_at",
+)
+"""Campos que a porta promete em `CognitiveObjectView`, verificados em
+cada candidato antes de qualquer filtro (corretivo E4.6.1)."""
+
 SEARCH_BATCH_SIZE = 100
 """Tamanho do lote lido da Search da E3 a cada passagem.
 
@@ -168,17 +184,30 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         """
         self._validar_paginacao(limit=limit, offset=offset)
         self._validar_descritor(descriptor)
+        self._validar_contexto(context)
 
         # A validação de que os `domain_ids` existem usa o contrato já
         # existente da E4.2, e pode preceder a resolução: domínio
         # desconhecido é erro do pedido, não vista vazia.
-        contexto = self._context.validate(context)
+        confirmado = self._context.validate(context)
+        self._verificar_fidelidade_do_contexto(context, confirmado)
+
+        # O contexto que segue é o **do pedido**, não o devolvido pelo
+        # validador. Mesmo estruturalmente igual, usar o objeto original
+        # deixa claro quem é a autoridade sobre a perspectiva:
+        #
+        #     VALIDATOR CONFIRMS
+        #     VALIDATOR DOES NOT REWRITE
+        contexto = context
 
         resolution = self._governance.resolve(
             descriptor=descriptor,
             context=contexto,
             policy_key=policy_key,
             moment=moment,
+        )
+        self._verificar_fidelidade_da_resolucao(
+            resolution, descriptor=descriptor, policy_key=policy_key
         )
 
         if not resolution.execution_authorized:
@@ -259,6 +288,101 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
                 f"E4.6 executa apenas CognitiveOperation.READ; recebido " f"{descriptor.operation}"
             )
 
+    @staticmethod
+    def _validar_contexto(context: object) -> None:
+        """O argumento público precisa ser um `MemoryContext` de fato.
+
+        Sem esta checagem, um tipo errado só falharia lá adiante com
+        `AttributeError` ao tocar `domain_ids` — diagnóstico obscuro para
+        um erro trivial do chamador (corretivo E4.6.1).
+        """
+        if not isinstance(context, MemoryContext):
+            raise TypeError(f"context deve ser MemoryContext, recebido {type(context).__name__}")
+
+    @staticmethod
+    def _verificar_fidelidade_do_contexto(solicitado: MemoryContext, confirmado: object) -> None:
+        """O validador confirma a perspectiva; não a reescreve.
+
+        `ContextManager.validate()` existe para dizer se os `domain_ids`
+        declarados existem. Devolver um contexto **diferente** — outro
+        ator, outro propósito, outros domínios — trocaria em silêncio a
+        perspectiva que o chamador escolheu, e a vista resultante
+        responderia a uma pergunta que ninguém fez.
+
+            CONTEXT VALIDATION != CONTEXT SUBSTITUTION
+            USER CONTEXT = AUTHORITATIVE REQUEST
+
+        A comparação é a igualdade estrutural do value object da E4.2,
+        que já é `frozen` e canônico.
+        """
+        if not isinstance(confirmado, MemoryContext):
+            raise RetrievalContractViolationError(
+                (
+                    "ContextManager.validate devolveu "
+                    f"{type(confirmado).__name__}, não MemoryContext",
+                )
+            )
+        if confirmado != solicitado:
+            raise RetrievalContractViolationError(
+                (
+                    "ContextManager.validate devolveu um contexto diferente do "
+                    "solicitado — validação não substitui a perspectiva pedida",
+                )
+            )
+
+    @staticmethod
+    def _verificar_fidelidade_da_resolucao(
+        resolution: object,
+        *,
+        descriptor: CapabilityDescriptor,
+        policy_key: str | None,
+    ) -> None:
+        """A autorização tem de ser sobre **este** pedido.
+
+        `execution_authorized` sozinho não diz qual operação nem qual
+        policy produziram a autorização — era essa a lacuna da E4.6.
+        Uma resolução de `TRANSFORM`, ou de outra policy, é decisão de
+        outra autoridade sobre outra pergunta:
+
+            AUTHORIZATION TO TRANSFORM != AUTHORIZATION TO READ
+            REQUESTED POLICY           != RESOLVED POLICY
+
+        Acumula todos os motivos antes de levantar. Nada é normalizado:
+        nomes de policy são comparados por igualdade exata.
+
+        A identidade de policy só é exigida quando a resolução a carrega.
+        `PROHIBITED` nunca carrega proveniência local — a fronteira
+        decide antes de a policy ser consultada — e `NOT_APPLICABLE` pode
+        não carregá-la quando nenhuma versão vigente existe. Exigi-la
+        nesses casos recusaria recusas legítimas.
+        """
+        if not isinstance(resolution, GovernanceResolution):
+            raise RetrievalContractViolationError(
+                (
+                    "GovernanceManager.resolve devolveu "
+                    f"{type(resolution).__name__}, não GovernanceResolution",
+                )
+            )
+
+        motivos: list[str] = []
+        if resolution.operation is not CognitiveOperation.READ:
+            motivos.append(
+                f"a resolução é sobre {resolution.operation}, e a E4.6 executa apenas "
+                "CognitiveOperation.READ"
+            )
+        if resolution.operation is not descriptor.operation:
+            motivos.append(
+                f"operação resolvida ({resolution.operation}) difere da solicitada "
+                f"({descriptor.operation})"
+            )
+        if resolution.policy_key is not None and resolution.policy_key != policy_key:
+            motivos.append(
+                f"policy resolvida {resolution.policy_key!r} difere da solicitada "
+                f"{policy_key!r}"
+            )
+        if motivos:
+            raise RetrievalContractViolationError(tuple(motivos))
+
     # --- Escopo contextual ---------------------------------------------
 
     def _resolver_escopo(self, contexto: MemoryContext) -> _Escopo:
@@ -321,13 +445,27 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         posicao = 0
 
         while len(admissiveis) <= limit:
-            lote = self._search.search(criteria, limit=SEARCH_BATCH_SIZE, offset=posicao)
-            lote = list(lote)
+            bruto = self._search.search(criteria, limit=SEARCH_BATCH_SIZE, offset=posicao)
+            if isinstance(bruto, str | bytes) or not hasattr(bruto, "__iter__"):
+                raise RetrievalContractViolationError(
+                    (
+                        "a porta de Search devolveu "
+                        f"{type(bruto).__name__}, que não é uma coleção de objetos",
+                    )
+                )
+            lote = list(bruto)
             if not lote:
                 break
             posicao += len(lote)
 
             for objeto in lote:
+                # A forma é validada ANTES do filtro. Filtrar primeiro
+                # faria um hit malformado sair como "não casou", e a
+                # violação viraria ausência legítima:
+                #
+                #     PORT CONTRACT VIOLATION != EMPTY VIEW
+                #     MALFORMED EVIDENCE      != NO MATCH
+                self._validar_hit(objeto)
                 if not self._admissivel(objeto, escopo):
                     continue
                 if objeto.id in vistos:
@@ -347,6 +485,87 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
 
         has_more = len(admissiveis) > limit
         return tuple(admissiveis[:limit]), has_more
+
+    @staticmethod
+    def _validar_hit(objeto: CognitiveObjectView) -> None:
+        """Confere que o candidato satisfaz o contrato da porta (E4.6.1).
+
+        ```text
+        id              = uuid.UUID
+        clid            = uuid.UUID | None
+        accessibility   = str, no vocabulário da E3
+        revision_status = str | None, no vocabulário da E3
+        created_at      = datetime
+        deleted_at      = datetime | None
+        ```
+
+        Token desconhecido é **violação**, não objeto a excluir: excluí-lo
+        em silêncio esconderia que a E3 mudou o vocabulário sob os pés da
+        E4.6, e a vista continuaria parecendo correta.
+
+        Nada é normalizado — sem `lower()`, `upper()`, `casefold()` ou
+        coerção. Mesma disciplina congelada na E4.5.1 para `qualifier`.
+
+        Acumula todos os motivos: um hit malformado costuma sê-lo em mais
+        de um campo.
+
+        O parâmetro é tipado como `CognitiveObjectView` — o que a porta
+        **promete**. A leitura por `getattr` existe porque esta função
+        verifica justamente o caso em que a promessa não se cumpre;
+        anotar `object` ou `Any` aqui seria abrir mão da tipagem da
+        porta, e é o oposto do que a fronteira estrutural exige.
+        """
+        ausentes = tuple(
+            atributo for atributo in _CAMPOS_DO_CONTRATO if not hasattr(objeto, atributo)
+        )
+        if ausentes:
+            raise RetrievalContractViolationError(
+                tuple(f"hit sem o atributo obrigatório {a!r}" for a in ausentes)
+            )
+
+        bruto: dict[str, object] = {a: getattr(objeto, a) for a in _CAMPOS_DO_CONTRATO}
+        motivos: list[str] = []
+
+        if not isinstance(bruto["id"], uuid.UUID):
+            motivos.append(f"id deve ser uuid.UUID, recebido {type(bruto['id']).__name__}")
+        if bruto["clid"] is not None and not isinstance(bruto["clid"], uuid.UUID):
+            motivos.append(
+                f"clid deve ser uuid.UUID ou None, recebido {type(bruto['clid']).__name__}"
+            )
+
+        acessibilidade = bruto["accessibility"]
+        if not isinstance(acessibilidade, str):
+            motivos.append(f"accessibility deve ser str, recebido {type(acessibilidade).__name__}")
+        elif acessibilidade not in KNOWN_ACCESSIBILITY_TOKENS:
+            motivos.append(
+                f"accessibility {acessibilidade!r} não pertence ao vocabulário da E3 "
+                f"{sorted(KNOWN_ACCESSIBILITY_TOKENS)}"
+            )
+
+        revisao = bruto["revision_status"]
+        if revisao is not None:
+            if not isinstance(revisao, str):
+                motivos.append(
+                    f"revision_status deve ser str ou None, recebido {type(revisao).__name__}"
+                )
+            elif revisao not in KNOWN_REVISION_TOKENS:
+                motivos.append(
+                    f"revision_status {revisao!r} não pertence ao vocabulário da E3 "
+                    f"{sorted(KNOWN_REVISION_TOKENS)}"
+                )
+
+        if not isinstance(bruto["created_at"], datetime):
+            motivos.append(
+                f"created_at deve ser datetime, recebido {type(bruto['created_at']).__name__}"
+            )
+        if bruto["deleted_at"] is not None and not isinstance(bruto["deleted_at"], datetime):
+            motivos.append(
+                "deleted_at deve ser datetime ou None, recebido "
+                f"{type(bruto['deleted_at']).__name__}"
+            )
+
+        if motivos:
+            raise RetrievalContractViolationError(tuple(motivos))
 
     @staticmethod
     def _admissivel(objeto: CognitiveObjectView, escopo: _Escopo) -> bool:

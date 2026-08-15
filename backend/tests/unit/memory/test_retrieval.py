@@ -22,7 +22,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.memory.errors.exceptions import RetrievalDuplicateCoidError
+from app.memory.errors.exceptions import (
+    RetrievalContractViolationError,
+    RetrievalDuplicateCoidError,
+)
 from app.memory.models.governance_enums import (
     CognitiveOperation,
     GovernanceEffect,
@@ -32,6 +35,9 @@ from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
 from app.memory.schemas.governance import GovernanceResolution
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.schemas.retrieval import (
+    KNOWN_ACCESSIBILITY_TOKENS,
+    KNOWN_REVISION_TOKENS,
+    MAX_LIMIT,
     RETRIEVABLE_ACCESSIBILITY_TOKENS,
     MemoryRetrievalResult,
     RetrievedMemoryItem,
@@ -43,7 +49,6 @@ from app.memory.services.platform_safety_boundary import (
 )
 from app.memory.services.retrieval_manager import (
     DEFAULT_LIMIT,
-    MAX_LIMIT,
     SEARCH_BATCH_SIZE,
     MemoryRetrievalManager,
 )
@@ -86,8 +91,9 @@ class PortaFalsa:
 class GovernanceFalso:
     """Devolve uma resolução fixa e registra as chamadas."""
 
-    def __init__(self, resolution: GovernanceResolution) -> None:
+    def __init__(self, resolution: GovernanceResolution, *, eco_policy: bool = True) -> None:
         self.resolution = resolution
+        self.eco_policy = eco_policy
         self.chamadas: list[dict] = []
 
     def resolve(self, *, descriptor, context, policy_key=None, moment=None):
@@ -99,6 +105,19 @@ class GovernanceFalso:
                 "moment": moment,
             }
         )
+        if self.eco_policy and self.resolution.policy_key is not None:
+            # O `GovernanceManager` real resolve a versão vigente da
+            # policy **solicitada**; o dublê ecoa o mesmo `policy_key`
+            # para não produzir a divergência que o corretivo E4.6.1
+            # (corretamente) recusa. Testes que querem a divergência
+            # desligam o eco.
+            #
+            # Sem policy no pedido, a resolução não pode carregar
+            # proveniência parcial: `policy_key`, `policy_version` e
+            # `policy_id` são tudo-ou-nada desde a E4.3.2.
+            if policy_key is None:
+                return _resolucao_sem_policy(self.resolution.outcome)
+            return dataclasses.replace(self.resolution, policy_key=policy_key)
         return self.resolution
 
 
@@ -135,6 +154,17 @@ class MembershipsFalsas:
 # --- Construtores de apoio --------------------------------------------
 
 
+_POLICY_KEY = "pol-teste"
+"""Policy usada pelos dublês.
+
+A partir do corretivo E4.6.1 o manager exige `resolution.policy_key ==
+policy_key solicitado`. Os dublês da E4.6 fixavam `"pk"` enquanto o
+pedido ia sem policy — combinação que o corretivo (corretamente) recusa,
+porque é exatamente o defeito B. Os testes passam a declarar a mesma
+policy nos dois lados.
+"""
+
+
 def _resolucao(
     *,
     outcome: GovernanceOutcome = GovernanceOutcome.ADMISSIBLE,
@@ -160,12 +190,27 @@ def _resolucao(
     return GovernanceResolution(
         operation=CognitiveOperation.READ,
         outcome=outcome,
-        policy_key="pk",
+        policy_key=_POLICY_KEY,
         policy_version=1,
         # `policy_id` faz parte da identidade tudo-ou-nada congelada na
         # E4.3.2: proveniência parcial parece proveniência.
         policy_id=uuid.uuid4(),
         matched_rule_id="r1",
+        safety_boundary_version=PLATFORM_SAFETY_BOUNDARY_VERSION,
+    )
+
+
+def _resolucao_sem_policy(outcome: GovernanceOutcome) -> GovernanceResolution:
+    """Resolução admissível sem proveniência local.
+
+    Usada quando o pedido não informa `policy_key`. `ADMISSIBLE` exige
+    proveniência completa (E4.3.2), então este caso vira
+    `NOT_APPLICABLE` — que é justamente o que o `GovernanceManager` real
+    devolve quando nenhuma policy foi informada, e que **não** autoriza.
+    """
+    return GovernanceResolution(
+        operation=CognitiveOperation.READ,
+        outcome=GovernanceOutcome.NOT_APPLICABLE,
         safety_boundary_version=PLATFORM_SAFETY_BOUNDARY_VERSION,
     )
 
@@ -201,6 +246,27 @@ def _manager(
     associacoes = MembershipsFalsas(memberships)
     manager = MemoryRetrievalManager(porta, governanca, contexto, associacoes)
     return manager, porta, governanca, contexto, associacoes
+
+
+_AUSENTE = object()
+
+
+def _executar(manager, *, context=None, descriptor=None, criteria=None, **kwargs):
+    """Executa `retrieve()` informando a policy padrão.
+
+    A partir do corretivo E4.6.1 o manager exige que a policy resolvida
+    seja a solicitada. Concentrar isso aqui evita repetir o argumento em
+    dezenas de chamadas — e um teste que queira pedido sem policy passa
+    `policy_key=None` explicitamente.
+    """
+    if "policy_key" not in kwargs:
+        kwargs["policy_key"] = _POLICY_KEY
+    return manager.retrieve(
+        context=_contexto() if context is None else context,
+        descriptor=_descritor() if descriptor is None else descriptor,
+        criteria=object() if criteria is None else criteria,
+        **kwargs,
+    )
 
 
 def _contexto(*domain_ids: uuid.UUID) -> MemoryContext:
@@ -331,7 +397,7 @@ def test_r4d_admissible_tokens_are_exactly_active_and_latent():
 
 def test_r5_only_read_operation_is_accepted():
     manager, _, governanca, _, _ = _manager()
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.search_executed is True
     assert governanca.chamadas[0]["descriptor"].operation is CognitiveOperation.READ
 
@@ -350,7 +416,7 @@ def test_r6_other_operations_are_refused_before_search(operacao):
     governança deva julgar — é pedido endereçado ao módulo errado."""
     manager, porta, governanca, _, _ = _manager(objetos=_objetos(3))
     with pytest.raises(ValueError, match="apenas CognitiveOperation.READ"):
-        manager.retrieve(context=_contexto(), descriptor=_descritor(operacao), criteria=object())
+        _executar(manager, context=_contexto(), descriptor=_descritor(operacao), criteria=object())
     assert porta.chamadas == []
     assert governanca.chamadas == []
 
@@ -359,7 +425,8 @@ def test_r7_governance_manager_is_called_internally():
     manager, _, governanca, _, _ = _manager()
     contexto = _contexto()
     momento = datetime(2024, 6, 1, tzinfo=UTC)
-    manager.retrieve(
+    _executar(
+        manager,
         context=contexto,
         descriptor=_descritor(),
         criteria=object(),
@@ -408,8 +475,8 @@ def test_r9_r10_r11_denied_outcomes_never_touch_search_or_memberships(outcome):
         resolution=_resolucao(outcome=outcome),
         memberships={dominio: [uuid.uuid4()]},
     )
-    resultado = manager.retrieve(
-        context=_contexto(dominio), descriptor=_descritor(), criteria=object()
+    resultado = _executar(
+        manager, context=_contexto(dominio), descriptor=_descritor(), criteria=object()
     )
     assert porta.chamadas == []
     assert associacoes.chamadas == []
@@ -425,7 +492,7 @@ def test_r12_actor_presence_without_rule_does_not_authorize():
         objetos=_objetos(3), resolution=_resolucao(outcome=GovernanceOutcome.NOT_APPLICABLE)
     )
     contexto = MemoryContext(actor_ref="ator", purpose="auditoria")
-    resultado = manager.retrieve(context=contexto, descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=contexto, descriptor=_descritor(), criteria=object())
     assert resultado.execution_authorized is False
     assert porta.chamadas == []
 
@@ -434,9 +501,15 @@ def test_r13_denied_result_is_distinguishable_from_empty_search():
     """`DENIED != EMPTY RESULT` — e não há campo de contagem para vazar
     que o patrimônio está vazio sob os critérios recusados."""
     negado, _, _, _, _ = _manager(resolution=_resolucao(outcome=GovernanceOutcome.INADMISSIBLE))
-    r_negado = negado.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    r_negado = _executar(negado, context=_contexto(), descriptor=_descritor(), criteria=object())
     vazio, _, _, _, _ = _manager(objetos=[])
-    r_vazio = vazio.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    r_vazio = _executar(
+        vazio,
+        policy_key=_POLICY_KEY,
+        context=_contexto(),
+        descriptor=_descritor(),
+        criteria=object(),
+    )
 
     assert r_negado.items == r_vazio.items == ()
     assert r_negado.search_executed is False
@@ -452,7 +525,7 @@ def test_r14_safety_boundary_alternatives_are_preserved_untouched():
     manager, _, _, _, _ = _manager(
         resolution=_resolucao(outcome=GovernanceOutcome.PROHIBITED, alternativas=alternativas)
     )
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.governance_resolution.admissible_alternatives == alternativas
 
 
@@ -469,8 +542,8 @@ def test_r15_multi_domain_context_is_a_union():
         objetos=objetos,
         memberships={d1: [objetos[0].id], d2: [objetos[2].id]},
     )
-    resultado = manager.retrieve(
-        context=_contexto(d1, d2), descriptor=_descritor(), criteria=object()
+    resultado = _executar(
+        manager, context=_contexto(d1, d2), descriptor=_descritor(), criteria=object()
     )
     assert resultado.coids == (objetos[0].id, objetos[2].id)
     assert set(associacoes.chamadas) == {d1, d2}
@@ -483,8 +556,8 @@ def test_r16_coid_in_two_domains_appears_once():
         objetos=objetos,
         memberships={d1: [objetos[0].id], d2: [objetos[0].id]},
     )
-    resultado = manager.retrieve(
-        context=_contexto(d1, d2), descriptor=_descritor(), criteria=object()
+    resultado = _executar(
+        manager, context=_contexto(d1, d2), descriptor=_descritor(), criteria=object()
     )
     assert resultado.coids == (objetos[0].id,)
 
@@ -492,7 +565,7 @@ def test_r16_coid_in_two_domains_appears_once():
 def test_r17_context_without_domains_applies_no_domain_filter():
     objetos = _objetos(3)
     manager, _, _, _, associacoes = _manager(objetos=objetos)
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.coids == tuple(o.id for o in objetos)
     assert associacoes.chamadas == []
 
@@ -501,13 +574,15 @@ def test_r18_zero_domain_object_remains_valid_without_domain_filter():
     """`ZERO DOMAIN MEMBERSHIP != NONEXISTENCE` (E4.1)."""
     objetos = _objetos(2)
     manager, _, _, _, _ = _manager(objetos=objetos)
-    sem_recorte = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    sem_recorte = _executar(
+        manager, context=_contexto(), descriptor=_descritor(), criteria=object()
+    )
     assert len(sem_recorte.items) == 2
 
     dominio = uuid.uuid4()
     manager2, _, _, _, _ = _manager(objetos=objetos, memberships={dominio: []})
-    com_recorte = manager2.retrieve(
-        context=_contexto(dominio), descriptor=_descritor(), criteria=object()
+    com_recorte = _executar(
+        manager2, context=_contexto(dominio), descriptor=_descritor(), criteria=object()
     )
     assert com_recorte.items == ()
     assert com_recorte.search_executed is True
@@ -523,8 +598,8 @@ def test_r19_unknown_domain_raises_the_e42_diagnostic_not_an_empty_view():
         erro_contexto=ContextUnknownDomainReferenceError((desconhecido,)),
     )
     with pytest.raises(ContextUnknownDomainReferenceError):
-        manager.retrieve(
-            context=_contexto(desconhecido), descriptor=_descritor(), criteria=object()
+        _executar(
+            manager, context=_contexto(desconhecido), descriptor=_descritor(), criteria=object()
         )
     assert porta.chamadas == []
     assert governanca.chamadas == []
@@ -539,7 +614,7 @@ def test_r19_unknown_domain_raises_the_e42_diagnostic_not_an_empty_view():
 def test_r20_r21_active_and_latent_are_admitted(token):
     objetos = _objetos(1, accessibility=token)
     manager, _, _, _, _ = _manager(objetos=objetos)
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.coids == (objetos[0].id,)
     assert resultado.items[0].accessibility == token
 
@@ -551,7 +626,7 @@ def test_r22_r23_inaccessible_and_extinct_are_excluded(token):
     visivel = _objetos(1)[0]
     oculto = ObjetoFalso(id=uuid.uuid4(), accessibility=token, created_at=_BASE)
     manager, _, _, _, _ = _manager(objetos=[visivel, oculto])
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.coids == (visivel.id,)
 
 
@@ -562,7 +637,8 @@ def test_r24_soft_deleted_is_excluded_even_if_criteria_widen_include_deleted():
         id=uuid.uuid4(), created_at=_BASE, deleted_at=datetime(2024, 5, 1, tzinfo=UTC)
     )
     manager, _, _, _, _ = _manager(objetos=[visivel, apagado])
-    resultado = manager.retrieve(
+    resultado = _executar(
+        manager,
         context=_contexto(),
         descriptor=_descritor(),
         criteria={"include_deleted": True},
@@ -581,7 +657,7 @@ def test_r25_current_and_superseded_are_not_collapsed():
         created_at=_BASE + timedelta(minutes=1),
     )
     manager, _, _, _, _ = _manager(objetos=[atual, anterior])
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.coids == (atual.id, anterior.id)
     assert {i.revision_status for i in resultado.items} == {"current", "superseded"}
 
@@ -593,7 +669,7 @@ def test_r26_objects_sharing_a_clid_remain_distinct():
         for i in range(3)
     ]
     manager, _, _, _, _ = _manager(objetos=objetos)
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert len(resultado.items) == 3
     assert len({i.clid for i in resultado.items}) == 1
 
@@ -604,7 +680,7 @@ def test_r27_consolidation_and_its_sources_remain_distinct():
     fontes = _objetos(2)
     alvo = ObjetoFalso(id=uuid.uuid4(), created_at=_BASE + timedelta(minutes=5))
     manager, _, _, _, _ = _manager(objetos=[*fontes, alvo])
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.coids == (fontes[0].id, fontes[1].id, alvo.id)
 
 
@@ -617,7 +693,7 @@ def test_r27b_object_without_continuity_evidence_is_not_inadmissible():
     assert "persistence_manager" not in assinatura
     sem_clid = ObjetoFalso(id=uuid.uuid4(), clid=None, created_at=_BASE)
     manager, _, _, _, _ = _manager(objetos=[sem_clid])
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.coids == (sem_clid.id,)
 
 
@@ -630,8 +706,8 @@ def test_r28_deterministic_order_is_preserved_and_never_reordered():
     objetos = _objetos(6)
     manager, _, _, _, _ = _manager(objetos=objetos)
     for _ in range(5):
-        resultado = manager.retrieve(
-            context=_contexto(), descriptor=_descritor(), criteria=object()
+        resultado = _executar(
+            manager, context=_contexto(), descriptor=_descritor(), criteria=object()
         )
         assert resultado.coids == tuple(o.id for o in objetos)
 
@@ -664,8 +740,8 @@ def test_r29_pagination_happens_after_the_filters():
     ]
     manager, _, _, _, _ = _manager(objetos=intercalado)
 
-    pagina1 = manager.retrieve(
-        context=_contexto(), descriptor=_descritor(), criteria=object(), limit=2, offset=0
+    pagina1 = _executar(
+        manager, context=_contexto(), descriptor=_descritor(), criteria=object(), limit=2, offset=0
     )
     assert pagina1.coids == (admissivel[0].id, admissivel[1].id)
     assert pagina1.has_more is True
@@ -682,7 +758,8 @@ def test_r30_pages_have_no_gaps_or_duplicates():
 
     coletados: list[uuid.UUID] = []
     for offset in range(0, 6, 2):
-        pagina = manager.retrieve(
+        pagina = _executar(
+            manager,
             context=_contexto(),
             descriptor=_descritor(),
             criteria=object(),
@@ -701,7 +778,8 @@ def test_r30_pages_have_no_gaps_or_duplicates():
 )
 def test_r31_has_more_is_correct(quantidade, limit, offset, esperado_has_more):
     manager, _, _, _, _ = _manager(objetos=_objetos(quantidade))
-    resultado = manager.retrieve(
+    resultado = _executar(
+        manager,
         context=_contexto(),
         descriptor=_descritor(),
         criteria=object(),
@@ -722,15 +800,15 @@ def test_r31b_pagination_arguments_are_validated():
         ({"offset": 1.5}, TypeError),
     ):
         with pytest.raises(excecao):
-            manager.retrieve(
-                context=_contexto(), descriptor=_descritor(), criteria=object(), **kwargs
+            _executar(
+                manager, context=_contexto(), descriptor=_descritor(), criteria=object(), **kwargs
             )
     assert porta.chamadas == []
 
 
 def test_r31c_default_limit_is_applied():
     manager, _, _, _, _ = _manager(objetos=_objetos(3))
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert resultado.limit == DEFAULT_LIMIT
 
 
@@ -738,7 +816,7 @@ def test_r32_search_error_is_propagated_never_turned_into_an_empty_list():
     """Erro de busca não é resultado vazio, e não é aprendizado."""
     manager, _, _, _, _ = _manager(erro_busca=RuntimeError("falha na Search"))
     with pytest.raises(RuntimeError, match="falha na Search"):
-        manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+        _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
 
 
 def test_r32b_duplicate_coid_from_the_port_raises_an_explicit_diagnostic():
@@ -746,7 +824,7 @@ def test_r32b_duplicate_coid_from_the_port_raises_an_explicit_diagnostic():
     objeto = _objetos(1)[0]
     manager, _, _, _, _ = _manager(objetos=[objeto, objeto])
     with pytest.raises(RetrievalDuplicateCoidError) as exc:
-        manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+        _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     assert exc.value.code == "PIA-8033"
     assert exc.value.coid == objeto.id
 
@@ -755,7 +833,7 @@ def test_r32c_criteria_travel_opaque_to_the_port():
     """A E4.6 não inspeciona nem reconstrói os critérios da E3.8."""
     sentinela = object()
     manager, porta, _, _, _ = _manager(objetos=_objetos(2))
-    manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=sentinela)
+    _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=sentinela)
     assert porta.chamadas
     assert all(c["criteria"] is sentinela for c in porta.chamadas)
 
@@ -768,7 +846,7 @@ def test_r32c_criteria_travel_opaque_to_the_port():
 def test_r33_no_orm_instance_escapes_in_the_result():
     objetos = _objetos(2)
     manager, _, _, _, _ = _manager(objetos=objetos)
-    resultado = manager.retrieve(context=_contexto(), descriptor=_descritor(), criteria=object())
+    resultado = _executar(manager, context=_contexto(), descriptor=_descritor(), criteria=object())
     for item in resultado.items:
         assert isinstance(item, RetrievedMemoryItem)
         assert not hasattr(item, "_sa_instance_state")
@@ -854,8 +932,8 @@ def test_r38b_batch_size_is_independent_of_the_public_limit():
 
     objetos = _objetos(SEARCH_BATCH_SIZE + 10)
     manager, porta, _, _, _ = _manager(objetos=objetos)
-    manager.retrieve(
-        context=_contexto(), descriptor=_descritor(), criteria=object(), limit=MAX_LIMIT
+    _executar(
+        manager, context=_contexto(), descriptor=_descritor(), criteria=object(), limit=MAX_LIMIT
     )
     assert all(c["limit"] == SEARCH_BATCH_SIZE for c in porta.chamadas)
 
@@ -938,7 +1016,12 @@ def test_r39b_authorized_result_requires_boolean_has_more():
 
 
 def test_r39c_authorized_result_requires_limit_at_least_one():
+    """Com página vazia, quem dispara é o `limit >= 1`; com página
+    preenchida, o invariante `len(items) <= limit` do corretivo E4.6.1
+    dispara antes. Ambos recusam o estado, por razões distintas."""
     with pytest.raises(ValueError, match="limit >= 1"):
+        _resultado(items=(), limit=0)
+    with pytest.raises(ValueError, match="itens para limit"):
         _resultado(limit=0)
 
 
@@ -985,6 +1068,350 @@ def test_r41_item_count_is_the_page_not_a_contextual_total():
 def test_r42_non_descriptor_argument_is_a_type_error():
     manager, porta, governanca, _, _ = _manager(objetos=_objetos(2))
     with pytest.raises(TypeError, match="CapabilityDescriptor"):
-        manager.retrieve(context=_contexto(), descriptor="nao-e-descritor", criteria=object())
+        _executar(manager, context=_contexto(), descriptor="nao-e-descritor", criteria=object())
     assert porta.chamadas == []
     assert governanca.chamadas == []
+
+
+# ======================================================================
+# E4.6.1 — Retrieval Authority & Contract Fidelity
+# ======================================================================
+#
+# Quatro fronteiras que a E4.6 deixara sem pós-condição:
+#
+#     REQUEST ↔ VALIDATED CONTEXT
+#     REQUEST ↔ GOVERNANCE RESOLUTION
+#     SEARCH PORT ↔ COGNITIVE OBJECT VIEW
+#     RESULT PAGE ↔ PAGINATION CONTRACT
+#
+# Verificar só `execution_authorized` não diz QUAL operação nem QUAL
+# policy produziram a autorização; e filtrar um hit antes de validar sua
+# forma transforma dado malformado em ausência legítima.
+
+
+def _manager_infiel(*, resolution=None, ctx_sub=None, objetos=(), nao_iteravel=False):
+    """Manager cujos colaboradores devolvem respostas incoerentes."""
+    porta = PortaFalsa(objetos)
+    if nao_iteravel:
+        porta.search = lambda c, *, limit=None, offset=None: 42  # type: ignore[assignment]
+    governanca = GovernanceFalso(resolution or _resolucao(), eco_policy=False)
+    contexto = ContextoFalso()
+    if ctx_sub is not None:
+        contexto.substituto = ctx_sub
+        contexto.validate = lambda c: ctx_sub  # type: ignore[assignment]
+    associacoes = MembershipsFalsas()
+    manager = MemoryRetrievalManager(porta, governanca, contexto, associacoes)
+    return manager, porta, governanca, associacoes
+
+
+# --- Defeito A: operação resolvida diferente da solicitada -----------
+
+
+def test_e461_transform_resolution_never_authorizes_a_read():
+    """`AUTHORIZATION TO TRANSFORM != AUTHORIZATION TO READ`."""
+    resolucao = dataclasses.replace(_resolucao(), operation=CognitiveOperation.TRANSFORM)
+    manager, porta, _, associacoes = _manager_infiel(resolution=resolucao, objetos=_objetos(3))
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert exc.value.code == "PIA-8034"
+    assert any("apenas CognitiveOperation.READ" in m for m in exc.value.reasons)
+    # Search e memberships intocadas.
+    assert porta.chamadas == []
+    assert associacoes.chamadas == []
+
+
+def test_e461_resolution_operation_must_match_the_descriptor():
+    resolucao = dataclasses.replace(_resolucao(), operation=CognitiveOperation.TRANSFORM)
+    manager, _, _, _ = _manager_infiel(resolution=resolucao)
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert any("difere da solicitada" in m for m in exc.value.reasons)
+
+
+# --- Defeito B: policy resolvida diferente da solicitada -------------
+
+
+def test_e461_resolved_policy_must_be_the_requested_one():
+    """`REQUESTED POLICY != RESOLVED POLICY`."""
+    resolucao = dataclasses.replace(_resolucao(), policy_key="other-policy")
+    manager, porta, _, associacoes = _manager_infiel(resolution=resolucao, objetos=_objetos(3))
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager, policy_key="requested-policy")
+    assert exc.value.code == "PIA-8034"
+    assert any("policy resolvida" in m for m in exc.value.reasons)
+    assert porta.chamadas == []
+    assert associacoes.chamadas == []
+
+
+def test_e461_policy_names_are_not_normalized():
+    """Sem `lower()`/`strip()`: nomes de policy são comparados exatos."""
+    resolucao = dataclasses.replace(_resolucao(), policy_key="Pol-Teste")
+    manager, porta, _, _ = _manager_infiel(resolution=resolucao)
+    with pytest.raises(RetrievalContractViolationError):
+        _executar(manager, policy_key="pol-teste")
+    assert porta.chamadas == []
+
+
+def test_e461_absent_policy_does_not_become_admission():
+    """`POLICY ABSENCE != ADMISSION` — sem policy, o desfecho real é
+    `NOT_APPLICABLE`, que não autoriza e não chama Search."""
+    manager, porta, _, _, _ = _manager(
+        objetos=_objetos(3), resolution=_resolucao(outcome=GovernanceOutcome.NOT_APPLICABLE)
+    )
+    resultado = _executar(manager, policy_key=None)
+    assert resultado.execution_authorized is False
+    assert resultado.search_executed is False
+    assert porta.chamadas == []
+
+
+@pytest.mark.parametrize(
+    "outcome", [GovernanceOutcome.PROHIBITED, GovernanceOutcome.NOT_APPLICABLE]
+)
+def test_e461_outcomes_without_local_provenance_are_not_rejected(outcome):
+    """`PROHIBITED` nunca carrega proveniência local — a fronteira decide
+    antes de a policy ser consultada — e `NOT_APPLICABLE` pode não
+    carregá-la. Exigir identidade nesses casos recusaria recusas
+    legítimas."""
+    manager, porta, _, _, _ = _manager(resolution=_resolucao(outcome=outcome))
+    resultado = _executar(manager, policy_key="qualquer-policy")
+    assert resultado.execution_authorized is False
+    assert resultado.search_executed is False
+    assert porta.chamadas == []
+
+
+def test_e461_non_resolution_object_is_an_explicit_diagnostic():
+    manager, porta, _, _ = _manager_infiel(resolution="nao-e-resolucao")
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert any("não GovernanceResolution" in m for m in exc.value.reasons)
+    assert porta.chamadas == []
+
+
+def test_e461_multiple_divergences_produce_multiple_reasons():
+    resolucao = dataclasses.replace(
+        _resolucao(), operation=CognitiveOperation.TRANSFORM, policy_key="other"
+    )
+    manager, _, _, _ = _manager_infiel(resolution=resolucao)
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager, policy_key="pol-teste")
+    assert len(exc.value.reasons) >= 3
+
+
+# --- Defeito C: substituição de contexto -----------------------------
+
+
+def test_e461_context_manager_cannot_substitute_the_requested_perspective():
+    """`CONTEXT VALIDATION != CONTEXT SUBSTITUTION`."""
+    pedido = MemoryContext(actor_ref="user", purpose="requested")
+    substituto = MemoryContext(actor_ref="other", purpose="substituted")
+    manager, porta, governanca, associacoes = _manager_infiel(
+        ctx_sub=substituto, objetos=_objetos(3)
+    )
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager, context=pedido)
+    assert exc.value.code == "PIA-8034"
+    assert any("contexto diferente do solicitado" in m for m in exc.value.reasons)
+    assert porta.chamadas == []
+    assert associacoes.chamadas == []
+    assert governanca.chamadas == []
+
+
+def test_e461_original_context_is_the_one_preserved_in_the_result():
+    """`VALIDATOR CONFIRMS / VALIDATOR DOES NOT REWRITE` — mesmo quando o
+    validador devolve objeto estruturalmente igual, quem segue é o
+    original do pedido."""
+    pedido = MemoryContext(actor_ref="user", purpose="requested")
+    igual = MemoryContext(actor_ref="user", purpose="requested")
+    assert pedido == igual and pedido is not igual
+
+    porta = PortaFalsa(_objetos(2))
+    contexto = ContextoFalso()
+    contexto.validate = lambda c: igual  # type: ignore[assignment]
+    manager = MemoryRetrievalManager(
+        porta, GovernanceFalso(_resolucao()), contexto, MembershipsFalsas()
+    )
+    resultado = _executar(manager, context=pedido)
+    assert resultado.context is pedido
+
+
+def test_e461_validator_returning_a_non_context_is_a_contract_violation():
+    porta = PortaFalsa(_objetos(2))
+    contexto = ContextoFalso()
+    contexto.validate = lambda c: "nao-e-contexto"  # type: ignore[assignment]
+    manager = MemoryRetrievalManager(
+        porta, GovernanceFalso(_resolucao()), contexto, MembershipsFalsas()
+    )
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert any("não MemoryContext" in m for m in exc.value.reasons)
+    assert porta.chamadas == []
+
+
+@pytest.mark.parametrize("invalido", ["nao-e-contexto", 123, None, uuid.uuid4()])
+def test_e461_invalid_context_argument_is_a_type_error(invalido):
+    """`TypeError`, não `AttributeError` lá adiante.
+
+    Chama `retrieve()` direto: `_executar` substitui `context=None` pelo
+    default, e o caso `None` precisa alcançar o manager.
+    """
+    manager, porta, governanca, _ = _manager_infiel()
+    with pytest.raises(TypeError, match="MemoryContext"):
+        manager.retrieve(
+            context=invalido,
+            descriptor=_descritor(),
+            criteria=object(),
+            policy_key=_POLICY_KEY,
+        )
+    assert porta.chamadas == []
+    assert governanca.chamadas == []
+
+
+# --- Defeito D: hits malformados -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("descricao", "objeto"),
+    [
+        ("id não-UUID", ObjetoFalso(id="nao-uuid")),
+        ("clid inválido", ObjetoFalso(id=uuid.uuid4(), clid="nao-uuid")),
+        ("accessibility com tipo inválido", ObjetoFalso(id=uuid.uuid4(), accessibility=123)),
+        (
+            "token de acessibilidade desconhecido",
+            ObjetoFalso(id=uuid.uuid4(), accessibility="quantum"),
+        ),
+        ("revision_status com tipo inválido", ObjetoFalso(id=uuid.uuid4(), revision_status=7)),
+        ("token de revisão desconhecido", ObjetoFalso(id=uuid.uuid4(), revision_status="garbage")),
+        ("created_at inválido", ObjetoFalso(id=uuid.uuid4(), created_at="ontem")),
+        ("deleted_at inválido", ObjetoFalso(id=uuid.uuid4(), deleted_at="yesterday")),
+    ],
+)
+def test_e461_malformed_hit_is_a_contract_violation_not_an_empty_view(descricao, objeto):
+    """`PORT CONTRACT VIOLATION != EMPTY VIEW`;
+    `MALFORMED EVIDENCE != NO MATCH`."""
+    manager, _, _, _ = _manager_infiel(objetos=[objeto])
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert exc.value.code == "PIA-8034"
+
+
+def test_e461_hit_missing_a_required_attribute_is_a_contract_violation():
+    class Incompleto:
+        id = uuid.uuid4()
+        clid = None
+        accessibility = "active"
+        # sem revision_status, created_at e deleted_at
+
+    manager, _, _, _ = _manager_infiel(objetos=[Incompleto()])
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert len(exc.value.reasons) == 3
+    assert all("atributo obrigatório" in m for m in exc.value.reasons)
+
+
+def test_e461_non_iterable_search_result_is_a_contract_violation():
+    manager, _, _, _ = _manager_infiel(nao_iteravel=True)
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager)
+    assert any("não é uma coleção" in m for m in exc.value.reasons)
+
+
+def test_e461_malformed_hit_is_detected_even_when_it_would_be_filtered_out():
+    """A validação vem ANTES do filtro: um hit inadmissível **e**
+    malformado ainda é violação, não exclusão silenciosa."""
+    manager, _, _, _ = _manager_infiel(
+        objetos=[ObjetoFalso(id=uuid.uuid4(), accessibility="inaccessible", created_at="ontem")]
+    )
+    with pytest.raises(RetrievalContractViolationError):
+        _executar(manager)
+
+
+def test_e461_valid_hits_still_produce_a_normal_view():
+    """O endurecimento não recusa o caminho legítimo."""
+    objetos = _objetos(3)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    resultado = _executar(manager)
+    assert resultado.coids == tuple(o.id for o in objetos)
+
+
+# --- Defeito E: invariantes do value object --------------------------
+
+
+def test_e461_result_refuses_a_resolution_about_another_operation():
+    with pytest.raises(ValueError, match="apenas CognitiveOperation.READ"):
+        _resultado(
+            governance_resolution=dataclasses.replace(
+                _resolucao(), operation=CognitiveOperation.TRANSFORM
+            )
+        )
+
+
+def test_e461_result_refuses_more_items_than_limit():
+    with pytest.raises(ValueError, match="itens para limit"):
+        _resultado(items=(_item(), _item()), limit=1, has_more=False)
+
+
+def test_e461_result_refuses_limit_above_max():
+    with pytest.raises(ValueError, match="MAX_LIMIT"):
+        _resultado(limit=MAX_LIMIT + 1)
+
+
+def test_e461_result_refuses_has_more_with_a_partial_page():
+    """Página parcial não pode afirmar que há mais: o coletor canônico
+    preencheria a página antes de declarar `has_more`."""
+    with pytest.raises(ValueError, match="página parcial"):
+        _resultado(items=(_item(),), limit=5, has_more=True)
+
+
+def test_e461_full_page_with_has_more_is_accepted():
+    itens = (_item(), _item())
+    resultado = _resultado(items=itens, limit=2, has_more=True)
+    assert resultado.has_more is True
+    assert resultado.item_count == 2
+
+
+@pytest.mark.parametrize("token", ["garbage", "CURRENT", "Superseded", "  current"])
+def test_e461_item_refuses_unknown_revision_tokens(token):
+    with pytest.raises(ValueError):
+        _item(revision_status=token)
+
+
+@pytest.mark.parametrize("token", [None, "current", "superseded"])
+def test_e461_item_accepts_the_frozen_revision_vocabulary(token):
+    assert _item(revision_status=token).revision_status == token
+
+
+def test_e461_dataclasses_replace_cannot_bypass_the_new_invariants():
+    resultado = _resultado(items=(_item(), _item()), limit=2, has_more=True)
+    with pytest.raises(ValueError, match="itens para limit"):
+        dataclasses.replace(resultado, limit=1)
+
+
+# --- Centralização e regressão ---------------------------------------
+
+
+def test_e461_pagination_contract_lives_in_one_place():
+    """Constantes duplicadas entre schema e manager divergiriam — a
+    lição da E4.5.1 sobre duas implementações da mesma regra."""
+    from app.memory.schemas import retrieval as schema_mod
+    from app.memory.services import retrieval_manager as manager_mod
+
+    assert manager_mod.MAX_LIMIT is schema_mod.MAX_LIMIT
+    assert manager_mod.DEFAULT_LIMIT is schema_mod.DEFAULT_LIMIT
+
+
+def test_e461_known_vocabularies_match_the_e3_enums():
+    """Verificado contra os enums reais da E3 — importar no teste é
+    permitido; o que a fronteira veda é o import em produção."""
+    from app.cognitive.models.enums import AccessibilityState, RevisionStatus
+
+    assert {e.value for e in AccessibilityState} == KNOWN_ACCESSIBILITY_TOKENS
+    assert {e.value for e in RevisionStatus} == KNOWN_REVISION_TOKENS
+    assert RETRIEVABLE_ACCESSIBILITY_TOKENS < KNOWN_ACCESSIBILITY_TOKENS
+
+
+def test_e461_pia_8033_still_means_only_duplicate_coid():
+    objeto = _objetos(1)[0]
+    manager, _, _, _, _ = _manager(objetos=[objeto, objeto])
+    with pytest.raises(RetrievalDuplicateCoidError) as exc:
+        _executar(manager)
+    assert exc.value.code == "PIA-8033"
