@@ -18,6 +18,7 @@ Não substitui por SQLite: atomicidade sob rollback, FK real,
 produção.
 """
 
+import dataclasses
 import threading
 import uuid
 
@@ -995,3 +996,235 @@ def test_ci451_no_value_error_escapes_the_canonical_path_against_the_real_databa
                     pytest.fail("divergência de qualifier não foi detectada")
     finally:
         _limpar(fontes)
+
+
+# ======================================================================
+# E4.5.2 — fidelidade pedido ↔ recibo, contra o writer real
+# ======================================================================
+
+
+class _PortaAdulterada:
+    """Delega ao writer **real** e adultera só um campo do recibo.
+
+    A adulteração ocorre **depois** de `derive_many()` executar, então o
+    patrimônio foi de fato gravado — é isso que torna os testes de
+    rollback abaixo provas de desfazimento de escrita real, e não de
+    falha anterior à operação.
+    """
+
+    def __init__(self, real, *, fontes=None, predecessores=None) -> None:
+        self._real = real
+        self._fontes = fontes
+        self._predecessores = predecessores
+        self.chamadas = 0
+
+    def derive_many(self, **kwargs):
+        self.chamadas += 1
+        recibo = self._real.derive_many(**kwargs)
+        substituicoes = {}
+        if self._fontes is not None:
+            substituicoes["source_coids"] = self._fontes
+        if self._predecessores is not None:
+            substituicoes["predecessor_event_ids"] = self._predecessores
+        return dataclasses.replace(recibo, **substituicoes)
+
+
+def test_ci452_result_sources_are_exactly_the_canonicalized_request():
+    """§10.16 — o writer oficial ecoa a canonicalização do pedido."""
+    fontes = _criar_fontes(3, clid=uuid.uuid4())
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.consolidate(
+                source_coids=[fontes[2], fontes[0], fontes[1]], declared_losses=["x"]
+            )
+            uow.commit()
+            criados.append(resultado.target_coid)
+        assert resultado.source_coids == tuple(sorted(fontes))
+    finally:
+        _limpar(criados)
+
+
+def test_ci452_result_predecessors_are_exactly_the_requested_tuple():
+    """§10.17 e §10.18 — ordem preservada e cada predecessor ligado ao
+    seu evento causal."""
+    fontes = _criar_fontes(2)
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            causal = CausalHistoryManager(CausalHistoryRepository(uow.session))
+            ev_a = causal.record(subject_coid=fontes[0], event_type=CausalEventType.CREATED)
+            ev_b = causal.record(subject_coid=fontes[1], event_type=CausalEventType.CREATED)
+            uow.commit()
+            pedidos = [ev_a.id, ev_b.id]
+
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.consolidate(
+                source_coids=fontes, declared_losses=["x"], predecessor_event_ids=pedidos
+            )
+            uow.commit()
+            criados.append(resultado.target_coid)
+
+        # Canônico dos dois lados: a E4.5 canonicaliza o pedido por UUID
+        # e o writer da E3 faz o mesmo. Assertar `tuple(pedidos)` na
+        # ordem em que este teste os listou passaria só quando essa
+        # ordem coincidisse com a canônica — metade das execuções, por
+        # sorte.
+        assert resultado.predecessor_event_ids == tuple(sorted(pedidos))
+
+        with UnitOfWork() as uow:
+            gravados = {
+                linha[0]
+                for linha in uow.session.execute(
+                    sa.text(
+                        "SELECT e.predecessor_event_id FROM causal_history_events e "
+                        "JOIN causal_histories h ON h.id = e.history_id "
+                        "WHERE h.subject_coid = :t"
+                    ),
+                    {"t": str(resultado.target_coid)},
+                ).all()
+            }
+        assert gravados == set(pedidos)
+    finally:
+        _limpar(criados)
+
+
+def test_ci452_consolidation_without_predecessors_still_yields_a_root_event():
+    """§10.19 — o caminho fiel sem predecessores continua intacto."""
+    fontes = _criar_fontes(2)
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.consolidate(source_coids=fontes, declared_losses=["x"])
+            uow.commit()
+            criados.append(resultado.target_coid)
+
+        assert resultado.predecessor_event_ids == ()
+        assert len(resultado.causal_event_ids) == 1
+        with UnitOfWork() as uow:
+            eventos = CausalHistoryManager(CausalHistoryRepository(uow.session)).events_for(
+                resultado.target_coid
+            )
+            assert len(eventos) == 1
+            assert eventos[0].predecessor_event_id is None
+    finally:
+        _limpar(criados)
+
+
+@pytest.mark.parametrize("campo", ["source_coids", "predecessor_event_ids"])
+def test_ci452_tampered_receipt_raises_pia_8032_and_rolls_back_real_writes(campo):
+    """§10.20 a §10.25 — o writer real escreve, o recibo é adulterado, e
+    o rollback desfaz tudo.
+
+    Também prova que `PersistenceManager.assess()` **não** é chamado:
+    a divergência de fidelidade já está demonstrada antes disso.
+    """
+    fontes = _criar_fontes(3, clid=uuid.uuid4())
+    historico = _criar_fontes(1)[0]
+    try:
+        with UnitOfWork() as uow:
+            causal = CausalHistoryManager(CausalHistoryRepository(uow.session))
+            ev_fonte = causal.record(subject_coid=fontes[0], event_type=CausalEventType.CREATED)
+            ev_estranho = causal.record(subject_coid=historico, event_type=CausalEventType.CREATED)
+            uow.commit()
+            pedido_predecessor, intruso = ev_fonte.id, ev_estranho.id
+
+        # As fontes-isca são criadas ANTES do censo: elas são objetos
+        # commitados legitimamente, e contá-las depois faria o censo
+        # acusar "alvo órfão" para linhas que o rollback nunca deveria
+        # remover.
+        iscas = tuple(sorted(_criar_fontes(3))) if campo == "source_coids" else ()
+
+        antes = _censo(fontes)
+        objetos_antes = _contar("cognitive_objects")
+        edges_antes = _contar("lineage_edges")
+        registros_antes = _contar("transformation_records")
+        eventos_antes = _contar("causal_history_events")
+        historias_antes = _contar("causal_histories")
+
+        if campo == "source_coids":
+            # Mesma CARDINALIDADE das fontes pedidas: o recibo da E3 é um
+            # dataclass com invariantes próprios, e `dataclasses.replace`
+            # os reexecuta — trocar 3 fontes por 2 seria recusado pelo
+            # próprio recibo, provando outra coisa. Aqui a adulteração
+            # precisa produzir um recibo **estruturalmente válido** e
+            # apenas infiel, que é o defeito sob teste.
+            adulteracao = {"fontes": iscas}
+            predecessores_pedidos: list[uuid.UUID] = []
+        else:
+            adulteracao = {"predecessores": (intruso,)}
+            predecessores_pedidos = [pedido_predecessor]
+
+        avaliacoes = {"n": 0}
+        original_assess = PersistenceManager.assess
+
+        def _contando(self, coid):  # noqa: ANN001
+            avaliacoes["n"] += 1
+            return original_assess(self, coid)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(PersistenceManager, "assess", _contando)
+            with pytest.raises(ConsolidationVerificationError) as exc, UnitOfWork() as uow:
+                _, porta_real = _compor(uow.session)
+                porta = _PortaAdulterada(porta_real, **adulteracao)
+                manager = ConsolidationManager(
+                    porta, PersistenceManager(ContinuityEvidenceRepository(uow.session))
+                )
+                manager.consolidate(
+                    source_coids=fontes,
+                    declared_losses=["x"],
+                    predecessor_event_ids=predecessores_pedidos,
+                )
+                uow.commit()
+
+        assert exc.value.code == "PIA-8032"
+        assert porta.chamadas == 1, "o writer real precisa ter executado"
+        # §10.25 — divergência já demonstrada não consulta o alvo
+        assert avaliacoes["n"] == 0
+
+        # §10.22 — rollback integral das escritas reais
+        assert _contar("cognitive_objects") == objetos_antes, "alvo órfão sobreviveu"
+        assert _contar("lineage_edges") == edges_antes, "linhagem parcial sobreviveu"
+        assert _contar("transformation_records") == registros_antes
+        assert _contar("causal_history_events") == eventos_antes
+        assert _contar("causal_histories") == historias_antes
+
+        # §10.23 e §10.24 — fontes e predecessor histórico intactos
+        assert _censo(fontes) == antes
+        with UnitOfWork() as uow:
+            sobrevive = uow.session.execute(
+                sa.text("SELECT count(*) FROM causal_history_events WHERE id = :e"),
+                {"e": str(pedido_predecessor)},
+            ).scalar_one()
+        assert sobrevive == 1
+    finally:
+        _limpar([*fontes, historico, *iscas])
+
+
+def test_ci452_untampered_real_writer_is_still_accepted():
+    """§10.26 — o endurecimento não recusa a consolidação legítima."""
+    clid = uuid.uuid4()
+    fontes = _criar_fontes(2, clid=clid)
+    criados = list(fontes)
+    try:
+        with UnitOfWork() as uow:
+            manager, porta_real = _compor(uow.session)
+            porta = _PortaAdulterada(porta_real)  # sem adulteração
+            manager = ConsolidationManager(
+                porta, PersistenceManager(ContinuityEvidenceRepository(uow.session))
+            )
+            resultado = manager.consolidate(source_coids=fontes, declared_losses=["x"])
+            uow.commit()
+            criados.append(resultado.target_coid)
+
+        assert resultado.source_coids == tuple(sorted(fontes))
+        assert resultado.target_clid == clid
+        assert (
+            resultado.persistence_assessment.outcome
+            is PersistenceOutcome.RECORDED_CONTINUITY_EVIDENCE
+        )
+    finally:
+        _limpar(criados)

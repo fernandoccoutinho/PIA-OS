@@ -30,6 +30,7 @@ from app.memory.schemas.consolidation import (
     LINEAGE_MERGE_QUALIFIER,
     ConsolidationResult,
     verificar_coerencia_consolidacao,
+    verificar_fidelidade_pedido_recibo,
 )
 from app.memory.schemas.persistence import (
     PersistenceAssessment,
@@ -1378,3 +1379,284 @@ def test_e451_no_qualifier_normalization_in_production_code():
     executavel = _codigo_executavel()
     for proibido in (".lower()", ".upper()", ".casefold()", ".title()"):
         assert proibido not in executavel, f"normalização encontrada: {proibido}"
+
+
+# ======================================================================
+# E4.5.2 — fidelidade pedido ↔ recibo
+# ======================================================================
+#
+# Defeitos D e E da auditoria: a cadeia 49 verificava
+# `receipt ↔ assessment` mas nunca `request ↔ receipt`, então recibo e
+# banco podiam concordar perfeitamente entre si enquanto ambos
+# descreviam uma operação diferente da solicitada.
+#
+#     REQUEST FIDELITY != PERSISTENCE COHERENCE
+#     BOTH ARE REQUIRED
+#
+# Os recibos divergentes abaixo são **estruturalmente válidos** — o
+# ponto é justamente que um recibo bem formado pode ser infiel.
+
+
+def _recibo_com(fontes, *, predecessores=(), eventos=None):
+    """Recibo estruturalmente válido para as fontes dadas."""
+    fontes = tuple(fontes)
+    if eventos is None:
+        eventos = tuple(uuid.uuid4() for _ in predecessores) or (uuid.uuid4(),)
+    return ReciboFalso(
+        source_coids=fontes,
+        target_coid=uuid.uuid4(),
+        target_clid=None,
+        transformation_id=uuid.uuid4(),
+        lineage_edge_ids=tuple(uuid.uuid4() for _ in fontes),
+        causal_event_ids=tuple(eventos),
+        predecessor_event_ids=tuple(predecessores),
+    )
+
+
+def _consolidar_com(recibo, *, fontes_pedidas, predecessores_pedidos=()):
+    """Executa o caminho canônico com um assessment coerente com o recibo.
+
+    O assessment é montado a partir do **recibo**, não do pedido: assim
+    a única divergência possível é a de fidelidade, que é o que estes
+    testes isolam.
+    """
+    persistencia = PersistenceFalso(assessment=_assessment_com(recibo))
+    manager = ConsolidationManager(PortaFalsa(recibo=recibo), persistencia)
+    return (
+        manager.consolidate(
+            source_coids=list(fontes_pedidas),
+            declared_losses=["x"],
+            predecessor_event_ids=list(predecessores_pedidos),
+        ),
+        persistencia,
+    )
+
+
+# --- Fontes (§9.1 a §9.3) ---------------------------------------------
+
+
+def test_e452_receipt_with_entirely_different_sources_is_rejected():
+    """Defeito D: pedido `(A,B)`, recibo `(C,D)`."""
+    pedidas = _fontes(2)
+    recibo = _recibo_com(_fontes(2))
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar_com(recibo, fontes_pedidas=pedidas)
+    assert exc.value.code == "PIA-8032"
+    assert any("fontes do recibo divergem" in m for m in exc.value.reasons)
+
+
+def test_e452_receipt_with_one_substituted_source_is_rejected():
+    """Pedido `(A,B)`, recibo `(A,C)` — substituição parcial."""
+    pedidas = _fontes(2)
+    intruso = uuid.uuid4()
+    recibo = _recibo_com(sorted([pedidas[0], intruso]))
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar_com(recibo, fontes_pedidas=pedidas)
+    assert exc.value.code == "PIA-8032"
+
+
+def test_e452_same_sources_in_different_order_are_rejected():
+    """As fontes já vão canonicalizadas para a porta; o recibo tem de
+    ecoar exatamente essa tupla."""
+    pedidas = _fontes(2)
+    recibo = _recibo_com((pedidas[1], pedidas[0]))
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar_com(recibo, fontes_pedidas=pedidas)
+    assert exc.value.code == "PIA-8032"
+
+
+# --- Predecessores (§9.4 a §9.7) --------------------------------------
+
+
+def test_e452_requested_predecessor_dropped_by_the_receipt_is_rejected():
+    pedidas = _fontes(2)
+    p1 = uuid.uuid4()
+    recibo = _recibo_com(pedidas, predecessores=())
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar_com(recibo, fontes_pedidas=pedidas, predecessores_pedidos=[p1])
+    assert any("predecessores causais" in m for m in exc.value.reasons)
+
+
+def test_e452_unrequested_predecessor_added_by_the_receipt_is_rejected():
+    """O chamador não declarou causalidade; o recibo inventou uma."""
+    pedidas = _fontes(2)
+    recibo = _recibo_com(pedidas, predecessores=(uuid.uuid4(),))
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar_com(recibo, fontes_pedidas=pedidas)
+    assert any("predecessores causais" in m for m in exc.value.reasons)
+
+
+def test_e452_substituted_predecessor_is_rejected():
+    """Defeito E: `P1` pedido, `P2` devolvido."""
+    pedidas = _fontes(2)
+    p1, p2 = uuid.uuid4(), uuid.uuid4()
+    recibo = _recibo_com(pedidas, predecessores=(p2,))
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar_com(recibo, fontes_pedidas=pedidas, predecessores_pedidos=[p1])
+    assert exc.value.code == "PIA-8032"
+
+
+def test_e452_receipt_with_predecessors_out_of_canonical_order_is_rejected():
+    """Recibo fora da ordem canônica é infidelidade.
+
+    O pedido é canonicalizado por UUID (como o writer da E3 também faz),
+    então o recibo tem de ecoar exatamente a tupla canônica. `p1` e `p2`
+    são obtidos por `sorted()` explícito, não por sorte: com UUIDs
+    aleatórios, metade das execuções teria a "ordem trocada" coincidindo
+    com a canônica — o tipo de teste que passa por acaso e que a
+    E3.4.2.1 já ensinou a não escrever.
+    """
+    pedidas = _fontes(2)
+    p1, p2 = sorted([uuid.uuid4(), uuid.uuid4()])
+    eventos = (uuid.uuid4(), uuid.uuid4())
+    recibo = _recibo_com(pedidas, predecessores=(p2, p1), eventos=eventos)
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar_com(recibo, fontes_pedidas=pedidas, predecessores_pedidos=[p1, p2])
+    assert exc.value.code == "PIA-8032"
+
+
+# --- Acumulação e ordem da verificação (§9.8 a §9.10) -----------------
+
+
+def test_e452_both_divergences_produce_two_reasons():
+    pedidas = _fontes(2)
+    recibo = _recibo_com(_fontes(2), predecessores=(uuid.uuid4(),))
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        _consolidar_com(recibo, fontes_pedidas=pedidas, predecessores_pedidos=[uuid.uuid4()])
+    assert len(exc.value.reasons) == 2
+    assert any("fontes do recibo" in m for m in exc.value.reasons)
+    assert any("predecessores causais" in m for m in exc.value.reasons)
+
+
+def test_e452_persistence_manager_is_not_called_when_fidelity_already_failed():
+    """Uma divergência já demonstrada não precisa consultar o alvo para
+    valer — e consultar produziria trabalho a ser descartado."""
+    pedidas = _fontes(2)
+    recibo = _recibo_com(_fontes(2))
+    with pytest.raises(ConsolidationVerificationError):
+        _, persistencia = _consolidar_com(recibo, fontes_pedidas=pedidas)
+    persistencia = PersistenceFalso(assessment=_assessment_com(recibo))
+    manager = ConsolidationManager(PortaFalsa(recibo=recibo), persistencia)
+    with pytest.raises(ConsolidationVerificationError):
+        manager.consolidate(source_coids=list(pedidas), declared_losses=["x"])
+    assert persistencia.chamadas == []
+
+
+@pytest.mark.parametrize(
+    "montar",
+    [
+        "fontes",
+        "predecessor",
+        "ordem_predecessor",
+        "ambos",
+    ],
+)
+def test_e452_no_raw_value_error_escapes_on_infidelity(montar):
+    pedidas = _fontes(2)
+    p1, p2 = uuid.uuid4(), uuid.uuid4()
+    if montar == "fontes":
+        recibo, pedidos = _recibo_com(_fontes(2)), []
+    elif montar == "predecessor":
+        recibo, pedidos = _recibo_com(pedidas, predecessores=(p2,)), [p1]
+    elif montar == "ordem_predecessor":
+        p1, p2 = sorted([p1, p2])
+        recibo = _recibo_com(pedidas, predecessores=(p2, p1), eventos=(uuid.uuid4(), uuid.uuid4()))
+        pedidos = [p1, p2]
+    else:
+        recibo, pedidos = _recibo_com(_fontes(2), predecessores=(p2,)), [p1]
+
+    with pytest.raises(ConsolidationVerificationError):
+        _consolidar_com(recibo, fontes_pedidas=pedidas, predecessores_pedidos=pedidos)
+
+
+# --- Casos fiéis (§9.11 a §9.13) --------------------------------------
+
+
+def test_e452_canonicalized_sources_echoed_by_the_receipt_are_accepted():
+    pedidas = _fontes(3)
+    recibo = _recibo_com(pedidas)
+    resultado, persistencia = _consolidar_com(
+        recibo, fontes_pedidas=[pedidas[2], pedidas[0], pedidas[1]]
+    )
+    assert resultado.source_coids == tuple(pedidas)
+    assert persistencia.chamadas == [recibo.target_coid]
+
+
+def test_e452_identical_predecessors_in_the_same_order_are_accepted():
+    pedidas = _fontes(2)
+    p1, p2 = uuid.uuid4(), uuid.uuid4()
+    eventos = (uuid.uuid4(), uuid.uuid4())
+    p1, p2 = sorted([p1, p2])
+    recibo = _recibo_com(pedidas, predecessores=(p1, p2), eventos=eventos)
+    resultado, _ = _consolidar_com(recibo, fontes_pedidas=pedidas, predecessores_pedidos=[p2, p1])
+    # Pedido em ordem inversa, canonicalizado, e o recibo ecoa a tupla
+    # canônica — caso fiel.
+    assert resultado.predecessor_event_ids == (p1, p2)
+
+
+def test_e452_both_empty_is_accepted():
+    pedidas = _fontes(2)
+    recibo = _recibo_com(pedidas)
+    resultado, _ = _consolidar_com(recibo, fontes_pedidas=pedidas)
+    assert resultado.predecessor_event_ids == ()
+
+
+# --- As duas fronteiras coexistem (§9.14 e §9.15) ---------------------
+
+
+def test_e452_receipt_assessment_check_is_still_active():
+    """A verificação da E4.5.1 continua valendo: recibo fiel ao pedido,
+    mas assessment materialmente incoerente, ainda é recusado."""
+    pedidas = _fontes(2)
+    recibo = _recibo_com(pedidas)
+    persistencia = PersistenceFalso(assessment=_assessment_com(recibo, ql="branch"))
+    manager = ConsolidationManager(PortaFalsa(recibo=recibo), persistencia)
+    with pytest.raises(ConsolidationVerificationError) as exc:
+        manager.consolidate(source_coids=list(pedidas), declared_losses=["x"])
+    assert any("BRANCH != MERGE" in m for m in exc.value.reasons)
+    assert persistencia.chamadas == [recibo.target_coid]
+
+
+def test_e452_the_two_checks_are_distinct_relations_not_duplicates():
+    """Fidelidade e coerência são funções separadas e ambas usadas."""
+    executavel = _codigo_executavel()
+    assert "verificar_fidelidade_pedido_recibo" in executavel
+    assert "verificar_coerencia_consolidacao" in executavel
+
+
+def test_e452_fidelity_rule_does_not_live_in_the_value_object():
+    """`ConsolidationResult` não recebe o pedido original e não deve
+    fabricá-lo — um value object que inventasse a intenção do chamador
+    afirmaria algo que ninguém lhe disse."""
+    import inspect
+
+    campos = set(inspect.signature(ConsolidationResult).parameters)
+    for proibido in ("requested_source_coids", "requested_predecessor_event_ids", "request"):
+        assert proibido not in campos
+
+    import app.memory.schemas.consolidation as schema_mod
+
+    fonte_do_result = inspect.getsource(schema_mod.ConsolidationResult)
+    assert "verificar_fidelidade_pedido_recibo" not in fonte_do_result
+
+
+def test_e452_pure_fidelity_function_is_side_effect_free_and_total():
+    a, b = _fontes(2)
+    p1 = uuid.uuid4()
+    assert (
+        verificar_fidelidade_pedido_recibo(
+            source_coids_solicitadas=(a, b),
+            predecessores_solicitados=(p1,),
+            source_coids_do_recibo=(a, b),
+            predecessores_do_recibo=(p1,),
+        )
+        == ()
+    )
+    motivos = verificar_fidelidade_pedido_recibo(
+        source_coids_solicitadas=(a, b),
+        predecessores_solicitados=(p1,),
+        source_coids_do_recibo=(b, a),
+        predecessores_do_recibo=(),
+    )
+    assert isinstance(motivos, tuple)
+    assert len(motivos) == 2

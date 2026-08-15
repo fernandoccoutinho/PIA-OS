@@ -627,3 +627,167 @@ E4_5_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
 PATCH_CHAIN = 49
 READY_FOR_E4_6 = FALSE
 ```
+
+---
+
+## 18. Corretivo E4.5.2 — Request–Receipt Fidelity
+
+**Patch 50.** A auditoria devolveu dois defeitos, ambos reproduzidos
+contra a cadeia 49 antes de qualquer correção.
+
+| Defeito | Reprodução contra a cadeia 49 |
+|---|---|
+| **D** — fontes substituídas | porta recebeu `(A,B)`, devolveu `(C,D)`, assessment coerente com `(C,D)` — resultado aceito sem exceção |
+| **E** — predecessores substituídos | `P1` pedido, `P2` devolvido — aceito; e `(P1,P2)` pedido com `(P2,P1)` devolvido também |
+
+### Causa raiz
+
+A verificação que eu construí cobre **uma** relação: `receipt ↔
+assessment`. Ela prova que o patrimônio observado corresponde ao que o
+recibo afirma, e prova bem. Mas nunca compara o recibo com o **pedido
+validado** — então recibo e banco podem concordar perfeitamente entre si
+enquanto ambos descrevem uma operação diferente da solicitada.
+
+```text
+RECEIPT ↔ ASSESSMENT COHERENCE
+DOES NOT IMPLY
+REQUEST ↔ RECEIPT FIDELITY
+```
+
+Não é a mesma classe do corretivo E4.5.1: lá a verificação de uma
+fronteira existente estava incompleta; aqui uma fronteira inteira não
+estava modelada.
+
+### As duas fronteiras
+
+```text
+REQUEST
+   ↓ fidelity check           → verificar_fidelidade_pedido_recibo
+RECEIPT
+   ↓ material coherence check → verificar_coerencia_consolidacao
+PERSISTENCE ASSESSMENT
+   ↓
+CONSOLIDATION RESULT
+```
+
+```text
+REQUEST–RECEIPT FIDELITY     = REQUIRED
+RECEIPT–ASSESSMENT COHERENCE = REQUIRED
+ONE DOES NOT SUBSTITUTE THE OTHER
+
+REQUEST FIDELITY != PERSISTENCE COHERENCE
+BOTH ARE REQUIRED
+```
+
+Não é duplicação: fidelidade preserva a **intenção operacional
+recebida**; coerência prova o **patrimônio efetivamente observado**.
+
+A regra de fidelidade vive no manager, não no value object:
+`ConsolidationResult` não recebe o pedido original e não deve
+fabricá-lo — um value object que inventasse a intenção do chamador
+afirmaria algo que ninguém lhe disse.
+
+A verificação de fidelidade ocorre **antes** de `PersistenceManager.assess()`.
+Uma divergência já demonstrada não precisa consultar o alvo para valer,
+e há teste provando que `assess()` não é chamado nesses casos — tanto
+com dublê quanto contra o banco real.
+
+`PIA-8032` passa a cobrir falha de pós-condição em **qualquer** das duas
+fronteiras (`request ↔ receipt` e `receipt ↔ persistence assessment`).
+Código, categoria `SYSTEM`, HTTP status e severidade permanecem
+inalterados; nenhum código novo foi criado.
+
+### Divergência registrada — ordem dos predecessores
+
+O §6 do prompt deste corretivo pede que a E4.5 **não ordene** os
+predecessores e compare preservando a ordem do chamador. **Isso é
+inalcançável ponta a ponta**, e a razão está no writer oficial:
+`MultiInputTransformationManager._preflight_predecessores_tipos`
+(E3.4.2) faz `tuple(sorted(...))`. O recibo devolve a tupla ordenada,
+qualquer que seja a ordem pedida.
+
+Comparar contra a ordem bruta faria **toda** consolidação com
+predecessores fora de ordem falhar com `PIA-8032` — recusar operação
+legítima. Confirmado empiricamente: foi o primeiro resultado da
+integração antes do alinhamento.
+
+Adotei a canonicalização por UUID nos dois lados, idêntica à da E3. A
+verificação continua discriminando exatamente onde importa:
+
+| Cenário | Detectado |
+|---|---|
+| predecessor substituído | sim |
+| predecessor removido | sim |
+| predecessor acrescentado | sim |
+| recibo fora da ordem canônica | sim |
+| ordem bruta do chamador não preservada pela E3 | **não** — a E3 não oferece essa garantia |
+
+Corrigir isso na E3 seria Stop Condition (§13.1). Registro em vez de
+resolver por conta própria: se a preservação literal da ordem for
+requisito, ela pertence a um corretivo da E3, não à E4.5.
+
+### Escopo
+
+`schemas/consolidation.py` (função pura nova),
+`services/consolidation_manager.py` (chamada e canonicalização
+alinhada), os 2 arquivos de teste e este documento. Nada em E3, E4.4,
+`PIA-8032`, `ErrorCategory`, migração, tabela, enum, `coverage.ini` ou
+`pytest.ini`.
+
+### Testes
+
+| Arquivo | Cadeia 49 | Cadeia 50 | Δ |
+|---|---|---|---|
+| `tests/unit/memory/test_consolidation.py` | 130 | **150** | +20 |
+| `tests/integration/memory/test_consolidation_integration.py` | 31 | **37** | +6 |
+| **Total** | **161** | **187** | **+26** |
+
+Classificação **obtida por execução** contra a cadeia 49 (com a função
+nova substituída por um stub, senão o módulo nem coleta):
+
+```text
+FALHAM NA 49, PASSAM NA 50 ............ 15 unitários + 2 integração = 17
+PASSAM NOS DOIS LADOS (guardas) ....... 5 unitários + 4 integração = 9
+```
+
+Os 9 guardas verificam comportamento que já existia — canonicalização
+das fontes, evento-raiz sem predecessores, aceitação do writer real sem
+adulteração, coexistência das duas verificações — e agora ficam travados
+contra regressão.
+
+### Dois defeitos meus nos testes, corrigidos
+
+**(a)** O tamper de fontes trocava 3 fontes por 2, e o recibo da E3 —
+que é dataclass com invariantes próprios — recusava via
+`dataclasses.replace`. A adulteração precisa produzir um recibo
+**estruturalmente válido e apenas infiel**, que é o defeito sob teste.
+Também criei as fontes-isca antes do censo: criadas depois, apareciam
+como "alvo órfão" no rollback.
+
+**(b)** Dois testes passavam **por sorte**: asseravam ordem de UUIDs
+aleatórios que coincide com a canônica em metade das execuções. Detectado
+rodando os arquivos 6 vezes seguidas, não uma. Mesma lição da E3.4.2.1 —
+teste que passa por acaso é pior que teste ausente.
+
+### Resultados
+
+```text
+FULL_SUITE = 1638 passed / 1 skipped / 0 failed   (candidata: 1612)
+RAW_SUITE  = 1415 passed / 224 skipped / 0 failed
+
+E3 = 598/598   E3.4.2/.1 = 134/134   E4.1 = 40/40
+E4.2 = 42/42   E4.3 = 108/108        E4.4 = 74/74     (todos delta 0)
+E4.5 + E4.5.1 + E4.5.2 = 187 passed
+
+GLOBAL_COVERAGE = 98,91%   (não reduziu)
+APP_COGNITIVE_COVERAGE = 100%    APP_MEMORY_COVERAGE = 100%
+RUFF = PASS   BLACK = PASS   MYPY_NEW_ERRORS = 0 (7 pré-existentes)
+SCHEMA_ORM_DRIFT = 0   MIGRATION_HEAD = 4ca61776b982
+```
+
+```text
+E4_5_2_IMPLEMENTATION = COMPLETE
+E4_5_FINAL_STATUS     = AWAITING_INDEPENDENT_AUDIT
+PATCH_CHAIN = 50
+READY_FOR_E4_6 = FALSE
+```

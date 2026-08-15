@@ -96,6 +96,72 @@ exata verificável aqui sem importar enum algum da E3.
 """
 
 
+def verificar_fidelidade_pedido_recibo(
+    *,
+    source_coids_solicitadas: tuple[uuid.UUID, ...],
+    predecessores_solicitados: tuple[uuid.UUID, ...],
+    source_coids_do_recibo: tuple[uuid.UUID, ...],
+    predecessores_do_recibo: tuple[uuid.UUID, ...],
+) -> tuple[str, ...]:
+    """Confronta o pedido validado com o recibo devolvido pela porta.
+
+    Corretivo E4.5.2. Fronteira **distinta** da coberta por
+    `verificar_coerencia_consolidacao`:
+
+    ```text
+    REQUEST
+       ↓ fidelity check          ← esta função
+    RECEIPT
+       ↓ material coherence check ← verificar_coerencia_consolidacao
+    PERSISTENCE ASSESSMENT
+    ```
+
+    Não é duplicação: são duas relações diferentes, e verificar só a
+    segunda deixa passar o caso em que recibo e patrimônio concordam
+    perfeitamente entre si enquanto ambos divergem da operação
+    solicitada.
+
+        REQUEST FIDELITY != PERSISTENCE COHERENCE
+        BOTH ARE REQUIRED
+
+    Comparação **exata por tupla**, ordem inclusa nos dois campos.
+
+    Vive neste módulo por proximidade com a outra regra de coerência,
+    mas é usada **apenas** pelo `ConsolidationManager`:
+    `ConsolidationResult` não recebe o pedido original e não deve
+    fabricá-lo — um value object que inventasse a intenção do chamador
+    afirmaria algo que ninguém lhe disse.
+
+    Função pura: devolve todos os motivos detectáveis, tupla vazia
+    significa fiel. Não repara, não reordena, não desduplica.
+
+        TRANSMISSION != OVERWRITE
+    """
+    motivos: list[str] = []
+
+    if source_coids_do_recibo != source_coids_solicitadas:
+        motivos.append(
+            "fontes do recibo divergem das solicitadas: pedido "
+            f"{[str(c) for c in source_coids_solicitadas]}, recibo "
+            f"{[str(c) for c in source_coids_do_recibo]} — "
+            "REQUESTED SOURCES != AUTHORIZATION TO SUBSTITUTE SOURCES"
+        )
+
+    # Ordem é semântica aqui: `(P1, P2)` e `(P2, P1)` declaram
+    # correspondências causais diferentes, então a comparação é de
+    # tupla e não de conjunto. Comparar conjuntos aceitaria a troca em
+    # silêncio, que é uma das variantes reproduzidas na auditoria.
+    if predecessores_do_recibo != predecessores_solicitados:
+        motivos.append(
+            "predecessores causais do recibo divergem dos declarados: pedido "
+            f"{[str(e) for e in predecessores_solicitados]}, recibo "
+            f"{[str(e) for e in predecessores_do_recibo]} — "
+            "EXPLICIT PREDECESSOR != INTERCHANGEABLE PREDECESSOR"
+        )
+
+    return tuple(motivos)
+
+
 def verificar_coerencia_consolidacao(
     *,
     source_coids: tuple[uuid.UUID, ...],

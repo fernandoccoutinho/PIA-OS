@@ -78,6 +78,7 @@ from app.memory.ports.consolidation import (
 from app.memory.schemas.consolidation import (
     ConsolidationResult,
     verificar_coerencia_consolidacao,
+    verificar_fidelidade_pedido_recibo,
 )
 from app.memory.schemas.persistence import PersistenceAssessment
 from app.memory.services.persistence_manager import PersistenceManager
@@ -187,6 +188,12 @@ class ConsolidationManager:
             occurred_at=occurred_at,
         )
 
+        # Fidelidade pedido↔recibo ANTES de consultar o alvo: uma
+        # divergência já demonstrada não precisa do assessment para
+        # valer, e chamar `assess()` aqui só produziria trabalho cujo
+        # resultado seria descartado.
+        self._verificar_fidelidade(recibo, fontes, predecessores)
+
         assessment = self._persistence.assess(recibo.target_coid)
         self._verificar(recibo, assessment)
 
@@ -281,7 +288,72 @@ class ConsolidationManager:
                 "predecessor_event_ids contém repetições — declarar o mesmo evento duas "
                 "vezes duplicaria a história sem acrescentar fato algum"
             )
-        return materializado
+        # Canonicalização por UUID, idêntica à do writer oficial
+        # (`MultiInputTransformationManager._preflight_predecessores_tipos`,
+        # E3.4.2, que faz `tuple(sorted(...))`).
+        #
+        # DIVERGÊNCIA REGISTRADA (E4.5.2): o prompt do corretivo pede que
+        # a E4.5 "não ordene" predecessores e compare preservando a ordem
+        # do chamador. Isso é inalcançável ponta a ponta, porque a E3 já
+        # canonicaliza — o recibo devolve a tupla ordenada,
+        # independentemente da ordem pedida. Comparar contra a ordem
+        # bruta faria toda consolidação com predecessores fora de ordem
+        # falhar com PIA-8032, o que seria recusar operação legítima.
+        # Canonicalizar dos dois lados preserva a verificação onde ela
+        # discrimina — substituição, remoção, acréscimo e recibo fora da
+        # ordem canônica — sem inventar uma garantia de ordem que a E3
+        # não oferece. Corrigir isso na E3 seria Stop Condition (§13.1).
+        return tuple(sorted(materializado))
+
+    # --- Fidelidade pedido↔recibo (E4.5.2) ------------------------------
+
+    @staticmethod
+    def _verificar_fidelidade(
+        recibo: MultiInputTransformationReceiptPort,
+        fontes_validadas: tuple[uuid.UUID, ...],
+        predecessores_validados: tuple[uuid.UUID, ...],
+    ) -> None:
+        """Confronta o recibo com o **pedido validado** (corretivo E4.5.2).
+
+        Fronteira distinta da verificada por
+        `verificar_coerencia_consolidacao`, e nenhuma substitui a outra:
+
+            REQUEST ↔ RECEIPT   preserva a intenção operacional recebida
+            RECEIPT ↔ ASSESSMENT prova o patrimônio efetivamente observado
+
+            REQUEST FIDELITY != PERSISTENCE COHERENCE
+            BOTH ARE REQUIRED
+
+        Sem esta camada, recibo e banco podem concordar perfeitamente
+        entre si enquanto **ambos** descrevem uma operação diferente da
+        solicitada — foi exatamente o defeito que a auditoria da cadeia
+        49 reproduziu: pedido `(A, B)`, recibo `(C, D)`, assessment
+        coerente com `(C, D)`, nenhuma exceção.
+
+            REQUESTED SOURCES != AUTHORIZATION TO SUBSTITUTE SOURCES
+            CONSOLIDATION OF {A,B} != CONSOLIDATION OF {C,D}
+            TRANSMISSION != OVERWRITE
+
+        Comparação **exata por tupla**, ordem inclusa. Para as fontes, o
+        pedido já foi canonicalizado antes da porta, então o recibo deve
+        devolver exatamente a tupla canônica. Para os predecessores, a
+        ordem é semântica: `(P1, P2)` e `(P2, P1)` declaram
+        correspondências causais diferentes, e comparar conjuntos
+        aceitaria a troca em silêncio.
+
+            EXPLICIT PREDECESSOR != INTERCHANGEABLE PREDECESSOR
+
+        Nada é reordenado, desduplicado, substituído ou inferido aqui —
+        divergência é diagnóstico, nunca conserto.
+        """
+        motivos = verificar_fidelidade_pedido_recibo(
+            source_coids_solicitadas=fontes_validadas,
+            predecessores_solicitados=predecessores_validados,
+            source_coids_do_recibo=tuple(recibo.source_coids),
+            predecessores_do_recibo=tuple(recibo.predecessor_event_ids),
+        )
+        if motivos:
+            raise ConsolidationVerificationError(recibo.target_coid, motivos)
 
     # --- Verificação independente (E4.4) --------------------------------
 

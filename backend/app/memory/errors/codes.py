@@ -116,8 +116,24 @@ PIA_8032_CONSOLIDATION_VERIFICATION_FAILED = ErrorCode(
     http_status=500,
     severity=ErrorSeverity.ERROR,
 )
-"""O recibo devolvido pela porta E3 e o `PersistenceAssessment` da E4.4
-descrevem coisas diferentes sobre o mesmo alvo (`E4.5`).
+"""Falha de pós-condição de uma consolidação (`E4.5`).
+
+Cobre divergência em **qualquer** das duas fronteiras verificadas
+(corretivo E4.5.2):
+
+```text
+request ↔ receipt                 — a porta devolveu fontes ou
+                                     predecessores diferentes dos pedidos
+receipt ↔ persistence assessment  — o patrimônio observado não
+                                     corresponde ao que o recibo afirma
+```
+
+    REQUEST FIDELITY != PERSISTENCE COHERENCE
+    BOTH ARE REQUIRED
+
+No segundo caso, o recibo devolvido pela porta E3 e o
+`PersistenceAssessment` da E4.4 descrevem coisas diferentes sobre o
+mesmo alvo.
 
 A E4.5 não conclui uma consolidação com base apenas no recibo de quem
 escreveu. O assessment da E4.4 é a prova **independente**, lida do
