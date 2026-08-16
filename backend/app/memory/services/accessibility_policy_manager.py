@@ -122,13 +122,24 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
         self,
         subject_port: CognitiveSubjectPort[SubjectT],
         transition_port: AccessibilityTransitionPort[SubjectT, StateT],
-        causal_evidence_port: CausalEvidencePort[CausalEventView, CausalHistoryView],
+        causal_evidence_port: CausalEvidencePort[object, object],
         policy_repository: AccessibilityPolicyRepository,
         governance_manager: GovernanceManager,
         context_manager: ContextManager,
     ) -> None:
         self._subjects = subject_port
         self._transitions = transition_port
+        # `CausalEvidencePort[object, object]`, não `[CausalEventView,
+        # CausalHistoryView]`: os modelos da E3 declaram campos como
+        # `Mapped[...]`, e não são subtipos nominais das views. Como os
+        # parâmetros da porta são **covariantes**, qualquer
+        # `CausalEvidencePort[X, Y]` satisfaz esta assinatura — inclusive
+        # o `CausalHistoryRepository` real.
+        #
+        # `object` é o tipo **topo**, não `Any`: o mypy recusa ler
+        # qualquer atributo dele, o que torna o estreitamento por
+        # `isinstance` contra as views obrigatório em vez de opcional.
+        # É exatamente a garantia que se quer aqui.
         self._causal = causal_evidence_port
         self._policies = policy_repository
         self._governance = governance_manager
@@ -203,6 +214,7 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
                 requested_target_state=str(target_state),
                 observed_state=None,
                 state_changed=False,
+                evaluated_at=instante,
             )
 
         sujeito = self._subjects.get_by_id(coid, include_deleted=True)
@@ -213,7 +225,9 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
         # LOCK antes de observar. A partir daqui o estado não muda até
         # commit/rollback do chamador.
         bloqueado = self._subjects.refresh_for_update(sujeito)
-        self._verificar_identidade(bloqueado, coid, origem="refresh_for_update")
+        self._verificar_identidade(
+            bloqueado, coid, origem="refresh_for_update", mesma_instancia_que=sujeito
+        )
         estado_atual = self._ler_estado(bloqueado)
 
         if estado_atual == target_state:
@@ -237,6 +251,7 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
                 observed_state=str(estado_atual),
                 state_changed=False,
                 no_change=True,
+                evaluated_at=instante,
             )
 
         # `reason` só é exigido para uma mudança REAL para extinção
@@ -268,6 +283,7 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
                 requested_target_state=str(target_state),
                 observed_state=str(estado_atual),
                 state_changed=False,
+                evaluated_at=instante,
             )
 
         evidencia = None
@@ -275,8 +291,12 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
             evidencia = self._verificar_evidencia_causal(coid, causal_event_id)
 
         escrito = self._transitions.transition(bloqueado, target_state, reason=reason)
-        self._verificar_identidade(escrito, coid, origem="transition")
-        observado = self._ler_estado(escrito)
+        self._verificar_identidade(
+            escrito, coid, origem="transition", mesma_instancia_que=bloqueado
+        )
+        # O estado confirmado é lido da instância BLOQUEADA, não da
+        # devolvida: é a linha sob lock que precisa ter mudado.
+        observado = self._ler_estado(bloqueado)
         self._verificar_poscondicao(str(observado), str(target_state))
 
         logger.info(
@@ -300,6 +320,7 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
             observed_state=str(observado),
             state_changed=True,
             causal_event_id=evidencia,
+            evaluated_at=instante,
         )
 
     # --- Validação do pedido -------------------------------------------
@@ -387,7 +408,14 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
             )
         return moment.astimezone(UTC)
 
-    def _verificar_identidade(self, sujeito: SubjectT, coid: uuid.UUID, *, origem: str) -> None:
+    def _verificar_identidade(
+        self,
+        sujeito: SubjectT,
+        coid: uuid.UUID,
+        *,
+        origem: str,
+        mesma_instancia_que: SubjectT | None = None,
+    ) -> None:
         """O objeto devolvido pela porta é o sujeito pedido?
 
         Verificado após `get_by_id`, após `refresh_for_update` e após
@@ -418,6 +446,24 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
                 (
                     f"{origem} devolveu o sujeito {identidade}, mas o pedido é sobre "
                     f"{coid} — escrever nele alteraria patrimônio que ninguém pediu",
+                )
+            )
+        # Igualdade de COID não é identidade de instância (corretivo
+        # E4.7.2). Uma porta podia devolver OUTRA instância com o mesmo
+        # COID e o estado-alvo, deixando a instância bloqueada intacta —
+        # e a E4.7 certificava a aparência devolvida, não a linha que o
+        # lock protege.
+        #
+        #     SAME COID != SAME LOCKED INSTANCE
+        #     RETURNED REPLACEMENT != VERIFIED WRITE
+        #     REQUESTED SUBJECT MUST BE THE LOCKED AND WRITTEN SUBJECT
+        if mesma_instancia_que is not None and sujeito is not mesma_instancia_que:
+            raise AccessibilityTransitionContractViolationError(
+                (
+                    f"{origem} devolveu outra instância do sujeito {coid} — a "
+                    "identidade do COID coincide, mas a instância bloqueada não foi "
+                    "a alterada, e confirmar a substituta certificaria uma escrita "
+                    "que não ocorreu na linha protegida pelo lock",
                 )
             )
 

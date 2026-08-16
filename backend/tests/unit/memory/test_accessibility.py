@@ -402,6 +402,7 @@ def _resultado(**overrides):
         "requested_target_state": "latent",
         "observed_state": "latent",
         "state_changed": True,
+        "evaluated_at": _MOMENTO,
     }
     campos.update(overrides)
     return AccessibilityTransitionResult(**campos)
@@ -445,11 +446,11 @@ def test_ap15_denied_result_cannot_carry_a_decision():
 
 def test_ap16_no_change_never_fabricates_decision_or_evidence():
     with pytest.raises(ValueError, match="não fabrica decisão"):
-        _resultado(observed_state="active", state_changed=False, no_change=True)
+        _resultado(observed_state="latent", state_changed=False, no_change=True)
     with pytest.raises(ValueError, match="não fabrica evidência"):
         _resultado(
             decision=None,
-            observed_state="active",
+            observed_state="latent",
             state_changed=False,
             no_change=True,
             causal_event_id=uuid.uuid4(),
@@ -469,7 +470,10 @@ def test_ap18_three_outcomes_stay_distinct():
         observed_state=None,
         state_changed=False,
     )
-    noop = _resultado(decision=None, observed_state="active", state_changed=False, no_change=True)
+    # No-op exige `observed_state == requested_target_state` desde o
+    # corretivo E4.7.2: a versão anterior deste teste montava um no-op
+    # que contradizia o alvo — o defeito K escrito no harness.
+    noop = _resultado(decision=None, observed_state="latent", state_changed=False, no_change=True)
     avaliado = _resultado()
     assert (negado.no_change, negado.policy_evaluated) == (False, False)
     assert negado.observed_state is None, "recusa não fabrica observação"
@@ -1675,9 +1679,7 @@ def test_e471_static_port_assignment_is_the_real_proof():
 # --- Ramos descobertos pela exigência de 100% ------------------------
 
 
-@pytest.mark.parametrize(
-    ("valor", "excecao"), [(123, TypeError), ("quantum", ValueError)]
-)
+@pytest.mark.parametrize(("valor", "excecao"), [(123, TypeError), ("quantum", ValueError)])
 def test_e471_requested_target_state_is_validated(valor, excecao):
     with pytest.raises(excecao):
         _resultado(requested_target_state=valor)
@@ -1735,3 +1737,295 @@ def test_e471_causal_port_returning_a_shapeless_history_is_refused():
         _extincao(manager, sujeito, causal_event_id=evento_id)
     assert any("sem os campos de uma história" in m for m in exc.value.reasons)
     assert transition_port.escritas == []
+
+
+# ======================================================================
+# E4.7.2 — Locked Subject Identity & Result Coherence
+# ======================================================================
+#
+# Três causas-raiz:
+#
+#     SAME COID != SAME LOCKED INSTANCE
+#     FROZEN DATACLASS != VALID STATE MACHINE
+#     STATIC ASSIGNMENT != TYPED END-TO-END COMPOSITION
+
+
+class _PortaSubstituta(TransitionPortFalso):
+    """Devolve OUTRA instância com o mesmo COID e o alvo, sem tocar na
+    bloqueada — o defeito I na sua forma mínima."""
+
+    def transition(self, obj, target_state, *, reason=None):
+        self.escritas.append((obj.id, target_state, reason))
+        return SujeitoFalso(obj.id, estado=target_state)
+
+
+class _LockSubstituto(SubjectPortFalso):
+    """`refresh_for_update` devolve substituto de mesmo COID."""
+
+    def refresh_for_update(self, entity):
+        self.locks.append(entity.id)
+        return SujeitoFalso(entity.id, estado=entity.estado)
+
+
+def test_e472_transition_returning_a_same_coid_replacement_is_refused():
+    """`RETURNED REPLACEMENT != VERIFIED WRITE`.
+
+    Na cadeia 56 isto produzia `state_changed=True` com
+    `observed_state=latent` enquanto a instância bloqueada continuava
+    `active`.
+    """
+    bloqueado = SujeitoFalso(uuid.uuid4())
+    porta = _PortaSubstituta()
+    manager = AccessibilityPolicyManager(
+        SubjectPortFalso(bloqueado),
+        porta,
+        EvidencePortFalso(),
+        PolicyRepoFalso(_policy(_regra())),
+        GovernanceFalso(_resolucao()),
+        ContextoFalso(),
+    )
+    with pytest.raises(AccessibilityTransitionContractViolationError) as exc:
+        _transicionar(manager, coid=bloqueado.id)
+    assert exc.value.code == "PIA-8037"
+    assert any("outra instância" in m for m in exc.value.reasons)
+    # nenhuma falsa confirmação, e o estado real permanece intacto
+    assert bloqueado.estado == "active"
+
+
+def test_e472_lock_returning_a_same_coid_replacement_is_refused():
+    sujeito = SujeitoFalso(uuid.uuid4())
+    porta = _LockSubstituto(sujeito)
+    transicoes = TransitionPortFalso()
+    manager = AccessibilityPolicyManager(
+        porta,
+        transicoes,
+        EvidencePortFalso(),
+        PolicyRepoFalso(_policy(_regra())),
+        GovernanceFalso(_resolucao()),
+        ContextoFalso(),
+    )
+    with pytest.raises(AccessibilityTransitionContractViolationError) as exc:
+        _transicionar(manager, coid=sujeito.id)
+    assert any("outra instância" in m for m in exc.value.reasons)
+    assert transicoes.escritas == [], "nenhuma escrita após lock infiel"
+
+
+def test_e472_confirmed_state_is_read_from_the_locked_instance():
+    """O estado confirmado vem da instância bloqueada, não da devolvida."""
+    bloqueado = SujeitoFalso(uuid.uuid4())
+    manager, _, transicoes, _, _, _ = _manager(sujeito=bloqueado, policy=_policy(_regra()))
+    resultado = _transicionar(manager, coid=bloqueado.id)
+    assert bloqueado.estado == "latent"
+    assert resultado.observed_state == "latent"
+
+
+# --- Máquina exaustiva do resultado ----------------------------------
+
+
+def test_e472_authorized_result_without_decision_requires_no_op():
+    """Defeito J: não há desfecho semântico para autorizado sem decisão
+    e sem no-op."""
+    with pytest.raises(ValueError, match="só é possível como no-op"):
+        _resultado(decision=None, observed_state="active", state_changed=False)
+
+
+def test_e472_no_op_must_observe_exactly_the_requested_target():
+    """Defeito K."""
+    with pytest.raises(ValueError, match="já é o alvo pedido"):
+        _resultado(decision=None, observed_state="active", state_changed=False, no_change=True)
+
+
+def test_e472_result_and_decision_must_agree_on_the_target():
+    """Defeito L: uma autorização para um alvo não responde a outro
+    pedido."""
+    with pytest.raises(ValueError, match="troca o objeto da autorização"):
+        _resultado(requested_target_state="inaccessible")
+
+
+def test_e472_admissible_decision_without_a_write_is_refused():
+    with pytest.raises(ValueError, match="autorização sem efeito"):
+        _resultado(state_changed=False, observed_state="active")
+
+
+def test_e472_refused_decision_must_observe_the_source_state():
+    with pytest.raises(ValueError, match="é o de origem da decisão"):
+        _resultado(
+            decision=_decisao(outcome=GovernanceOutcome.INADMISSIBLE),
+            observed_state="latent",
+            state_changed=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "montagem",
+    [
+        "recusa_governanca",
+        "recusa_policy",
+        "no_op",
+        "alvo_nao_causal",
+    ],
+)
+def test_e472_causal_evidence_is_refused_where_it_was_not_used(montagem):
+    """Defeito O: evidência real não pode ser apresentada como fundamento
+    de uma operação à qual não pertence."""
+    evidencia = uuid.uuid4()
+    if montagem == "recusa_governanca":
+        kw = dict(
+            governance_resolution=_resolucao(outcome=GovernanceOutcome.NOT_APPLICABLE),
+            decision=None,
+            observed_state=None,
+            state_changed=False,
+        )
+    elif montagem == "recusa_policy":
+        kw = dict(
+            decision=_decisao(outcome=GovernanceOutcome.INADMISSIBLE),
+            observed_state="active",
+            state_changed=False,
+        )
+    elif montagem == "no_op":
+        kw = dict(decision=None, observed_state="latent", state_changed=False, no_change=True)
+    else:
+        kw = {}
+    with pytest.raises(ValueError):
+        _resultado(causal_event_id=evidencia, **kw)
+
+
+def test_e472_extinction_without_evidence_is_refused():
+    decisao = _decisao(target_state=CAUSALLY_EXTINCT_TOKEN)
+    with pytest.raises(ValueError, match="evidência causal"):
+        _resultado(
+            decision=decisao,
+            requested_target_state=CAUSALLY_EXTINCT_TOKEN,
+            observed_state=CAUSALLY_EXTINCT_TOKEN,
+        )
+
+
+def test_e472_result_requires_the_accessibility_transition_operation():
+    outra = dataclasses.replace(_resolucao(), operation=CognitiveOperation.READ)
+    with pytest.raises(ValueError, match="ACCESSIBILITY_TRANSITION"):
+        _resultado(governance_resolution=outra)
+
+
+def test_e472_decision_and_result_must_share_one_instant():
+    """Defeito N/`ONE OPERATION = ONE EVALUATION INSTANT`."""
+    with pytest.raises(ValueError, match="UM instante de avaliação"):
+        _resultado(evaluated_at=datetime(2025, 1, 1, tzinfo=UTC))
+
+
+def test_e472_decision_governance_key_must_match_the_resolution():
+    with pytest.raises(ValueError, match="autoridade resolvida"):
+        _resultado(decision=_decisao(governance_policy_key="OUTRA"))
+
+
+@pytest.mark.parametrize(
+    ("valor", "excecao"), [("ontem", TypeError), (datetime(2024, 6, 1), ValueError)]
+)
+def test_e472_result_evaluated_at_must_be_aware(valor, excecao):
+    with pytest.raises(excecao):
+        _resultado(evaluated_at=valor)
+
+
+def test_e472_result_evaluated_at_is_canonicalized_to_utc():
+    from datetime import timedelta, timezone
+
+    outro_fuso = timezone(timedelta(hours=-3))
+    mesmo_instante = _MOMENTO.astimezone(outro_fuso)
+    # Mesmo conteúdo nos dois: `_resultado()` sortearia COID e policy_id
+    # novos, e a diferença de hash viria daí, não da canonicalização.
+    comuns = {
+        "coid": uuid.uuid4(),
+        "context": MemoryContext(),
+        "governance_resolution": _resolucao(),
+    }
+    em_utc = _resultado(**comuns)
+    em_outro_fuso = _resultado(
+        decision=_decisao(evaluated_at=mesmo_instante),
+        evaluated_at=mesmo_instante,
+        **comuns,
+    )
+    assert em_outro_fuso.evaluated_at.tzinfo is UTC
+    assert em_outro_fuso.evaluated_at == _MOMENTO
+    assert em_outro_fuso == em_utc
+    assert hash(em_outro_fuso) == hash(em_utc)
+
+
+@pytest.mark.parametrize(
+    "montagem",
+    ["autorizado_sem_decisao", "no_op_contradiz", "alvo_divergente"],
+)
+def test_e472_replace_cannot_bypass_the_state_machine(montagem):
+    """Os invariantes valem em **toda** construção pública."""
+    resultado = _resultado()
+    alteracoes = {
+        "autorizado_sem_decisao": {"decision": None, "state_changed": False},
+        "no_op_contradiz": {
+            "decision": None,
+            "observed_state": "active",
+            "state_changed": False,
+            "no_change": True,
+        },
+        "alvo_divergente": {"requested_target_state": "inaccessible"},
+    }[montagem]
+    with pytest.raises(ValueError):
+        dataclasses.replace(resultado, **alteracoes)
+
+
+# --- Identidade tipada da decisão ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor", "excecao"),
+    [
+        ("policy_key", 123, TypeError),
+        ("policy_key", "  ", ValueError),
+        ("governance_policy_key", 456, TypeError),
+        ("governance_policy_key", "  ", ValueError),
+        ("matched_rule_id", 789, TypeError),
+        ("matched_rule_id", "  ", ValueError),
+        ("policy_version", "1", TypeError),
+        ("policy_version", True, TypeError),
+        ("policy_version", 0, ValueError),
+        ("policy_version", -1, ValueError),
+    ],
+)
+def test_e472_decision_identity_is_typed_not_merely_present(campo, valor, excecao):
+    """Defeito M: `MALFORMED PROVENANCE IS NOT PROVENANCE`.
+
+    O teste tudo-ou-nada verificava presença, não forma.
+    """
+    with pytest.raises(excecao):
+        _decisao(**{campo: valor})
+
+
+def test_e472_decision_evaluated_at_is_canonicalized_to_utc():
+    from datetime import timedelta, timezone
+
+    outro_fuso = timezone(timedelta(hours=5))
+    decisao = _decisao(evaluated_at=_MOMENTO.astimezone(outro_fuso))
+    assert decisao.evaluated_at.tzinfo is UTC
+    assert decisao.evaluated_at == _MOMENTO
+    assert hash(decisao) == hash(_decisao())
+
+
+# --- Instante no resultado -------------------------------------------
+
+
+@pytest.mark.parametrize("desfecho", ["recusa_governanca", "no_op", "recusa_policy", "escrita"])
+def test_e472_every_outcome_carries_the_evaluation_instant(desfecho):
+    """`NO DECISION != NO EVALUATION INSTANT`."""
+    sujeito = SujeitoFalso(uuid.uuid4(), estado="latent" if desfecho == "no_op" else "active")
+    if desfecho == "recusa_governanca":
+        manager, _, _, _, _, _ = _manager(
+            sujeito=sujeito, resolution=_resolucao(outcome=GovernanceOutcome.NOT_APPLICABLE)
+        )
+    elif desfecho == "recusa_policy":
+        manager, _, _, _, _, _ = _manager(
+            sujeito=sujeito, policy=_policy(_regra(effect=GovernanceEffect.DENY))
+        )
+    else:
+        manager, _, _, _, _, _ = _manager(sujeito=sujeito, policy=_policy(_regra()))
+
+    resultado = _transicionar(manager, coid=sujeito.id, moment=_MOMENTO)
+    assert resultado.evaluated_at == _MOMENTO
+    if resultado.decision is not None:
+        assert resultado.decision.evaluated_at == resultado.evaluated_at

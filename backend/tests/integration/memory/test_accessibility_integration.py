@@ -48,7 +48,11 @@ from app.memory.repositories.accessibility_policy_repository import (
 )
 from app.memory.repositories.governance_policy_repository import GovernancePolicyRepository
 from app.memory.repositories.memory_domain_repository import MemoryDomainRepository
-from app.memory.schemas.accessibility import CAUSALLY_EXTINCT_TOKEN, AccessibilityRule
+from app.memory.schemas.accessibility import (
+    CAUSALLY_EXTINCT_TOKEN,
+    AccessibilityRule,
+    AccessibilityTransitionResult,
+)
 from app.memory.schemas.governance import GovernanceRule
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.services.accessibility_policy_manager import AccessibilityPolicyManager
@@ -209,7 +213,22 @@ def _limpar(coids: list[uuid.UUID], chaves: list[str]) -> None:
         uow.commit()
 
 
-def _transicionar(session, coid, alvo, gk, ak, **kw):
+def _transicionar(
+    session: object,
+    coid: uuid.UUID,
+    alvo: AccessibilityState,
+    gk: str,
+    ak: str,
+    **kw: object,
+) -> AccessibilityTransitionResult:
+    """Chamada tipada do writer real (corretivo E4.7.2 — defeito P).
+
+    `alvo` é um membro de `AccessibilityState`, não uma string nua: o
+    manager sancionado da E3 exige o enum, e passar `"latent"` fazia a
+    prova de tipagem parar na fronteira da porta.
+
+        STATIC ASSIGNMENT != TYPED END-TO-END COMPOSITION
+    """
     return _compor(session).transition(
         coid=coid,
         target_state=alvo,
@@ -240,7 +259,7 @@ def test_ai2_admitted_transition_writes_through_the_sanctioned_manager():
     try:
         censo_antes = _censo(coid)
         with UnitOfWork() as uow:
-            resultado = _transicionar(uow.session, coid, "latent", gk, ak)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
             uow.commit()
         assert resultado.state_changed is True
         assert resultado.observed_state == "latent"
@@ -263,7 +282,7 @@ def test_ai3_governance_deny_blocks_and_writes_nothing():
     coid = _criar_objeto()
     try:
         with UnitOfWork() as uow:
-            resultado = _transicionar(uow.session, coid, "latent", gk, ak)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
             uow.commit()
         assert resultado.governance_resolution.outcome is GovernanceOutcome.INADMISSIBLE
         assert resultado.state_changed is False
@@ -295,7 +314,7 @@ def test_ai4_wildcard_governance_policy_does_not_authorize_the_transition():
     coid = _criar_objeto()
     try:
         with UnitOfWork() as uow:
-            resultado = _transicionar(uow.session, coid, "latent", gk, ak)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
             uow.commit()
         assert resultado.governance_resolution.outcome is GovernanceOutcome.NOT_APPLICABLE
         assert resultado.state_changed is False
@@ -313,7 +332,7 @@ def test_ai5_wrong_operation_never_reaches_the_subject():
             _transicionar(
                 uow.session,
                 coid,
-                "latent",
+                AccessibilityState.LATENT,
                 gk,
                 ak,
                 descriptor=_descritor(CognitiveOperation.TRANSFORM),
@@ -343,7 +362,7 @@ def test_ai6_no_matching_rule_is_not_applicable_and_writes_nothing():
     coid = _criar_objeto()
     try:
         with UnitOfWork() as uow:
-            resultado = _transicionar(uow.session, coid, "latent", gk, ak)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
             uow.commit()
         assert resultado.decision is not None
         assert resultado.decision.outcome is GovernanceOutcome.NOT_APPLICABLE
@@ -375,7 +394,7 @@ def test_ai7_deny_overrides_admit_in_the_accessibility_policy():
     coid = _criar_objeto()
     try:
         with UnitOfWork() as uow:
-            resultado = _transicionar(uow.session, coid, "latent", gk, ak)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
             uow.commit()
         assert resultado.decision is not None
         assert resultado.decision.outcome is GovernanceOutcome.INADMISSIBLE
@@ -470,7 +489,7 @@ def test_ai11_no_op_does_not_write_and_does_not_fabricate_anything():
     coid = _criar_objeto()
     try:
         with UnitOfWork() as uow:
-            resultado = _transicionar(uow.session, coid, "active", gk, ak)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.ACTIVE, gk, ak)
             uow.commit()
         assert resultado.no_change is True
         assert resultado.decision is None
@@ -503,7 +522,7 @@ def test_ai12_soft_deleted_subject_is_not_revived_and_deleted_at_is_untouched():
         assert apagado_em is not None
 
         with UnitOfWork() as uow:
-            resultado = _transicionar(uow.session, coid, "latent", gk, ak)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
             uow.commit()
 
         assert resultado.state_changed is True
@@ -521,7 +540,7 @@ def test_ai13_absent_subject_has_its_own_diagnostic():
     _publicar(gk, ak)
     try:
         with UnitOfWork() as uow, pytest.raises(AccessibilitySubjectNotFoundError) as exc:
-            _transicionar(uow.session, uuid.uuid4(), "latent", gk, ak)
+            _transicionar(uow.session, uuid.uuid4(), AccessibilityState.LATENT, gk, ak)
         assert exc.value.code == "PIA-8038"
     finally:
         _limpar([], [gk, ak])
@@ -553,7 +572,7 @@ def test_ai14_extinction_requires_a_real_event_of_the_same_subject():
             _transicionar(
                 uow.session,
                 coid,
-                CAUSALLY_EXTINCT_TOKEN,
+                AccessibilityState.CAUSALLY_EXTINCT,
                 gk,
                 ak,
                 reason="fim",
@@ -569,7 +588,7 @@ def test_ai14_extinction_requires_a_real_event_of_the_same_subject():
             _transicionar(
                 uow.session,
                 coid,
-                CAUSALLY_EXTINCT_TOKEN,
+                AccessibilityState.CAUSALLY_EXTINCT,
                 gk,
                 ak,
                 reason="fim",
@@ -586,7 +605,7 @@ def test_ai14_extinction_requires_a_real_event_of_the_same_subject():
             resultado = _transicionar(
                 uow.session,
                 coid,
-                CAUSALLY_EXTINCT_TOKEN,
+                AccessibilityState.CAUSALLY_EXTINCT,
                 gk,
                 ak,
                 reason="fim",
@@ -630,7 +649,7 @@ def test_ai15_extinct_object_still_exists_historically():
             _transicionar(
                 uow.session,
                 coid,
-                CAUSALLY_EXTINCT_TOKEN,
+                AccessibilityState.CAUSALLY_EXTINCT,
                 gk,
                 ak,
                 reason="fim",
@@ -657,7 +676,7 @@ def test_ai16_rollback_by_omission_leaves_the_state_untouched():
     coid = _criar_objeto()
     try:
         with UnitOfWork() as uow:
-            resultado = _transicionar(uow.session, coid, "latent", gk, ak)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
             # sem uow.commit()
         assert resultado.state_changed is True
         assert _estado(coid) == "active", "escrita sobreviveu ao rollback"
@@ -687,7 +706,7 @@ def test_ai17_concurrent_transitions_are_serialized_by_the_row_lock():
     erros: list[BaseException] = []
     barreira = threading.Barrier(2, timeout=30)
 
-    def _executar(alvo: str) -> None:
+    def _executar(alvo: AccessibilityState) -> None:
         try:
             with UnitOfWork() as uow:
                 manager = _compor(uow.session)
@@ -708,8 +727,8 @@ def test_ai17_concurrent_transitions_are_serialized_by_the_row_lock():
             erros.append(exc)
 
     threads = [
-        threading.Thread(target=_executar, args=("latent",)),
-        threading.Thread(target=_executar, args=("inaccessible",)),
+        threading.Thread(target=_executar, args=(AccessibilityState.LATENT,)),
+        threading.Thread(target=_executar, args=(AccessibilityState.INACCESSIBLE,)),
     ]
     try:
         for t in threads:
@@ -727,7 +746,7 @@ def test_ai17_concurrent_transitions_are_serialized_by_the_row_lock():
         assert (
             nao_mudou[2] != "active"
         ), "a segunda transação avaliou sobre um estado obsoleto — TOCTOU"
-        assert _estado(coid) == mudaram[0][0]
+        assert _estado(coid) == mudaram[0][0].value
     finally:
         _limpar([coid], [gk, ak])
 
@@ -750,7 +769,7 @@ def test_ai18_evaluation_path_writes_nothing_when_denied():
             engine = uow.session.get_bind()
             sa.event.listen(engine, "before_cursor_execute", _contar)
             try:
-                _transicionar(uow.session, coid, "latent", gk, ak)
+                _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
                 assert not uow.session.dirty
                 uow.session.flush()
             finally:
@@ -875,3 +894,154 @@ def test_ai24_effective_window_selects_the_right_version():
             assert depois.version == 2
     finally:
         _limpar([], [gk, ak])
+
+
+# ======================================================================
+# E4.7.2 — identidade da instância bloqueada, contra o banco real
+# ======================================================================
+
+
+def test_ai472_refresh_for_update_returns_the_same_instance():
+    """A E4.7 depende disto: o lock protege a **instância**, não só a
+    linha. Se a E3 mudar esse comportamento, é aqui que se descobre.
+
+        SAME COID != SAME LOCKED INSTANCE
+    """
+    coid = _criar_objeto()
+    try:
+        with UnitOfWork() as uow:
+            objetos = ObjectRepository(uow.session)
+            sujeito = objetos.get_by_id(coid, include_deleted=True)
+            bloqueado = objetos.refresh_for_update(sujeito)
+            assert bloqueado is sujeito
+            assert bloqueado.id == coid
+    finally:
+        _limpar([coid], [])
+
+
+def test_ai472_real_writer_returns_the_same_locked_instance():
+    """O `AccessibilityManager` sancionado devolve a própria instância."""
+    coid = _criar_objeto()
+    try:
+        with UnitOfWork() as uow:
+            objetos = ObjectRepository(uow.session)
+            bloqueado = objetos.refresh_for_update(objetos.get_by_id(coid, include_deleted=True))
+            escrito = AccessibilityManager(objetos).transition(bloqueado, AccessibilityState.LATENT)
+            assert escrito is bloqueado
+            assert bloqueado.accessibility is AccessibilityState.LATENT
+    finally:
+        _limpar([coid], [])
+
+
+def test_ai472_confirmed_state_comes_from_the_locked_instance():
+    """Transição legítima continua funcionando, e o estado confirmado é
+    o da instância bloqueada."""
+    gk, ak = _chaves()
+    _publicar(gk, ak)
+    coid = _criar_objeto()
+    try:
+        with UnitOfWork() as uow:
+            objetos = ObjectRepository(uow.session)
+            resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
+            no_banco = objetos.get_by_id(coid, include_deleted=True)
+            assert no_banco.accessibility.value == resultado.observed_state
+            uow.commit()
+        assert _estado(coid) == "latent"
+    finally:
+        _limpar([coid], [gk, ak])
+
+
+def test_ai472_replacement_from_a_faithless_port_is_refused_with_the_real_writer():
+    """A porta delega ao writer real e devolve um substituto de mesmo
+    COID: a linha muda de fato, mas a instância devolvida não é a
+    bloqueada — e a E4.7 recusa em vez de certificar."""
+    from app.memory.errors.exceptions import (
+        AccessibilityTransitionContractViolationError,
+    )
+
+    gk, ak = _chaves()
+    _publicar(gk, ak)
+    coid = _criar_objeto()
+    try:
+
+        class PortaSubstituta:
+            def __init__(self, real, objetos):
+                self._real = real
+                self._objetos = objetos
+                self.chamadas = 0
+
+            def get_state(self, obj):
+                return self._real.get_state(obj)
+
+            def transition(self, obj, target_state, *, reason=None):
+                self.chamadas += 1
+                self._real.transition(obj, target_state, reason=reason)
+                # mesmo COID, outra instância
+                return CognitiveObject(id=obj.id)
+
+        with (
+            pytest.raises(AccessibilityTransitionContractViolationError) as exc,
+            UnitOfWork() as uow,
+        ):
+            objetos = ObjectRepository(uow.session)
+            porta = PortaSubstituta(AccessibilityManager(objetos), objetos)
+            manager = AccessibilityPolicyManager(
+                objetos,
+                porta,
+                CausalHistoryRepository(uow.session),
+                AccessibilityPolicyRepository(uow.session),
+                GovernanceManager(GovernancePolicyRepository(uow.session)),
+                ContextManager(MemoryDomainRepository(uow.session)),
+            )
+            manager.transition(
+                coid=coid,
+                target_state=AccessibilityState.LATENT,
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                governance_policy_key=gk,
+                accessibility_policy_key=ak,
+                moment=_MOMENTO,
+            )
+            uow.commit()
+
+        assert exc.value.code == "PIA-8037"
+        assert any("outra instância" in m for m in exc.value.reasons)
+        # o rollback pertence ao chamador: nada foi commitado
+        assert _estado(coid) == "active"
+    finally:
+        _limpar([coid], [gk, ak])
+
+
+def test_ai472_only_the_accessibility_column_changes():
+    """Nenhuma coluna além de `accessibility` é alterada."""
+    gk, ak = _chaves()
+    _publicar(gk, ak)
+    coid = _criar_objeto()
+    try:
+        with UnitOfWork() as uow:
+            antes = tuple(
+                uow.session.execute(
+                    sa.text(
+                        "SELECT clid, revision_status, deleted_at, created_at "
+                        "FROM cognitive_objects WHERE id = :c"
+                    ),
+                    {"c": str(coid)},
+                ).one()
+            )
+        with UnitOfWork() as uow:
+            _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
+            uow.commit()
+        with UnitOfWork() as uow:
+            depois = tuple(
+                uow.session.execute(
+                    sa.text(
+                        "SELECT clid, revision_status, deleted_at, created_at "
+                        "FROM cognitive_objects WHERE id = :c"
+                    ),
+                    {"c": str(coid)},
+                ).one()
+            )
+        assert depois == antes
+        assert _estado(coid) == "latent"
+    finally:
+        _limpar([coid], [gk, ak])

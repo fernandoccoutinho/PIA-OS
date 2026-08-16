@@ -517,3 +517,16 @@ E4_7_FINAL_STATUS = AWAITING_INDEPENDENT_AUDIT
 PATCH_CHAIN = 56
 READY_FOR_E4_8 = FALSE
 ```
+
+---
+
+## 12. Corretivo E4.7.2
+
+A candidata E4.7.1 foi reprovada em nova auditoria: identidade de COID
+não é identidade da instância bloqueada, o resultado não era máquina de
+estados exaustiva, e a prova estática cobria atribuição mas não a
+chamada real.
+
+Ver `E4_7_2_LOCKED_SUBJECT_RESULT_COHERENCE.md` — inclusive o registro
+de que o gate Black foi reportado a partir de um comando diferente do
+declarado.

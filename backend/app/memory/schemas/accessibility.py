@@ -26,9 +26,13 @@ frozen=True ALONE != DEEP IMMUTABILITY
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
-from app.memory.models.governance_enums import GovernanceEffect, GovernanceOutcome
+from app.memory.models.governance_enums import (
+    CognitiveOperation,
+    GovernanceEffect,
+    GovernanceOutcome,
+)
 from app.memory.schemas.governance import GovernanceResolution
 from app.memory.schemas.memory_context import MemoryContext
 
@@ -203,11 +207,40 @@ class AccessibilityDecision:
                 "evaluated_at deve ser timezone-aware: um instante ingênuo daria "
                 "resultado dependente do fuso da máquina"
             )
+        # Canonicalizado para UTC: dois instantes iguais em fusos
+        # diferentes precisam produzir a mesma decisão, com o mesmo hash.
+        object.__setattr__(self, "evaluated_at", self.evaluated_at.astimezone(UTC))
         if self.outcome is GovernanceOutcome.PROHIBITED:
             raise ValueError(
                 "PROHIBITED pertence à fronteira de segurança da plataforma, não a uma "
                 "policy local de acessibilidade — a E4.7 não a produz"
             )
+
+        # Forma antes de presença (corretivo E4.7.2): o teste
+        # tudo-ou-nada verificava se os campos estavam presentes, não se
+        # eram utilizáveis. `policy_key=123` passava.
+        #
+        #     MALFORMED PROVENANCE IS NOT PROVENANCE
+        for nome, bruto in (
+            ("policy_key", self.policy_key),
+            ("governance_policy_key", self.governance_policy_key),
+            ("matched_rule_id", self.matched_rule_id),
+        ):
+            if bruto is None:
+                continue
+            if not isinstance(bruto, str):
+                raise TypeError(f"{nome} deve ser str, recebido {type(bruto).__name__}")
+            if not bruto.strip():
+                raise ValueError(f"{nome}, quando presente, não pode ser vazio")
+        if self.policy_version is not None:
+            # `bool` é subclasse de `int`; aceitá-lo faria `True` virar
+            # versão 1 em silêncio.
+            if not isinstance(self.policy_version, int) or isinstance(self.policy_version, bool):
+                raise TypeError(
+                    "policy_version deve ser int, recebido " f"{type(self.policy_version).__name__}"
+                )
+            if self.policy_version < 1:
+                raise ValueError("policy_version deve ser >= 1")
 
         # Identidade de policy é tudo-ou-nada, como na E4.3.2:
         # proveniência parcial parece proveniência. A partir do
@@ -276,6 +309,7 @@ class AccessibilityTransitionResult:
     requested_target_state: str
     observed_state: str | None
     state_changed: bool
+    evaluated_at: datetime
     no_change: bool = False
     causal_event_id: uuid.UUID | None = None
 
@@ -339,61 +373,159 @@ class AccessibilityTransitionResult:
                 f"{type(self.causal_event_id).__name__}"
             )
 
-        if not self.governance_resolution.execution_authorized:
+        if not isinstance(self.evaluated_at, datetime):
+            raise TypeError(
+                f"evaluated_at deve ser datetime, recebido {type(self.evaluated_at).__name__}"
+            )
+        if self.evaluated_at.tzinfo is None:
+            raise ValueError("evaluated_at deve ser timezone-aware")
+        object.__setattr__(self, "evaluated_at", self.evaluated_at.astimezone(UTC))
+
+        if self.governance_resolution.operation is not CognitiveOperation.ACCESSIBILITY_TRANSITION:
+            raise ValueError(
+                f"a resolução é sobre {self.governance_resolution.operation}; um "
+                "resultado de transição de acessibilidade exige autoridade sobre "
+                "ACCESSIBILITY_TRANSITION"
+            )
+
+        if self.decision is not None:
+            if self.decision.target_state != self.requested_target_state:
+                raise ValueError(
+                    f"a decisão autoriza {self.decision.target_state!r}, mas o pedido "
+                    f"é sobre {self.requested_target_state!r} — apresentar uma como "
+                    "resposta à outra troca o objeto da autorização"
+                )
+            if self.decision.evaluated_at != self.evaluated_at:
+                raise ValueError(
+                    "decisão e resultado citam instantes diferentes; uma operação tem "
+                    "UM instante de avaliação"
+                )
+            if (
+                self.decision.governance_policy_key is not None
+                and self.decision.governance_policy_key != self.governance_resolution.policy_key
+            ):
+                raise ValueError(
+                    f"a decisão operou sob {self.decision.governance_policy_key!r}, mas "
+                    f"a autoridade resolvida é {self.governance_resolution.policy_key!r}"
+                )
+
+        self._validar_desfecho()
+
+    def _validar_desfecho(self) -> None:
+        """Máquina de estados **exaustiva** (corretivo E4.7.2).
+
+        A versão anterior impunha invariantes ponto a ponto, e toda
+        combinação não prevista passava: autorizado sem decisão nem
+        no-op, no-op contradizendo o alvo, evidência causal num desfecho
+        que não a usou.
+
+            FROZEN DATACLASS != VALID STATE MACHINE
+            RESULT OBJECT MUST NOT REPRESENT AN IMPOSSIBLE HISTORY
+
+        São exatamente **quatro** desfechos possíveis. Nenhum quinto é
+        construível.
+        """
+        autorizado = self.governance_resolution.execution_authorized
+
+        # 1. Governança recusou — nada foi lido, nada foi avaliado.
+        if not autorizado:
             if self.decision is not None:
                 raise ValueError(
                     "sem autorização de governança a policy sequer é avaliada; carregar "
                     "uma decisão afirmaria uma avaliação que não ocorreu"
-                )
-            if self.state_changed or self.no_change:
-                raise ValueError(
-                    "governança não autorizou, então nem escrita nem no-op de policy "
-                    "podem ter ocorrido — a recusa é anterior a olhar o sujeito"
                 )
             if self.observed_state is not None:
                 raise ValueError(
                     "sob recusa de governança o sujeito não é lido; um observed_state "
                     "afirmaria uma observação que não ocorreu"
                 )
-        elif self.observed_state is None:
+            if self.state_changed or self.no_change:
+                raise ValueError(
+                    "governança não autorizou, então nem escrita nem no-op podem ter "
+                    "ocorrido — a recusa é anterior a olhar o sujeito"
+                )
+            if self.causal_event_id is not None:
+                raise ValueError(
+                    "recusa de governança não consulta evidência causal; citá-la "
+                    "apresentaria uma evidência real como fundamento de uma operação "
+                    "à qual ela não pertence"
+                )
+            return
+
+        if self.observed_state is None:
             raise ValueError(
                 "com governança autorizada o sujeito é lido sob lock, então "
                 "observed_state não pode ser None"
             )
+
+        # 2. No-op sob lock — a policy não é consultada.
         if self.no_change:
-            # Same-state não consulta a policy: não há transição a
-            # admitir, e avaliá-la produziria uma admissão (ou uma
-            # recusa) sobre algo que não vai acontecer.
-            #
-            #     NO_CHANGE != POLICY ADMISSION
-            #     NO_CHANGE != POLICY REFUSAL
             if self.decision is not None:
                 raise ValueError("no-op não fabrica decisão de policy: não há mudança a admitir")
+            if self.observed_state != self.requested_target_state:
+                raise ValueError(
+                    f"no-op significa que o estado observado ({self.observed_state!r}) "
+                    f"já é o alvo pedido ({self.requested_target_state!r})"
+                )
             if self.causal_event_id is not None:
                 raise ValueError(
                     "no-op não fabrica evidência causal — inclusive para um objeto que "
                     "já está causally_extinct"
                 )
-        if self.state_changed:
-            if self.decision is None or not self.decision.is_admissible:
+            return
+
+        # Autorizado, sem no-op: a policy TEM de ter sido avaliada. Era
+        # esta lacuna que permitia um resultado autorizado sem desfecho
+        # semântico algum.
+        if self.decision is None:
+            raise ValueError(
+                "resultado autorizado sem decisão só é possível como no-op; sem "
+                "no_change, a policy foi necessariamente avaliada"
+            )
+
+        # 3. Policy avaliou e não admitiu — nenhuma escrita.
+        if not self.decision.is_admissible:
+            if self.state_changed:
                 raise ValueError(
                     "estado só muda sob decisão ADMISSIBLE — mudança sem admissão é "
                     "escrita sem autoridade"
                 )
-            if self.observed_state != self.decision.target_state:
+            if self.observed_state != self.decision.source_state:
                 raise ValueError(
-                    f"estado observado {self.observed_state!r} difere do alvo autorizado "
-                    f"{self.decision.target_state!r} — a pós-condição não confirma a "
-                    "transição"
+                    f"sem escrita, o estado observado ({self.observed_state!r}) é o de "
+                    f"origem da decisão ({self.decision.source_state!r})"
                 )
-            if (
-                self.decision.target_state == CAUSALLY_EXTINCT_TOKEN
-                and self.causal_event_id is None
-            ):
+            if self.causal_event_id is not None:
+                raise ValueError(
+                    "recusa da policy não verifica evidência causal; citá-la seria "
+                    "apresentá-la como fundamento de uma operação que não ocorreu"
+                )
+            return
+
+        # 4. Policy admitiu e a E3 escreveu.
+        if not self.state_changed:
+            raise ValueError(
+                "decisão ADMISSIBLE sem no-op descreve uma escrita; state_changed=False "
+                "afirmaria autorização sem efeito"
+            )
+        if self.observed_state != self.requested_target_state:
+            raise ValueError(
+                f"estado observado {self.observed_state!r} difere do alvo autorizado "
+                f"{self.requested_target_state!r} — a pós-condição não confirma a "
+                "transição"
+            )
+        if self.requested_target_state == CAUSALLY_EXTINCT_TOKEN:
+            if self.causal_event_id is None:
                 raise ValueError(
                     "extinção causal exige evidência causal verificada; sem ela o "
                     "resultado afirmaria uma extinção sem fundamento"
                 )
+        elif self.causal_event_id is not None:
+            raise ValueError(
+                f"o alvo {self.requested_target_state!r} não é extinção causal; citar "
+                "evidência causal aqui a apresentaria como fundamento de uma operação "
+                "à qual ela não pertence"
+            )
 
     @property
     def policy_evaluated(self) -> bool:
