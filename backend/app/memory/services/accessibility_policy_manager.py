@@ -83,8 +83,12 @@ from app.memory.models.governance_enums import (
 )
 from app.memory.ports.accessibility import (
     AccessibilityTransitionPort,
+    CausalEventView,
     CausalEvidencePort,
+    CausalHistoryView,
     CognitiveSubjectPort,
+    StateT,
+    SubjectIdentityView,
     SubjectT,
 )
 from app.memory.repositories.accessibility_policy_repository import (
@@ -106,7 +110,7 @@ from app.utils.logger import get_logger
 logger = get_logger("app.memory.services.accessibility_policy_manager")
 
 
-class AccessibilityPolicyManager(Generic[SubjectT]):
+class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
     """Avalia e executa transições de acessibilidade sob autoridade.
 
     Genérico sobre o sujeito: o `CognitiveObject` atravessa este módulo
@@ -117,8 +121,8 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
     def __init__(
         self,
         subject_port: CognitiveSubjectPort[SubjectT],
-        transition_port: AccessibilityTransitionPort[SubjectT],
-        causal_evidence_port: CausalEvidencePort,
+        transition_port: AccessibilityTransitionPort[SubjectT, StateT],
+        causal_evidence_port: CausalEvidencePort[CausalEventView, CausalHistoryView],
         policy_repository: AccessibilityPolicyRepository,
         governance_manager: GovernanceManager,
         context_manager: ContextManager,
@@ -134,7 +138,7 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
         self,
         *,
         coid: uuid.UUID,
-        target_state: str,
+        target_state: StateT,
         context: MemoryContext,
         descriptor: CapabilityDescriptor,
         governance_policy_key: str,
@@ -153,11 +157,14 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
             NOT_APPLICABLE != ADMISSIBLE
             ACTOR PRESENCE != AUTHORIZATION
         """
+        instante = self._instante_unico(moment)
         self._validar_argumentos(
             coid=coid,
             target_state=target_state,
             context=context,
             descriptor=descriptor,
+            governance_policy_key=governance_policy_key,
+            accessibility_policy_key=accessibility_policy_key,
             reason=reason,
             causal_event_id=causal_event_id,
         )
@@ -169,7 +176,7 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
             descriptor=descriptor,
             context=context,
             policy_key=governance_policy_key,
-            moment=moment,
+            moment=instante,
         )
         self._verificar_fidelidade_da_resolucao(
             resolution, descriptor=descriptor, policy_key=governance_policy_key
@@ -193,17 +200,20 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
                 context=context,
                 governance_resolution=resolution,
                 decision=None,
-                observed_state=target_state,
+                requested_target_state=str(target_state),
+                observed_state=None,
                 state_changed=False,
             )
 
         sujeito = self._subjects.get_by_id(coid, include_deleted=True)
         if sujeito is None:
             raise AccessibilitySubjectNotFoundError(coid)
+        self._verificar_identidade(sujeito, coid, origem="get_by_id")
 
         # LOCK antes de observar. A partir daqui o estado não muda até
         # commit/rollback do chamador.
         bloqueado = self._subjects.refresh_for_update(sujeito)
+        self._verificar_identidade(bloqueado, coid, origem="refresh_for_update")
         estado_atual = self._ler_estado(bloqueado)
 
         if estado_atual == target_state:
@@ -223,16 +233,29 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
                 context=context,
                 governance_resolution=resolution,
                 decision=None,
-                observed_state=estado_atual,
+                requested_target_state=str(target_state),
+                observed_state=str(estado_atual),
                 state_changed=False,
                 no_change=True,
             )
 
+        # `reason` só é exigido para uma mudança REAL para extinção
+        # causal — depois do lock, portanto. Validá-lo antes impedia o
+        # no-op prometido para um objeto já `causally_extinct`, embora o
+        # manager E3 seja idempotente e não exija reason em same-state.
+        if str(target_state) == CAUSALLY_EXTINCT_TOKEN and not (reason or "").strip():
+            raise ValueError(
+                "extinção causal exige reason não-vazio — exigência do manager "
+                "sancionado da E3 (E3.6), que a E4.7 complementa sem substituir"
+            )
+
         decisao = self._avaliar(
             policy_key=accessibility_policy_key,
-            source_state=estado_atual,
-            target_state=target_state,
-            moment=moment,
+            governance_policy_key=governance_policy_key,
+            resolution=resolution,
+            source_state=str(estado_atual),
+            target_state=str(target_state),
+            moment=instante,
         )
 
         if not decisao.is_admissible:
@@ -242,24 +265,26 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
                 context=context,
                 governance_resolution=resolution,
                 decision=decisao,
-                observed_state=estado_atual,
+                requested_target_state=str(target_state),
+                observed_state=str(estado_atual),
                 state_changed=False,
             )
 
         evidencia = None
-        if target_state == CAUSALLY_EXTINCT_TOKEN:
+        if str(target_state) == CAUSALLY_EXTINCT_TOKEN:
             evidencia = self._verificar_evidencia_causal(coid, causal_event_id)
 
-        self._transitions.transition(bloqueado, target_state, reason=reason)
-        observado = self._ler_estado(bloqueado)
-        self._verificar_poscondicao(observado, target_state)
+        escrito = self._transitions.transition(bloqueado, target_state, reason=reason)
+        self._verificar_identidade(escrito, coid, origem="transition")
+        observado = self._ler_estado(escrito)
+        self._verificar_poscondicao(str(observado), str(target_state))
 
         logger.info(
             "accessibility_transition_executed",
             extra={
                 "coid": str(coid),
-                "source_state": estado_atual,
-                "target_state": target_state,
+                "source_state": str(estado_atual),
+                "target_state": str(target_state),
                 "policy_key": accessibility_policy_key,
                 "policy_version": decisao.policy_version,
                 "matched_rule_id": decisao.matched_rule_id,
@@ -271,7 +296,8 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
             context=context,
             governance_resolution=resolution,
             decision=decisao,
-            observed_state=observado,
+            requested_target_state=str(target_state),
+            observed_state=str(observado),
             state_changed=True,
             causal_event_id=evidencia,
         )
@@ -285,6 +311,8 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
         target_state: object,
         context: object,
         descriptor: object,
+        governance_policy_key: object,
+        accessibility_policy_key: object,
         reason: object,
         causal_event_id: object,
     ) -> None:
@@ -317,10 +345,80 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
                 "causal_event_id deve ser uuid.UUID ou None, recebido "
                 f"{type(causal_event_id).__name__}"
             )
-        if target_state == CAUSALLY_EXTINCT_TOKEN and not (reason or "").strip():
+        for nome, chave in (
+            ("governance_policy_key", governance_policy_key),
+            ("accessibility_policy_key", accessibility_policy_key),
+        ):
+            if not isinstance(chave, str):
+                raise TypeError(f"{nome} deve ser str, recebido {type(chave).__name__}")
+            if not chave.strip():
+                raise ValueError(f"{nome} não pode ser vazio")
+        # `reason` NÃO é validado aqui: exigi-lo antes do lock impedia o
+        # no-op de um objeto já `causally_extinct`. A exigência vale
+        # apenas para uma mudança real, e é aplicada depois de observar
+        # o estado atual (corretivo E4.7.1).
+        #
+        #     NO-OP REQUIRES NO FABRICATED CAUSE
+
+    @staticmethod
+    def _instante_unico(moment: datetime | None) -> datetime:
+        """Um instante de decisão para a operação inteira.
+
+        A versão anterior repassava `moment=None` à Governança — que
+        capturava o próprio `now()` — e depois capturava outro `now()`
+        para a AccessibilityPolicy. Uma operação na fronteira de vigência
+        podia ser governada por instantes diferentes:
+
+            TWO NOW() CALLS != ONE DECISION INSTANT
+            ONE OPERATION = ONE EVALUATION INSTANT
+
+        Exige `datetime` **aware** e canonicaliza para UTC: comparar
+        vigência com um instante ingênuo daria resultado dependente do
+        fuso da máquina onde o processo roda.
+        """
+        if moment is None:
+            return datetime.now(UTC)
+        if not isinstance(moment, datetime):
+            raise TypeError(f"moment deve ser datetime ou None, recebido {type(moment).__name__}")
+        if moment.tzinfo is None:
             raise ValueError(
-                "extinção causal exige reason não-vazio — exigência do manager "
-                "sancionado da E3 (E3.6), que a E4.7 complementa sem substituir"
+                "moment deve ser timezone-aware — um instante ingênuo tornaria a "
+                "vigência dependente do fuso da máquina"
+            )
+        return moment.astimezone(UTC)
+
+    def _verificar_identidade(self, sujeito: SubjectT, coid: uuid.UUID, *, origem: str) -> None:
+        """O objeto devolvido pela porta é o sujeito pedido?
+
+        Verificado após `get_by_id`, após `refresh_for_update` e após
+        `transition` — os três pontos em que uma porta infiel poderia
+        substituir o sujeito:
+
+            REQUESTED ID != RETURNED ID
+            REQUESTED SUBJECT MUST BE THE WRITTEN SUBJECT
+
+        Sem isto, um pedido sobre A escrevia em B e devolvia um resultado
+        citando A. Acesso tipado direto pela `SubjectIdentityView`, sem
+        reflexão.
+        """
+        if not isinstance(sujeito, SubjectIdentityView):
+            raise AccessibilityTransitionContractViolationError(
+                (
+                    f"{origem} devolveu um objeto sem identidade observável "
+                    f"({type(sujeito).__name__})",
+                )
+            )
+        identidade = sujeito.id
+        if not isinstance(identidade, uuid.UUID):
+            raise AccessibilityTransitionContractViolationError(
+                (f"{origem} devolveu id do tipo {type(identidade).__name__}, não uuid.UUID",)
+            )
+        if identidade != coid:
+            raise AccessibilityTransitionContractViolationError(
+                (
+                    f"{origem} devolveu o sujeito {identidade}, mas o pedido é sobre "
+                    f"{coid} — escrever nele alteraria patrimônio que ninguém pediu",
+                )
             )
 
     @staticmethod
@@ -408,9 +506,11 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
         self,
         *,
         policy_key: str,
+        governance_policy_key: str,
+        resolution: GovernanceResolution,
         source_state: str,
         target_state: str,
-        moment: datetime | None,
+        moment: datetime,
     ) -> AccessibilityDecision:
         """Aplica a versão vigente da policy à transição pedida.
 
@@ -427,17 +527,44 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
         `ADMISSIBLE`, nunca `INADMISSIBLE`. Ausência de regra é distinta
         de negação explícita, e nenhuma das duas autoriza.
         """
-        # Default explicitamente em UTC: comparar vigência com um
-        # `datetime` ingênuo daria resultado dependente do fuso da
-        # máquina onde o processo roda.
-        instante = moment or datetime.now(UTC)
-        policy = self._policies.effective_version_at(policy_key, instante)
+        # O instante já vem resolvido do início da operação: nenhuma
+        # chamada a `now()` acontece aqui (corretivo E4.7.1).
+        policy = self._policies.effective_version_at(policy_key, moment)
         if policy is None:
             return AccessibilityDecision(
                 outcome=GovernanceOutcome.NOT_APPLICABLE,
                 source_state=source_state,
                 target_state=target_state,
+                evaluated_at=moment,
             )
+
+        # Vínculo de autoridade, verificado — não apenas persistido
+        # (corretivo E4.7.1).
+        #
+        #     PERSISTED BINDING != ENFORCED BINDING
+        #     REQUESTED AUTHORITY MUST BE THE POLICY'S AUTHORITY
+        #
+        # Mismatch é violação de contrato, nunca `NOT_APPLICABLE` e
+        # nunca admissão: uma policy subordinada a G2 não pode operar
+        # sob autoridade G1.
+        motivos: list[str] = []
+        if policy.policy_key != policy_key:
+            motivos.append(
+                f"o repositório devolveu a policy {policy.policy_key!r}, não a "
+                f"solicitada {policy_key!r}"
+            )
+        if policy.governance_policy_key != governance_policy_key:
+            motivos.append(
+                f"a AccessibilityPolicy é subordinada a {policy.governance_policy_key!r}, "
+                f"mas a autoridade solicitada é {governance_policy_key!r}"
+            )
+        if policy.governance_policy_key != resolution.policy_key:
+            motivos.append(
+                f"a AccessibilityPolicy é subordinada a {policy.governance_policy_key!r}, "
+                f"mas a autoridade resolvida é {resolution.policy_key!r}"
+            )
+        if motivos:
+            raise AccessibilityTransitionContractViolationError(tuple(motivos))
 
         from app.memory.models.accessibility_policy import AccessibilityPolicy
 
@@ -452,6 +579,7 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
                 outcome=GovernanceOutcome.NOT_APPLICABLE,
                 source_state=source_state,
                 target_state=target_state,
+                evaluated_at=moment,
             )
 
         # Ordem canônica antes de decidir: `DENY` vem antes de `ADMIT`
@@ -468,8 +596,10 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
             outcome=outcome,
             source_state=source_state,
             target_state=target_state,
+            evaluated_at=moment,
             policy_key=policy.policy_key,
             policy_version=policy.version,
+            governance_policy_key=policy.governance_policy_key,
             matched_rule_id=escolhida.rule_id,
         )
 
@@ -500,27 +630,80 @@ class AccessibilityPolicyManager(Generic[SubjectT]):
                     "sem evidência seria causalidade fabricada",
                 )
             )
-        evento = self._causal.get_event(causal_event_id)
-        if evento is None:
+        bruto_evento = self._causal.get_event(causal_event_id)
+        if bruto_evento is None:
             raise AccessibilityTransitionContractViolationError(
                 (f"evento causal {causal_event_id} não existe",)
             )
-        historia = self._causal.get_by_subject(coid)
-        if historia is None:
+        # `isinstance` contra um `Protocol` `runtime_checkable` **tipa** o
+        # objeto para o mypy: a leitura dos campos abaixo é verificada
+        # estaticamente, sem `Any`, `cast` ou reflexão.
+        if not isinstance(bruto_evento, CausalEventView):
+            raise AccessibilityTransitionContractViolationError(
+                (
+                    "get_event devolveu um objeto sem os campos de um evento causal "
+                    f"({type(bruto_evento).__name__})",
+                )
+            )
+        evento = bruto_evento
+        bruto_historia = self._causal.get_by_subject(coid)
+        if bruto_historia is None:
             raise AccessibilityTransitionContractViolationError(
                 (
                     f"o sujeito {coid} não possui história causal; o evento informado "
                     "não pode pertencer a ele",
                 )
             )
-        if evento.history_id != historia.id:
+        if not isinstance(bruto_historia, CausalHistoryView):
             raise AccessibilityTransitionContractViolationError(
                 (
-                    f"o evento {causal_event_id} pertence a outra história causal — "
-                    f"usá-lo como evidência sobre {coid} fabricaria causalidade",
+                    "get_by_subject devolveu um objeto sem os campos de uma história "
+                    f"causal ({type(bruto_historia).__name__})",
                 )
             )
-        return causal_event_id
+        historia = bruto_historia
+
+        # Três igualdades, todas necessárias (corretivo E4.7.1). A
+        # versão anterior comparava apenas `event.history_id ==
+        # history.id`, então uma porta podia devolver OUTRO evento e a
+        # história de OUTRO sujeito — internamente consistentes entre si
+        # — e a extinção era executada citando o ID pedido como se ele
+        # tivesse sido verificado.
+        #
+        #     REQUESTED EVENT MUST BE THE VERIFIED EVENT
+        #     PORT RETURN != TRUSTED FACT UNTIL FIDELITY IS VERIFIED
+        motivos: list[str] = []
+        identificadores = (
+            ("evento.id", evento.id),
+            ("evento.history_id", evento.history_id),
+            ("historia.id", historia.id),
+            ("historia.subject_coid", historia.subject_coid),
+        )
+        for nome, valor in identificadores:
+            if not isinstance(valor, uuid.UUID):
+                motivos.append(f"{nome} é {type(valor).__name__}, não uuid.UUID")
+        if motivos:
+            raise AccessibilityTransitionContractViolationError(tuple(motivos))
+
+        if evento.id != causal_event_id:
+            motivos.append(
+                f"a porta devolveu o evento {evento.id}, mas o solicitado foi " f"{causal_event_id}"
+            )
+        if historia.subject_coid != coid:
+            motivos.append(
+                f"a história devolvida pertence a {historia.subject_coid}, não ao "
+                f"sujeito {coid}"
+            )
+        if evento.history_id != historia.id:
+            motivos.append(
+                f"o evento {evento.id} pertence à história {evento.history_id}, não à "
+                f"história {historia.id} do sujeito"
+            )
+        if motivos:
+            raise AccessibilityTransitionContractViolationError(tuple(motivos))
+
+        # Só o ID efetivamente confirmado é devolvido.
+        return evento.id
 
     @staticmethod
     def _verificar_poscondicao(observado: str, alvo: str) -> None:

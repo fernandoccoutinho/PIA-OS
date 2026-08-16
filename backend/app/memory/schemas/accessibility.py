@@ -26,6 +26,7 @@ frozen=True ALONE != DEEP IMMUTABILITY
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.memory.models.governance_enums import GovernanceEffect, GovernanceOutcome
 from app.memory.schemas.governance import GovernanceResolution
@@ -81,10 +82,23 @@ def _tokens(campo: str, valor: object) -> frozenset[str]:
                 f"{campo} contém {item!r}, fora do vocabulário da E3 "
                 f"{sorted(ACCESSIBILITY_STATE_TOKENS)}"
             )
-    if not itens:
+    if len(itens) != 1:
+        # Corretivo E4.7.1: exatamente UMA aresta por regra.
+        #
+        # A versão anterior aceitava conjuntos, e uma única regra com
+        # duas origens e dois destinos autorizava quatro transições —
+        # um produto cartesiano que ninguém declarou.
+        #
+        #     ONE TRANSITION RULE = ONE EXACT EDGE
+        #
+        # Vazio continua recusado pelo mesmo motivo de antes: dimensão
+        # vazia seria curinga silencioso, e a E4.3.3 mostrou o custo
+        # disso. O nome plural do campo é mantido apenas por
+        # compatibilidade com o JSON já publicado.
         raise ValueError(
-            f"{campo} não pode ser vazio — dimensão vazia numa regra de transição "
-            "seria curinga silencioso, e o projeto já pagou por isso na E4.3.3"
+            f"{campo} deve conter exatamente um token, recebido {len(itens)}: "
+            f"{sorted(itens)} — uma regra descreve UMA aresta de transição, e "
+            "conjuntos produziriam um produto cartesiano não declarado"
         )
     return itens
 
@@ -158,8 +172,10 @@ class AccessibilityDecision:
     outcome: GovernanceOutcome
     source_state: str
     target_state: str
+    evaluated_at: datetime
     policy_key: str | None = None
     policy_version: int | None = None
+    governance_policy_key: str | None = None
     matched_rule_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -178,6 +194,15 @@ class AccessibilityDecision:
                     f"{campo} {valor!r} está fora do vocabulário da E3 "
                     f"{sorted(ACCESSIBILITY_STATE_TOKENS)}"
                 )
+        if not isinstance(self.evaluated_at, datetime):
+            raise TypeError(
+                f"evaluated_at deve ser datetime, recebido {type(self.evaluated_at).__name__}"
+            )
+        if self.evaluated_at.tzinfo is None:
+            raise ValueError(
+                "evaluated_at deve ser timezone-aware: um instante ingênuo daria "
+                "resultado dependente do fuso da máquina"
+            )
         if self.outcome is GovernanceOutcome.PROHIBITED:
             raise ValueError(
                 "PROHIBITED pertence à fronteira de segurança da plataforma, não a uma "
@@ -185,8 +210,11 @@ class AccessibilityDecision:
             )
 
         # Identidade de policy é tudo-ou-nada, como na E4.3.2:
-        # proveniência parcial parece proveniência.
-        identidade = (self.policy_key, self.policy_version)
+        # proveniência parcial parece proveniência. A partir do
+        # corretivo E4.7.1, `governance_policy_key` entra nessa
+        # identidade: uma decisão que não diz sob qual autoridade
+        # operou não é explicável.
+        identidade = (self.policy_key, self.policy_version, self.governance_policy_key)
         if any(x is None for x in identidade) and any(x is not None for x in identidade):
             raise ValueError(
                 "policy_key e policy_version são tudo-ou-nada — identidade parcial "
@@ -245,7 +273,8 @@ class AccessibilityTransitionResult:
     context: MemoryContext
     governance_resolution: GovernanceResolution
     decision: AccessibilityDecision | None
-    observed_state: str
+    requested_target_state: str
+    observed_state: str | None
     state_changed: bool
     no_change: bool = False
     causal_event_id: uuid.UUID | None = None
@@ -267,14 +296,33 @@ class AccessibilityTransitionResult:
                 f"decision deve ser AccessibilityDecision ou None, recebido "
                 f"{type(self.decision).__name__}"
             )
-        if not isinstance(self.observed_state, str):
+        if not isinstance(self.requested_target_state, str):
             raise TypeError(
-                f"observed_state deve ser str, recebido {type(self.observed_state).__name__}"
+                "requested_target_state deve ser str, recebido "
+                f"{type(self.requested_target_state).__name__}"
             )
-        if self.observed_state not in ACCESSIBILITY_STATE_TOKENS:
+        if self.requested_target_state not in ACCESSIBILITY_STATE_TOKENS:
             raise ValueError(
-                f"observed_state {self.observed_state!r} está fora do vocabulário da E3"
+                f"requested_target_state {self.requested_target_state!r} está fora do "
+                "vocabulário da E3"
             )
+        # `observed_state` é `None` quando NENHUMA observação ocorreu
+        # (corretivo E4.7.1). A versão anterior preenchia com o alvo
+        # pedido sob recusa de governança, afirmando um estado que
+        # ninguém leu:
+        #
+        #     TARGET STATE != OBSERVED STATE
+        #     OBSERVED STATE REQUIRES AN OBSERVATION
+        if self.observed_state is not None:
+            if not isinstance(self.observed_state, str):
+                raise TypeError(
+                    "observed_state deve ser str ou None, recebido "
+                    f"{type(self.observed_state).__name__}"
+                )
+            if self.observed_state not in ACCESSIBILITY_STATE_TOKENS:
+                raise ValueError(
+                    f"observed_state {self.observed_state!r} está fora do vocabulário da E3"
+                )
         # Acesso direto, sem `getattr`: a E4.6.2 congelou que reflexão
         # não é atalho aceitável nem em validação defensiva.
         if not isinstance(self.state_changed, bool):
@@ -302,6 +350,16 @@ class AccessibilityTransitionResult:
                     "governança não autorizou, então nem escrita nem no-op de policy "
                     "podem ter ocorrido — a recusa é anterior a olhar o sujeito"
                 )
+            if self.observed_state is not None:
+                raise ValueError(
+                    "sob recusa de governança o sujeito não é lido; um observed_state "
+                    "afirmaria uma observação que não ocorreu"
+                )
+        elif self.observed_state is None:
+            raise ValueError(
+                "com governança autorizada o sujeito é lido sob lock, então "
+                "observed_state não pode ser None"
+            )
         if self.no_change:
             # Same-state não consulta a policy: não há transição a
             # admitir, e avaliá-la produziria uma admissão (ou uma

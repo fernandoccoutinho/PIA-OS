@@ -357,3 +357,163 @@ READY_FOR_E4_8      = FALSE
 ```
 
 O implementador não declara `PASS FINAL`. E4.8 não é iniciada.
+
+---
+
+## 11. Corretivo E4.7.1 — Authority, Subject, Evidence & Temporal Fidelity
+
+**Patch 56.** A auditoria independente reprovou a candidata 55 em oito
+contratos materiais. Todos foram reproduzidos antes de qualquer
+correção.
+
+```text
+TEST PASS != CONTRACT FIDELITY
+RUNTIME_CHECKABLE != STATIC SIGNATURE COMPATIBILITY
+```
+
+### Reproduções contra a cadeia 55
+
+| # | Reprodução |
+|---|---|
+| **A** | pedido `A`, escrito `B`, resultado citando `A` — `ACCEPTED=True` |
+| **B** | governança `G1`, policy subordinada a `G2` → `admissible`, escreveu |
+| **C** | pedido `E1`, porta devolveu `E2`, história de outro sujeito → escreveu e gravou `E1` |
+| **D** | mypy: `Expected target_state: str` / `Got: AccessibilityState` |
+| **E** | `SUBJECT_READS=0` com `observed_state` igual ao alvo pedido |
+| **F** | `ValueError` antes de Governance/lock para no-op já extinto |
+| **G** | uma regra `{active,latent}×{inaccessible,causally_extinct}` = **4** arestas |
+| **H** | governança recebeu `None`, policy capturou outro `now()` |
+
+### Causa-raiz
+
+Quatro, não oito — e todas do mesmo hábito: **tratei retorno de porta
+como fato**, sem verificar fidelidade ao que foi pedido.
+
+```text
+PORT RETURN != TRUSTED FACT UNTIL FIDELITY IS VERIFIED
+REQUESTED ID != RETURNED ID
+PERSISTED BINDING != ENFORCED BINDING
+TARGET STATE != OBSERVED STATE
+TWO NOW() CALLS != ONE DECISION INSTANT
+```
+
+1. `REQUEST ↔ SUBJECT ↔ LOCKED SUBJECT` nunca foi modelada (A);
+2. `GOVERNANCE AUTHORITY ↔ ACCESSIBILITY POLICY` persistido e nunca lido (B);
+3. `REQUESTED EVIDENCE ↔ RETURNED EVENT ↔ SUBJECT HISTORY` ficou parcial (C);
+4. protocolo e tempo validados por comportamento nominal (D, H) — e daí
+   decorrem E, F e G.
+
+**O D é o mais sério, e a lição é minha:** eu documentei tipagem
+estática e provei com `isinstance`, que confere apenas nomes de membros.
+A afirmação era mais forte que a evidência.
+
+### Correções
+
+**Porta genérica por estado real.** `StateT = TypeVar(bound=str)`, e o
+`AccessibilityManager` real passa a satisfazer a porta **por atribuição
+estática**. A prova vive em `tests/static/test_port_assignment.py`,
+verificada pelo mypy — falha na cadeia 55, passa aqui.
+
+**Achado durante a correção:** a mesma prova revelou que
+`CausalEvidencePort` também não era satisfeita estaticamente. Os modelos
+da E3 declaram campos como `Mapped[...]`, e o mypy compara a anotação
+declarada, não o que o descritor devolve. A saída sem `Any`/`cast` foi a
+mesma já usada para o sujeito: porta genérica sobre `EventT_co`/
+`HistoryT_co` mais estreitamento por `isinstance` contra
+`runtime_checkable` — que **tipa** o objeto para o mypy, deixando a
+leitura dos campos verificada estaticamente.
+
+**Identidade** verificada após `get_by_id`, após `refresh_for_update` e
+após `transition` — os três pontos em que uma porta infiel poderia
+substituir o sujeito. Divergência posterior à escrita sobe para rollback
+externo, sem reparo.
+
+**Vínculo de autoridade** com três igualdades: `policy_key` solicitado,
+`governance_policy_key` solicitado e `governance_policy_key` da
+resolução. Mismatch é `PIA-8037`, nunca `NOT_APPLICABLE` e nunca
+admissão. A decisão passa a carregar o `governance_policy_key`
+verificado, e a identidade de policy é tudo-ou-nada.
+
+**Evidência causal** com as três igualdades do §8.4, todos os motivos
+acumulados, e só o ID confirmado é citado.
+
+**`observed_state: str | None`** — `None` quando nenhuma observação
+ocorreu. `requested_target_state` passa a ser campo próprio.
+
+**Sequência** — `reason` exigido apenas depois do lock, quando a
+mudança é real.
+
+**Uma aresta por regra** — cardinalidade exatamente 1 no construtor, na
+serialização e na desserialização. O payload plural é preservado; uma
+policy cartesiana antiga falha de modo explícito, nunca é reinterpretada.
+
+**Instante único** — capturado uma vez, canonicalizado para UTC,
+repassado a Governança e à AccessibilityPolicy, e carregado em
+`evaluated_at`.
+
+### Testes
+
+| Arquivo | Cadeia 55 | Cadeia 56 | Δ |
+|---|---|---|---|
+| `tests/unit/memory/test_accessibility.py` | 100 | **138** | +38 |
+| `tests/integration/memory/test_accessibility_integration.py` | 24 | **24** | 0 |
+| `tests/static/test_port_assignment.py` | — | **1** | +1 |
+| **Total** | **124** | **163** | **+39** |
+
+Classificação **obtida por execução** contra a cadeia 55:
+
+```text
+FALHAM POR COMPORTAMENTO ............ 28 unitários
+PASSAM NOS DOIS LADOS (guardas) ..... 5 unitários
+FALHA ESTÁTICA DE TIPAGEM ........... 1 (4 erros de mypy na prova da porta)
+```
+
+A falha estática é categoria própria, e registro assim em vez de
+misturá-la com falha comportamental: na cadeia 55 o arquivo **coleta e
+passa** em runtime; o que falha é o mypy.
+
+### Testes ajustados, não enfraquecidos
+
+Três testes da candidata **codificavam os defeitos**:
+
+- `ap4` usava `{active, latent} → {inaccessible}` — ele próprio uma
+  regra cartesiana (defeito G);
+- `ap36` exigia `reason` antes de Governance/lock (defeito F);
+- os dublês montavam `AccessibilityPolicy` sem `governance_policy_key`,
+  o que só era possível porque o vínculo nunca era lido (defeito B).
+
+Foram corrigidos com nota explícita, não removidos. E o helper de
+transição passou a usar o COID do sujeito montado, porque a identidade
+agora é verificada — um UUID aleatório produziria `PIA-8037`,
+corretamente, mas mascararia o caso sob teste.
+
+### Resultados
+
+```text
+FULL_SUITE = 2027 passed / 1 skipped / 0 failed   (candidata: 1988)
+RAW_SUITE  = 1742 passed / 286 skipped / 0 failed
+
+E3 = 598/598   E3.4.2/.1 = 134/134   E4.1 = 40/40   E4.2 = 42/42
+E4.3+.3 = 151/151   E4.4 = 74/74   E4.5 = 187/187   E4.6 = 183/183
+(todos delta 0)
+E4.7 + E4.7.1 = 163 passed
+
+GLOBAL_COVERAGE = 99,07%   (candidata 99,06% — não reduziu)
+APP_COGNITIVE_COVERAGE = 100%    APP_MEMORY_COVERAGE = 100%
+RUFF = PASS   BLACK = PASS   MYPY_NEW_ERRORS = 0
+STATIC_REAL_PORT_ASSIGNMENT = PASS
+SCHEMA_ORM_DRIFT = 0   MIGRATION_HEAD = 7b2e4c9a15df (single)
+NEW_MIGRATION = NO   NEW_TABLE = NO   NEW_COLUMN = NO   NEW_ERROR_CODE = NO
+```
+
+Escopo: `ports/accessibility.py`, `schemas/accessibility.py`,
+`services/accessibility_policy_manager.py`, os 2 arquivos de teste, a
+prova estática nova e este documento. Nenhuma alteração em
+`app/cognitive`, na migração publicada, na E4.6 ou na E4.8.
+
+```text
+E4_7_1_IMPLEMENTATION = COMPLETE
+E4_7_FINAL_STATUS = AWAITING_INDEPENDENT_AUDIT
+PATCH_CHAIN = 56
+READY_FOR_E4_8 = FALSE
+```

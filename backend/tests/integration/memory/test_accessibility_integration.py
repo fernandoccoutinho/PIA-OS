@@ -112,13 +112,16 @@ def _publicar(
     regras: tuple[AccessibilityRule, ...] | None = None,
     com_governanca: bool = True,
 ) -> None:
-    padrao = (
+    # Uma aresta por regra (corretivo E4.7.1): o conjunto anterior era
+    # ele próprio uma regra cartesiana. Três destinos exigem três regras.
+    padrao = tuple(
         AccessibilityRule(
-            rule_id="r1",
+            rule_id=f"r-{destino}",
             effect=GovernanceEffect.ADMIT,
             source_states=frozenset({"active"}),
-            target_states=frozenset({"latent", "inaccessible", CAUSALLY_EXTINCT_TOKEN}),
-        ),
+            target_states=frozenset({destino}),
+        )
+        for destino in ("latent", "inaccessible", CAUSALLY_EXTINCT_TOKEN)
     )
     with UnitOfWork() as uow:
         if com_governanca:
@@ -572,7 +575,9 @@ def test_ai14_extinction_requires_a_real_event_of_the_same_subject():
                 reason="fim",
                 causal_event_id=id_alheio,
             )
-        assert any("outra história causal" in m for m in exc.value.reasons)
+        # A mensagem passou a nomear a divergência exata (corretivo
+        # E4.7.1): a história devolvida pertence a outro sujeito.
+        assert any("história" in m for m in exc.value.reasons)
         assert _estado(coid) == "active"
 
         # evento real do mesmo sujeito
