@@ -561,7 +561,11 @@ def test_ri24_migration_head_is_unchanged_and_single():
     from alembic.script import ScriptDirectory
 
     heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
-    assert tuple(heads) == ("4ca61776b982",), f"migration head mudou: {heads}"
+    # Atualizado pela E4.7: a migração `7b2e4c9a15df` cria
+    # `accessibility_policies`, entidade persistente autorizada pelo
+    # §14 do prompt canônico. O head continua ÚNICO — o que este
+    # guarda protege é a ausência de branching, não a imobilidade.
+    assert tuple(heads) == ("7b2e4c9a15df",), f"migration head mudou: {heads}"
 
 
 def test_ri25_no_new_memory_table_was_introduced():
@@ -573,10 +577,14 @@ def test_ri25_no_new_memory_table_was_introduced():
         for mapper in Base.registry.mappers
         if mapper.class_.__module__.startswith("app.memory")
     }
+    # `accessibility_policies` entra pela E4.7 — nova entidade persistente
+    # autorizada pelo §14 do prompt canônico. O guarda continua exigindo
+    # o conjunto EXATO: nada além do declarado foi introduzido.
     assert tabelas == {
         "memory_domains",
         "memory_domain_memberships",
         "governance_policies",
+        "accessibility_policies",
     }, tabelas
 
 

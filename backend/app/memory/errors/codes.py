@@ -224,3 +224,94 @@ interno.
 
 Distinto de `PIA-8033`, que continua significando **exclusivamente**
 COID duplicado."""
+
+
+PIA_8035_ACCESSIBILITY_POLICY_VERSION_EXISTS = ErrorCode(
+    code="PIA-8035",
+    default_message="accessibility_policy_version_exists",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Já existe uma versão publicada com este `(policy_key, version)`
+(`E4.7`).
+
+Versões publicadas são imutáveis: mudar semântica exige publicar uma
+versão nova, nunca reescrever a anterior. A autoridade final é
+`UNIQUE(policy_key, version)` no banco — o repositório traduz a violação
+para este diagnóstico, inclusive quando duas sessões concorrentes tentam
+publicar a mesma versão ao mesmo tempo.
+
+Categoria `VALIDATION`: o pedido é que está errado, e o chamador pode
+corrigi-lo publicando outra versão. Espelha `PIA-8027`, o equivalente da
+E4.3."""
+
+
+PIA_8036_ACCESSIBILITY_POLICY_IMMUTABLE = ErrorCode(
+    code="PIA-8036",
+    default_message="accessibility_policy_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de `UPDATE` ou `DELETE` numa versão publicada (`E4.7`).
+
+Levantado tanto pelo override do repositório quanto pelo evento de
+mapper — a segunda camada existe porque a E4.3.1 reproduziu o defeito
+**contornando** o repositório, mutando o objeto carregado e chamando
+`commit()`.
+
+    POLICY IMMUTABILITY INCLUDES PRESERVING ITS AUTHORITY ENVELOPE
+
+Espelha `PIA-8028`, o equivalente da E4.3."""
+
+
+PIA_8037_ACCESSIBILITY_TRANSITION_CONTRACT_VIOLATION = ErrorCode(
+    code="PIA-8037",
+    default_message="accessibility_transition_contract_violation",
+    category=ErrorCategory.SYSTEM,
+    http_status=500,
+    severity=ErrorSeverity.ERROR,
+)
+"""Uma pós-condição da transição de acessibilidade foi violada (`E4.7`).
+
+Cobre as fronteiras que o caminho canônico verifica:
+
+```text
+REQUEST ↔ VALIDATED CONTEXT        o validador confirmou, mas substituiu
+REQUEST ↔ GOVERNANCE RESOLUTION    autorizou outra operação ou outra policy
+SUBJECT ↔ CAUSAL EVIDENCE          evento inexistente ou de outro COID
+PORT ↔ OBSERVED POSTCONDITION      o estado escrito não é o autorizado
+```
+
+Mesma disciplina de `PIA-8032` (E4.5) e `PIA-8034` (E4.6): carrega
+**todos** os motivos detectados, nada é reparado, e a exceção sobe para
+que o rollback da `UnitOfWork` do chamador desfaça a operação.
+
+    AUTO_DESTRUCTIVE_REPAIR = FORBIDDEN
+    MISSING EVIDENCE != AUTHORIZATION TO FABRICATE HISTORY
+
+Categoria `SYSTEM`, não `VALIDATION`: chegar aqui não significa pedido
+inválido — isso já foi recusado no preflight — e sim que colaboradores
+internos discordam entre si."""
+
+
+PIA_8038_ACCESSIBILITY_SUBJECT_NOT_FOUND = ErrorCode(
+    code="PIA-8038",
+    default_message="accessibility_subject_not_found",
+    category=ErrorCategory.VALIDATION,
+    http_status=404,
+    severity=ErrorSeverity.ERROR,
+)
+"""Não existe `CognitiveObject` com o COID informado (`E4.7`).
+
+Diagnóstico **próprio**, distinto de qualquer desfecho de policy: um
+objeto ausente não é uma transição negada, é um pedido sobre algo que
+não existe.
+
+A busca usa `include_deleted=True`. Um objeto com exclusão lógica
+**existe** e é sujeito legítimo — a E4.7 não o reativa e nunca toca
+`deleted_at`:
+
+    SOFT_DELETED != NEVER EXISTED
+    SOFT_DELETED != SUBJECT_NOT_FOUND"""

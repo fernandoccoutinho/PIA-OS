@@ -51,7 +51,17 @@ from app.memory.services.governance_manager import GovernanceManager
 from app.memory.services.persistence_manager import PersistenceManager
 from app.repositories.unit_of_work import UnitOfWork
 
-_E4_TABLES = ("governance_policies", "memory_domain_memberships", "memory_domains")
+_E4_TABLES = (
+    # `accessibility_policies` entra pela E4.7 — nova entidade persistente
+    # autorizada pelo §14 do prompt canônico daquele módulo. O guarda do
+    # `pi13` continua exigindo o conjunto EXATO de tabelas: o que ele
+    # protege é a ausência de tabela NÃO declarada, não a imobilidade do
+    # schema entre módulos.
+    "accessibility_policies",
+    "governance_policies",
+    "memory_domain_memberships",
+    "memory_domains",
+)
 _COGNITIVE_TABLES = (
     "causal_history_events",
     "causal_histories",

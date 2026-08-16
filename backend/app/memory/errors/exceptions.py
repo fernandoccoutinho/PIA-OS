@@ -25,6 +25,10 @@ from app.memory.errors.codes import (
     PIA_8032_CONSOLIDATION_VERIFICATION_FAILED,
     PIA_8033_RETRIEVAL_DUPLICATE_COID,
     PIA_8034_RETRIEVAL_CONTRACT_VIOLATION,
+    PIA_8035_ACCESSIBILITY_POLICY_VERSION_EXISTS,
+    PIA_8036_ACCESSIBILITY_POLICY_IMMUTABLE,
+    PIA_8037_ACCESSIBILITY_TRANSITION_CONTRACT_VIOLATION,
+    PIA_8038_ACCESSIBILITY_SUBJECT_NOT_FOUND,
 )
 
 
@@ -201,4 +205,69 @@ class RetrievalContractViolationError(PIAOSException):
         super().__init__(
             message="contrato do Retrieval violado: " + "; ".join(reasons),
             detail={"reasons": list(reasons)},
+        )
+
+
+class AccessibilityPolicyVersionExistsError(PIAOSException):
+    """Já existe versão publicada com este `(policy_key, version)` (E4.7)."""
+
+    error_code = PIA_8035_ACCESSIBILITY_POLICY_VERSION_EXISTS
+
+    def __init__(self, policy_key: str, version: int) -> None:
+        self.policy_key = policy_key
+        self.version = version
+        super().__init__(
+            message=(
+                f"AccessibilityPolicy {policy_key!r} versão {version} já existe — "
+                "versões publicadas são imutáveis; publique uma versão nova"
+            ),
+            detail={"policy_key": policy_key, "version": version},
+        )
+
+
+class AccessibilityPolicyImmutableError(PIAOSException):
+    """`UPDATE`/`DELETE` recusado numa versão publicada (E4.7)."""
+
+    error_code = PIA_8036_ACCESSIBILITY_POLICY_IMMUTABLE
+
+    def __init__(self, policy_id: uuid.UUID, *, operation: str) -> None:
+        self.policy_id = policy_id
+        self.operation = operation
+        super().__init__(
+            message=(
+                f"{operation} recusado: AccessibilityPolicy {policy_id} já foi publicada "
+                "e é imutável"
+            ),
+            detail={"policy_id": str(policy_id), "operation": operation},
+        )
+
+
+class AccessibilityTransitionContractViolationError(PIAOSException):
+    """Pós-condição da transição de acessibilidade violada (E4.7).
+
+    Carrega **todos** os motivos detectados: uma resposta incoerente
+    raramente diverge num só ponto, e reportar apenas o primeiro
+    obrigaria a auditoria a descobrir os demais uma execução por vez.
+    """
+
+    error_code = PIA_8037_ACCESSIBILITY_TRANSITION_CONTRACT_VIOLATION
+
+    def __init__(self, reasons: tuple[str, ...]) -> None:
+        self.reasons = reasons
+        super().__init__(
+            message="contrato de transição de acessibilidade violado: " + "; ".join(reasons),
+            detail={"reasons": list(reasons)},
+        )
+
+
+class AccessibilitySubjectNotFoundError(PIAOSException):
+    """Não existe `CognitiveObject` com o COID informado (E4.7)."""
+
+    error_code = PIA_8038_ACCESSIBILITY_SUBJECT_NOT_FOUND
+
+    def __init__(self, coid: uuid.UUID) -> None:
+        self.coid = coid
+        super().__init__(
+            message=f"nenhum CognitiveObject com COID {coid}",
+            detail={"coid": str(coid)},
         )

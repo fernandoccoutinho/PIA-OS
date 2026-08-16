@@ -674,7 +674,11 @@ def test_e342_pg22_migration_head_is_unchanged_and_single():
     config = Config("alembic.ini")
     script = ScriptDirectory.from_config(config)
     heads = script.get_heads()
-    assert tuple(heads) == ("4ca61776b982",), f"migration head mudou: {heads}"
+    # Atualizado pela E4.7: a migração `7b2e4c9a15df` cria
+    # `accessibility_policies`, entidade persistente autorizada pelo
+    # §14 do prompt canônico. O head continua ÚNICO — o que este
+    # guarda protege é a ausência de branching, não a imobilidade.
+    assert tuple(heads) == ("7b2e4c9a15df",), f"migration head mudou: {heads}"
 
 
 # --- Guardas adicionais -------------------------------------------------

@@ -11,6 +11,13 @@ uma segunda fonte da verdade sobre patrimônio, que é exatamente o que a
 arquitetura congelada não admite.
 """
 
+from app.memory.ports.accessibility import (
+    AccessibilityTransitionPort,
+    CausalEventView,
+    CausalEvidencePort,
+    CausalHistoryView,
+    CognitiveSubjectPort,
+)
 from app.memory.ports.consolidation import (
     MultiInputTransformationPort,
     MultiInputTransformationReceiptPort,
@@ -18,7 +25,12 @@ from app.memory.ports.consolidation import (
 from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
 
 __all__ = [
+    "AccessibilityTransitionPort",
+    "CausalEventView",
+    "CausalEvidencePort",
+    "CausalHistoryView",
     "CognitiveObjectView",
+    "CognitiveSubjectPort",
     "CognitiveSearchPort",
     "MultiInputTransformationPort",
     "MultiInputTransformationReceiptPort",
