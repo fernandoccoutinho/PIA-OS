@@ -141,6 +141,31 @@ class AccessibilityRule:
         object.__setattr__(self, "source_states", _tokens("source_states", self.source_states))
         object.__setattr__(self, "target_states", _tokens("target_states", self.target_states))
 
+        # Uma regra descreve uma mudança **real** (corretivo E4.7.3).
+        #
+        # A E4.7.2 impôs "uma aresta exata" como cardinalidade 1×1, mas
+        # cardinalidade unitária não exclui o laço sobre si mesmo:
+        #
+        #     ONE EXACT EDGE was enforced only as cardinality 1 × 1
+        #     CARDINALITY 1 × 1 DOES NOT EXCLUDE A SELF-LOOP
+        #
+        # Same-state é no-op **operacional**, resolvido pelo manager sob
+        # lock antes de a policy ser consultada. Uma regra self-loop
+        # nunca seria avaliada no caminho canônico — existir seria
+        # prometer uma autoridade que nada exerce.
+        #
+        #     SAME STATE REQUEST = NO-OP
+        #     NO-OP BYPASSES ACCESSIBILITY POLICY
+        origem = next(iter(self.source_states))
+        destino = next(iter(self.target_states))
+        if origem == destino:
+            raise ValueError(
+                f"regra self-loop {origem!r} → {destino!r}: uma regra de policy "
+                "descreve uma mudança real de estado. Same-state é no-op operacional, "
+                "resolvido antes de a policy ser consultada — esta regra nunca seria "
+                "avaliada"
+            )
+
     def matches(self, *, source_state: str, target_state: str) -> bool:
         """A regra se aplica a esta transição?
 
@@ -210,6 +235,21 @@ class AccessibilityDecision:
         # Canonicalizado para UTC: dois instantes iguais em fusos
         # diferentes precisam produzir a mesma decisão, com o mesmo hash.
         object.__setattr__(self, "evaluated_at", self.evaluated_at.astimezone(UTC))
+        # A decisão só existe depois que o manager confirmou, sob lock,
+        # que há mudança real: same-state termina como no-op **sem**
+        # decisão (corretivo E4.7.3).
+        #
+        #     SELF-LOOP DECISION != EXECUTED TRANSITION
+        #     POLICY DECISION REQUIRES source_state != target_state
+        #
+        # Vale para todos os outcomes: mesmo `NOT_APPLICABLE` afirmaria
+        # que a policy foi consultada sobre uma transição que não existe.
+        if self.source_state == self.target_state:
+            raise ValueError(
+                f"decisão self-loop {self.source_state!r} → {self.target_state!r}: "
+                "same-state termina como no-op antes de a policy ser consultada, "
+                "então nenhuma decisão pode existir sobre essa combinação"
+            )
         if self.outcome is GovernanceOutcome.PROHIBITED:
             raise ValueError(
                 "PROHIBITED pertence à fronteira de segurança da plataforma, não a uma "

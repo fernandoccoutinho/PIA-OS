@@ -1045,3 +1045,63 @@ def test_ai472_only_the_accessibility_column_changes():
         assert _estado(coid) == "latent"
     finally:
         _limpar([coid], [gk, ak])
+
+
+def test_ai473_no_op_writes_nothing_against_the_real_database():
+    """§8.13 — no-op canônico contra PostgreSQL: nenhuma escrita."""
+    gk, ak = _chaves()
+    _publicar(gk, ak)
+    coid = _criar_objeto(AccessibilityState.LATENT)
+    try:
+        escritas: list[str] = []
+
+        def _contar(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+                escritas.append(statement)
+
+        with UnitOfWork() as uow:
+            engine = uow.session.get_bind()
+            sa.event.listen(engine, "before_cursor_execute", _contar)
+            try:
+                resultado = _transicionar(uow.session, coid, AccessibilityState.LATENT, gk, ak)
+                assert not uow.session.dirty
+                uow.session.flush()
+            finally:
+                sa.event.remove(engine, "before_cursor_execute", _contar)
+            uow.commit()
+
+        assert resultado.no_change is True
+        assert resultado.decision is None
+        assert escritas == []
+        assert _estado(coid) == "latent"
+    finally:
+        _limpar([coid], [gk, ak])
+
+
+def test_ai473_self_loop_policy_cannot_be_published():
+    """Uma regra self-loop é recusada antes de chegar ao banco."""
+    gk, ak = _chaves()
+    try:
+        with pytest.raises(ValueError, match="regra self-loop"), UnitOfWork() as uow:
+            AccessibilityPolicyRepository(uow.session).add_policy(
+                policy_key=ak,
+                version=1,
+                governance_policy_key=gk,
+                rules=(
+                    AccessibilityRule(
+                        rule_id="self-loop",
+                        effect=GovernanceEffect.ADMIT,
+                        source_states=frozenset({"active"}),
+                        target_states=frozenset({"active"}),
+                    ),
+                ),
+                effective_from=_INICIO,
+            )
+        with UnitOfWork() as uow:
+            total = uow.session.execute(
+                sa.text("SELECT count(*) FROM accessibility_policies WHERE policy_key = :k"),
+                {"k": ak},
+            ).scalar_one()
+        assert total == 0
+    finally:
+        _limpar([], [gk, ak])

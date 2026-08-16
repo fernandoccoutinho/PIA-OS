@@ -2029,3 +2029,168 @@ def test_e472_every_outcome_carries_the_evaluation_instant(desfecho):
     assert resultado.evaluated_at == _MOMENTO
     if resultado.decision is not None:
         assert resultado.decision.evaluated_at == resultado.evaluated_at
+
+
+# ======================================================================
+# E4.7.3 — No-Op Boundary & Self-Loop Exclusion
+# ======================================================================
+#
+#     ONE EXACT EDGE was enforced only as cardinality 1 × 1
+#     CARDINALITY 1 × 1 DOES NOT EXCLUDE A SELF-LOOP
+#     POLICY DECISION REQUIRES source_state != target_state
+
+
+@pytest.mark.parametrize("token", sorted(ACCESSIBILITY_STATE_TOKENS))
+def test_e473_self_loop_rule_is_refused_for_every_token(token):
+    """Uma regra de policy descreve uma mudança **real**.
+
+    Same-state é no-op operacional, resolvido sob lock antes de a policy
+    ser consultada — uma regra self-loop nunca seria avaliada no caminho
+    canônico, e existir seria prometer autoridade que nada exerce.
+    """
+    with pytest.raises(ValueError, match="regra self-loop"):
+        _regra(fontes=(token,), alvos=(token,))
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        GovernanceOutcome.ADMISSIBLE,
+        GovernanceOutcome.INADMISSIBLE,
+        GovernanceOutcome.NOT_APPLICABLE,
+    ],
+)
+def test_e473_self_loop_decision_is_refused_for_every_outcome(outcome):
+    """`SELF-LOOP DECISION != EXECUTED TRANSITION`.
+
+    Vale inclusive para `NOT_APPLICABLE`: mesmo ele afirmaria que a
+    policy foi consultada sobre uma transição que não existe.
+    """
+    campos: dict = {"outcome": outcome, "source_state": "active", "target_state": "active"}
+    if outcome is GovernanceOutcome.NOT_APPLICABLE:
+        campos.update(
+            policy_key=None,
+            policy_version=None,
+            governance_policy_key=None,
+            matched_rule_id=None,
+        )
+    with pytest.raises(ValueError, match="decisão self-loop"):
+        _decisao(**campos)
+
+
+def test_e473_false_self_loop_write_is_unconstructible():
+    """Defeito T: `state_changed=True` sem que nada mude.
+
+    Não há guarda própria no resultado — o invariante da decisão já
+    torna a combinação inconstruível, e uma segunda implementação da
+    mesma regra poderia divergir com o tempo (lição da E4.5.1).
+    """
+    with pytest.raises(ValueError, match="decisão self-loop"):
+        _resultado(
+            decision=_decisao(source_state="active", target_state="active"),
+            requested_target_state="active",
+            observed_state="active",
+            state_changed=True,
+        )
+
+
+def test_e473_false_self_loop_local_refusal_is_unconstructible():
+    """Defeito U: same-state deveria ter terminado como no-op, sem
+    consultar a policy."""
+    with pytest.raises(ValueError, match="decisão self-loop"):
+        _resultado(
+            decision=_decisao(
+                outcome=GovernanceOutcome.INADMISSIBLE,
+                source_state="active",
+                target_state="active",
+            ),
+            requested_target_state="active",
+            observed_state="active",
+            state_changed=False,
+        )
+
+
+def test_e473_replace_cannot_introduce_a_self_loop():
+    """Os invariantes valem em toda construção pública."""
+    with pytest.raises(ValueError, match="decisão self-loop"):
+        dataclasses.replace(_decisao(), target_state="active")
+    with pytest.raises(ValueError, match="regra self-loop"):
+        dataclasses.replace(_regra(), target_states=frozenset({"active"}))
+
+
+@pytest.mark.parametrize(
+    ("fonte", "alvo"),
+    [
+        ("active", "latent"),
+        ("latent", "active"),
+        ("active", CAUSALLY_EXTINCT_TOKEN),
+        ("latent", "inaccessible"),
+        ("inaccessible", "active"),
+    ],
+)
+def test_e473_real_edges_remain_valid(fonte, alvo):
+    regra = _regra(fontes=(fonte,), alvos=(alvo,))
+    assert regra.matches(source_state=fonte, target_state=alvo)
+    decisao = _decisao(source_state=fonte, target_state=alvo)
+    assert decisao.source_state != decisao.target_state
+
+
+def test_e473_canonical_no_op_remains_the_only_same_state_outcome():
+    """O único desfecho same-state legítimo continua construível — e
+    continua sem decisão, sem evidência e sem escrita."""
+    resultado = _resultado(
+        decision=None,
+        requested_target_state="latent",
+        observed_state="latent",
+        state_changed=False,
+        no_change=True,
+    )
+    assert resultado.no_change is True
+    assert resultado.decision is None
+    assert resultado.causal_event_id is None
+    assert resultado.policy_evaluated is False
+
+
+def test_e473_no_op_path_consults_neither_policy_nor_evidence_nor_writer():
+    """O manager resolve same-state sob lock, antes da policy."""
+    sujeito = SujeitoFalso(uuid.uuid4(), estado="latent")
+    manager, subject_port, transicoes, evidencia, policy_repo, _ = _manager(
+        sujeito=sujeito, policy=_policy(_regra())
+    )
+    resultado = _transicionar(manager, coid=sujeito.id, alvo="latent")
+    assert resultado.no_change is True
+    assert policy_repo.consultas == []
+    assert evidencia.consultas == 0
+    assert transicoes.escritas == []
+    assert subject_port.locks == [sujeito.id]
+
+
+def test_e473_historic_self_loop_payload_is_refused_on_read():
+    """Uma policy serializada com self-loop é **recusada na leitura**,
+    nunca ignorada em silêncio.
+
+    Silenciar produziria uma policy que parece restringir e não
+    restringe — o pior desfecho, e a mesma razão pela qual a
+    desserialização da E4.3 recusa token desconhecido.
+    """
+    from app.memory.models.accessibility_policy import AccessibilityPolicy
+
+    historico = [
+        {
+            "rule_id": "self-loop",
+            "effect": "admit",
+            "source_states": ["active"],
+            "target_states": ["active"],
+        }
+    ]
+    with pytest.raises(ValueError, match="regra self-loop"):
+        AccessibilityPolicy.deserialize_rules(historico)
+
+
+def test_e473_serialization_of_real_edges_stays_deterministic():
+    from app.memory.models.accessibility_policy import AccessibilityPolicy
+
+    original = (_regra(), _regra("r2", fontes=("latent",), alvos=("inaccessible",)))
+    ida = AccessibilityPolicy.serialize_rules(original)
+    assert AccessibilityPolicy.deserialize_rules(ida) == original
+    assert AccessibilityPolicy.serialize_rules(AccessibilityPolicy.deserialize_rules(ida)) == ida

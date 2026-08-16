@@ -530,3 +530,14 @@ chamada real.
 Ver `E4_7_2_LOCKED_SUBJECT_RESULT_COHERENCE.md` — inclusive o registro
 de que o gate Black foi reportado a partir de um comando diferente do
 declarado.
+
+---
+
+## 13. Corretivo E4.7.3
+
+Lacuna residual: cardinalidade 1×1 não exclui o laço sobre si mesmo.
+`AccessibilityRule` e `AccessibilityDecision` passam a recusar
+`source_state == target_state`, tornando a falsa transição same-state
+inconstruível também no resultado.
+
+Ver `E4_7_3_NO_OP_BOUNDARY.md`.
