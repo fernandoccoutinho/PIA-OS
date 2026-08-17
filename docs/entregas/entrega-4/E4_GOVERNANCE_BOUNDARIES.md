@@ -257,6 +257,59 @@ Direções candidatas, **nenhuma congelada aqui**:
 A E4.9 deve escolher com o problema à vista, e não descobrir a tensão
 durante a implementação.
 
+### 6.3 Decisão posterior — E4.9.2 (cadeia 71)
+
+A escolha pedida pelo §6.2 foi feita. O relato acima permanece íntegro
+como registro do estado em que a tensão foi deixada pela E4.0; esta nota
+diz o que foi decidido, e o que **não** foi.
+
+```text
+AUTHORIZED_DIRECTION = A + B
+C = REJECTED FOR THE NORMAL PATH
+NORMAL_REFERENT_ERASURE_PRESERVES_CAUSAL_HISTORY = AUTHORIZED_NOT_IMPLEMENTED
+LEGAL_ERASURE_CAUSAL_HISTORY_GAP = CLOSED_CANDIDATE_CONDITIONAL
+```
+
+**Caminho normal.** Quando a obrigação alcança conteúdo/referente
+verificável, apaga-se o referente e **preserva-se** a história causal, a
+identidade do sujeito e a estrutura de lineage/proveniência —
+registrando o efeito observado num `ErasureRecord` append-only, separado
+da história e sem FK para o sujeito.
+
+Formulação canônica: **a história causal preserva o rastro da passagem
+do conteúdo pelo sistema, não a informação necessária para
+reconstituí-lo.**
+
+```text
+HISTORY SURVIVES        != CONTENT SURVIVES
+KNOWN ERASED            != NEVER EXISTED
+CAUSAL TRACE SURVIVES
+RECONSTRUCTIBLE CONTENT DOES NOT
+```
+
+O rastro só é admissível se for irreversível: cópia, trecho suficiente,
+thumbnail reversível, cache, réplica, embedding reversível e hash usável
+para relocalizar continuam sendo **conteúdo** e entram no escopo do
+efeito quando sob controle verificável.
+
+**A exceção da terceira direção continua aberta, por desenho.** Se a
+obrigação alcançar o próprio registro causal, o identificador histórico
+ou a própria referência — porque a string é dado protegido —, o sistema
+**para** com exceção tipada e exige EDR jurídico-arquitetural próprio.
+Não há cascade, não há evento falsificado, não há sobrescrita de
+referência, e cumprimento parcial não é apresentado como completo.
+
+```text
+EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION
+```
+
+`CLOSED_CANDIDATE_CONDITIONAL` significa que o caminho **normal** está
+decidido — não que toda obrigação possível foi resolvida. Nada disso
+está implementado: não existe storage, conector, credencial, executor,
+`ErasureRecord` nem `RetentionPolicy` em runtime.
+
+Decisão integral em `EDR_E4_9_2_LEGAL_ERASURE_CAUSAL_HISTORY.md`.
+
 ---
 
 ## 7. Defense in depth (§10)

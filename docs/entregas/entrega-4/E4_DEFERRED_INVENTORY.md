@@ -42,7 +42,8 @@ modificado.
 | forma de expressão de `rules` de policy | E4.3 (Governance) | Stop Condition 12 — não escolher motor por conveniência |
 | motor de policy (OPA / Cedar / DSL) | E4.3+ (Governance) | a semântica precede a ferramenta |
 | `on_expiry_action` de retenção | E4.9 | tensão com `CausalHistory` não resolvida — o preflight da E4.9 devolveu `ON_EXPIRY_ACTION_UNRESOLVED`, que **permanece aberta** |
-| **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6. **Direção congelada em A + B pela E4.9.0**; C rejeitada para o fluxo normal. A tensão **não** está fechada |
+| **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6. Direção congelada em A + B pela E4.9.0; **caminho normal DECIDIDO pela E4.9.2** (`CLOSED_CANDIDATE_CONDITIONAL`). A **exceção** que alcança o registro causal permanece aberta por desenho |
+| exceção: obrigação que alcança o próprio registro causal | **EDR próprio, não atribuído** | `EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION` (E4.9.2). Exige EDR jurídico-arquitetural com escopo concreto e autoridade explícita; o sistema **para** com exceção tipada |
 | primitiva de auditoria de apagamento (`ErasureRecord`) | **E4.9** | **AUTORIZADA prospectivamente pela E4.9.0** (`EDR_E4_9_0_ERASURE_AUDIT_PRIMITIVE.md`). `IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED`; nenhuma tabela, migração ou código existe |
 | contrato de alvo e custódia para erasure (`ErasureTargetDescriptor`, portas de resolução e efeito) | **E4.9** | **AUTORIZADO prospectivamente pela E4.9.1** (`EDR_E4_9_1_ERASURE_TARGET_CUSTODY_CONTRACT.md`). `AUTHORIZED_NOT_IMPLEMENTED`; nenhum resolvedor, storage, conector, credencial ou executor existe |
 | Artifact Storage e conectores externos | **não atribuído** | `ARTIFACT_STORAGE = DEFERRED`; a E4.9.1 autorizou o CONTRATO de alvo, não o mecanismo. Sem eles, nenhuma classe de alvo é executável |
@@ -209,4 +210,29 @@ mas não a decide:
 LEGAL_ERASURE_CAUSAL_HISTORY_GAP    = OPEN_CONDITIONAL
 ON_EXPIRY_ACTION_UNRESOLVED         = OPEN
 DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
+```
+
+**Atualização da E4.9.2 (cadeia 71).** O caminho **normal** da tensão foi
+decidido: apagar o referente verificável, **preservar** história causal,
+identidade e estrutura, e registrar o efeito observado num
+`ErasureRecord` append-only sem FK para o sujeito.
+
+```text
+NORMAL_REFERENT_ERASURE_PRESERVES_CAUSAL_HISTORY = AUTHORIZED_NOT_IMPLEMENTED
+LEGAL_ERASURE_CAUSAL_HISTORY_GAP  = CLOSED_CANDIDATE_CONDITIONAL
+EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION
+```
+
+A história preserva **o rastro da passagem do conteúdo**, não a
+informação para reconstituí-lo — e derivado reconstruível sob controle
+(cópia, cache, réplica, embedding reversível, hash de relocalização)
+é **alvo do efeito**, não rastro.
+
+**A tensão do §6 não está encerrada.** A exceção que alcança o próprio
+registro causal continua aberta por desenho, e nada foi implementado:
+
+```text
+ON_EXPIRY_ACTION_UNRESOLVED         = OPEN
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
+ERASURE_EXECUTOR = NONE   ARTIFACT_STORAGE = DEFERRED
 ```
