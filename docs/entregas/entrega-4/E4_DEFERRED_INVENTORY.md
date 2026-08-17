@@ -41,8 +41,9 @@ modificado.
 | ~~campos de `MemoryContext`~~ | **RESOLVIDO em E4.2** | `domain_ids` + `session_id?` + `actor_ref?` + `purpose?`; nada mais |
 | forma de expressão de `rules` de policy | E4.3 (Governance) | Stop Condition 12 — não escolher motor por conveniência |
 | motor de policy (OPA / Cedar / DSL) | E4.3+ (Governance) | a semântica precede a ferramenta |
-| `on_expiry_action` de retenção | E4.9 | tensão com `CausalHistory` não resolvida |
-| **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6 |
+| `on_expiry_action` de retenção | E4.9 | tensão com `CausalHistory` não resolvida — o preflight da E4.9 devolveu `ON_EXPIRY_ACTION_UNRESOLVED`, que **permanece aberta** |
+| **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6. **Direção congelada em A + B pela E4.9.0**; C rejeitada para o fluxo normal. A tensão **não** está fechada |
+| primitiva de auditoria de apagamento (`ErasureRecord`) | **E4.9** | **AUTORIZADA prospectivamente pela E4.9.0** (`EDR_E4_9_0_ERASURE_AUDIT_PRIMITIVE.md`). `IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED`; nenhuma tabela, migração ou código existe |
 | portabilidade de `MemoryDomain` | **E4.3+** | E4.1 manteve `MEMORY_DOMAIN_SYNC = DEFERRED`: o critério decisivo (*se carregar semântica de acesso, é LOCAL*) só é avaliável depois de Governance existir |
 | portabilidade de `ValidatedExperience` | E4.11 | análise registrada, decisão do módulo |
 | escopo exato do registro da E4.11 | E4.11 | limite proposto, a confirmar |
@@ -145,5 +146,32 @@ causal e não-recuperação.
 O que **não** está congelado: o mecanismo. As direções candidatas
 estão em `E4_GOVERNANCE_BOUNDARIES.md` §6.2 — apagar o referente
 preservando a referência; tombstone explícito; ou reconhecer um limite
-nomeado e auditável. **Nenhuma foi escolhida.** A E4.9 decide com o
-problema à vista.
+nomeado e auditável.
+
+**Atualização da E4.9.0 (cadeia 65).** A escolha entre as direções
+deixou de estar aberta; o mecanismo continua não existindo. O que foi
+congelado:
+
+```text
+AUTHORIZED_DIRECTION = A + B
+OPTION_C = REJECTED_FOR_NORMAL_FLOW
+ERASURE_RECORD = AUTHORIZED_NOT_IMPLEMENTED
+```
+
+A e B são complementares — A é o efeito no referente externo, B é o
+recibo local do efeito observado. `B WITHOUT A = NO GROUND TO DECLARE
+SUCCEEDED`; `A WITHOUT B = UNAUDITABLE ERASURE`.
+
+**A tensão permanece aberta**, e continua visível aqui pela mesma razão
+de antes. O que a E4.9.0 fez foi autorizar a primitiva de registro; ela
+não criou Artifact Storage, porta, credencial, executor nem aprovação
+verificável, e portanto nenhum apagamento é executável hoje:
+
+```text
+ERASURE_TARGET_OWNERSHIP_GAP        = OPEN
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
+LEGAL_ERASURE_CAUSAL_HISTORY_GAP    = OPEN_CONDITIONAL
+```
+
+Uma obrigação externa que atinja o próprio registro causal continua
+sendo Stop Condition e exige EDR excepcional próprio.

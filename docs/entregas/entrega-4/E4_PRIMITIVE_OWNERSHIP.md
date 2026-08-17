@@ -77,6 +77,7 @@ porque ambas terão sido escritas por caminhos autorizados.
 | **GovernancePolicy** | E4.3 | **sim** | id próprio | sim (versionada) | **E4** | — |
 | **AccessibilityPolicy** | E4.7 | **sim** | id próprio | sim (versionada) | **E4** | GovernancePolicy |
 | **RetentionPolicy** | E4.9 | **sim** | id próprio | sim (versionada) | **E4** | — |
+| **ErasureRecord** | E4.9 | **sim** (autorizada, **não implementada**) | id próprio | **não** (append-only) | **E4** | identificador histórico do sujeito — **nunca FK** |
 | **ComplianceFinding** | E4.10 | **não** | não | — | não | patrimônio + policy |
 | **ValidatedExperience** | E4.11 | **sim** | id próprio | não (imutável) | **E4** | ver §7 |
 | Consolidação | E4.5 | **nada novo** | — | — | **E3** | usa E3.4/E3.3 |
@@ -141,6 +142,41 @@ completa (quem pode mover o quê, sob qual autoridade) é escopo de E4".
 **Contrato comum:** policy é **configuração**, não patrimônio
 cognitivo — ver Q11 em `E4_ARCHITECTURE_FREEZE.md`. Consequências:
 policies são versionadas, mutáveis, e **não viajam** no Sync da E3.
+
+### 4.4.1 `ErasureRecord` (E4.9) — **autorizada prospectivamente, não implementada**
+
+Acrescentada pela **E4.9.0**, que fechou por autorização a lacuna
+`ERASURE_AUDIT_PRIMITIVE_GAP` da Tensão D do preflight da E4.9. Decisão
+integral em `EDR_E4_9_0_ERASURE_AUDIT_PRIMITIVE.md`.
+
+```text
+IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED
+ERASURE_RECORD_IMPLEMENTED = FALSE
+```
+
+*Por que a E3 não representa isto?* A E3 não apaga nada por obrigação
+externa, e `CausalEventType` — fechado em `CREATED`, `TRANSFORMED`,
+`COMPARED`, `ACCESSED` — não tem evento de apagamento. Reusar qualquer
+um falsificaria semântica.
+
+**Contrato:** recibo auditável de uma tentativa material de apagamento
+cujo efeito foi **observado**. Persistente, append-only, local, fora do
+Sync, e proibido de armazenar conteúdo ou qualquer coisa que permita
+reconstruí-lo ou relocalizá-lo.
+
+```text
+ERASURE_RECORD != RETENTION_POLICY   != RETENTION_ASSESSMENT
+ERASURE_RECORD != DISPOSITION_PROPOSAL != USER_APPROVAL
+ERASURE_RECORD != ERASURE EFFECT     != CAUSAL_HISTORY_EVENT
+```
+
+**Vínculo com o sujeito é identificador histórico, nunca FK.** Um
+registro amarrado por FK ao sujeito pode ser destruído pelo efeito que
+deveria provar.
+
+Autorizar a primitiva **não** cria executor, storage, credencial ou
+aprovação: `ERASURE_TARGET_OWNERSHIP_GAP` e
+`DESTRUCTIVE_EXECUTION_AUTHORITY_GAP` permanecem abertas.
 
 ### 4.5 `ComplianceFinding` (E4.10) — **admitida como transitória**
 
