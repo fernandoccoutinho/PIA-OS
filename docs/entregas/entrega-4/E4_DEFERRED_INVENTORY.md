@@ -53,6 +53,12 @@ modificado.
 | integração com instrumento jurídico sucessório | **fora da E4** | `LEGAL_INSTRUMENT_INTEGRATION = DEFERRED`. `PIA_LEGACY_PLAN != LEGAL_WILL`; jurisdição, documento e autoridade não são escolhidos por arquitetura |
 | recuperação ou delegação de conta e segredos | **arquitetura de segurança própria, não atribuída** | `CREDENTIALS != INHERITABLE_CONTENT`. Segredo nunca entra em legado, nota causal, recibo ou exportação |
 | exportação/portabilidade do legado | **não atribuído** | direção autorizada pela E4.9.3.1; formato não escolhido e nenhum exportador existe. `EXPORT != RIGHT_TRANSFER`; `EXPORT != SOURCE_ERASURE` |
+| fronteira de identidade e autenticação de principal | **subsistema próprio, não atribuído** | **EXIGIDA pela E4.9.4** (`EDR_E4_9_4_DESTRUCTIVE_EXECUTION_AUTHORITY.md`). `PIA-7001` e `app/security/` existem como ESTRUTURA: a exceção nunca é levantada e o pacote declara não fazer login nem permissões. `ERROR CODE EXISTS != AUTHENTICATOR EXISTS` |
+| autenticação reforçada (step-up) para erasure definitiva | **subsistema próprio, não atribuído** | exigida pela E4.9.4 sem escolher tecnologia ou fornecedor. Falha do IdP **bloqueia**: `IDP UNAVAILABLE = BLOCK, NEVER DEGRADE` |
+| envelope de aprovação destrutiva (`DestructiveApprovalEnvelope` ou equivalente) | **E4.9** | **AUTORIZADO pela E4.9.4**. `AUTHORIZED_NOT_IMPLEMENTED`; nenhuma classe, schema, serialização, assinatura, nonce ou store existe. `APPROVAL_RECORD != ERASURE_RECORD` |
+| registro de aprovação (quem autorizou qual escopo e quando) | **E4.9** | autorizado pela E4.9.4, separado do `ErasureRecord`; não pode conter conteúdo, localizador vivo, segredo ou credencial |
+| orquestrador dos cinco estados `ASSESS→PROPOSE→AUTHORIZE→EXECUTE→RECEIPT` | **E4.9** | autorizado conceitualmente pela E4.9.4; consumo atômico, re-resolução fresca e version check são **requisitos futuros**, sem queue/saga/outbox/worker |
+| hash de escopo da aprovação | **E4.9** | conceitualmente autorizado pela E4.9.4 com limite duro: `APPROVAL_SCOPE_HASH != CONTENT_HASH` e `!= LOCATOR`. Canonicalização e algoritmo ficam para a implementação |
 | **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6. Direção congelada em A + B pela E4.9.0; **caminho normal DECIDIDO pela E4.9.2** (`CLOSED_CANDIDATE_CONDITIONAL`). A **exceção** que alcança o registro causal permanece aberta por desenho |
 | exceção: obrigação que alcança o próprio registro causal | **EDR próprio, não atribuído** | `EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION` (E4.9.2). Exige EDR jurídico-arquitetural com escopo concreto e autoridade explícita; o sistema **para** com exceção tipada |
 | primitiva de auditoria de apagamento (`ErasureRecord`) | **E4.9** | **AUTORIZADA prospectivamente pela E4.9.0** (`EDR_E4_9_0_ERASURE_AUDIT_PRIMITIVE.md`). `IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED`; nenhuma tabela, migração ou código existe |
@@ -294,4 +300,32 @@ POSTHUMOUS_EXECUTION_AUTHORITY      = NOT_AUTHORIZED
 POSTHUMOUS_SUCCESSION_AUTHORITY     = SEPARATE_FUTURE_MODULE
 DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
 EXCEPTIONAL_CAUSAL_RECORD_ERASURE   = DEFERRED_STOP_CONDITION
+```
+
+**Atualização da E4.9.4 (cadeia 74).** A última Stop Condition **normal**
+do preflight foi encaminhada: a autoridade destrutiva do usuário
+presente tem contrato.
+
+```text
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = CLOSED_CANDIDATE_BY_AUTHORIZATION
+DESTRUCTIVE_AUTHORITY_CONTRACT      = AUTHORIZED_NOT_IMPLEMENTED
+ACTOR PRESENCE != AUTHORIZATION     SESSION_PRESENCE != STEP_UP
+POLICY_RESOLUTION != HUMAN_APPROVAL APPROVAL != EXECUTION
+```
+
+O contrato exige identidade de fronteira externa, step-up fresco para
+exclusão permanente, aprovação específica/fresca/vinculada/de uso único,
+e cinco estados separados em que nenhum implica o seguinte. **Nada
+disso está implementado.**
+
+Para a E4.9 sair do papel faltam, em runtime: fronteira de identidade e
+autenticação; step-up; envelope de aprovação com consumo atômico;
+orquestrador dos cinco estados; `ErasureRecord`; resolvedor de alvo;
+`ArtifactStorage` e conectores; e `RetentionPolicy`.
+
+```text
+CONTRACTS CLOSED != MODULE READY
+E4_9_IMPLEMENTATION = NOT_STARTED
+EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION
+POSTHUMOUS_SUCCESSION_AUTHORITY   = SEPARATE_FUTURE_MODULE
 ```

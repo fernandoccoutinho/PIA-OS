@@ -486,6 +486,105 @@ DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
 
 Decisão integral em `EDR_E4_9_3_1_LIFE_CAUSAL_LEGACY_INHERITANCE.md`.
 
+### 6.6 Autoridade destrutiva do usuário presente — E4.9.4 (cadeia 74)
+
+A §6.1 exige que a exclusão legítima seja explícita, registrada e
+distinguível. As §§6.3–6.5 decidiram o que sobrevive, quem manda e o que
+é legado. Falta **como a autoridade é provada** — a última Stop
+Condition normal do preflight.
+
+**O fato decisivo é do próprio código:**
+
+```text
+actor_ref = descriptive input, not authorized actor
+ACTOR PRESENCE != AUTHORIZATION
+```
+
+Logo, seis equivalências ficam proibidas:
+
+```text
+actor_ref PRESENT == authenticated principal   → FALSO
+session PRESENT   == destructive authority     → FALSO
+policy ALLOWS     == human consent             → FALSO
+voice command     == identity proof            → FALSO
+saved preference  == current approval          → FALSO
+expiry            == permission to erase       → FALSO
+```
+
+**Existe estrutura de autenticação; não existe autenticador.**
+`PIA-7001`, `AuthenticationException` e `app/security/` estão na
+baseline — mas a exceção nunca é levantada e o pacote declara, por
+escrito, que não faz login, usuários, OAuth, JWT nem permissões.
+
+```text
+ERROR CODE EXISTS   != AUTHENTICATOR EXISTS
+SECURITY MIDDLEWARE != IDENTITY PROVIDER
+```
+
+**Cinco estados, nenhum implicando o seguinte:**
+
+```text
+ASSESS != PROPOSE != AUTHORIZE != EXECUTE != RECEIPT
+```
+
+Aprovação pode expirar sem execução; execução pode falhar; recibo não
+nasce antes do efeito.
+
+**A identidade vem de fronteira externa.** O domínio cognitivo consome
+prova verificável e **nunca** recebe senha, passkey, biometria, fator
+MFA, token bruto, chave ou segredo.
+
+```text
+IDENTITY_PROVIDER != AI_MODEL
+SESSION_PRESENCE  != STEP_UP
+VOICE             != IDENTITY_PROOF
+ROLE_LABEL        != VERIFIED_POWER
+IDP UNAVAILABLE = BLOCK, NEVER DEGRADE
+```
+
+Exclusão permanente exige **step-up fresco**. Nenhuma tecnologia ou
+fornecedor é escolhido. Falha do provedor bloqueia — sem fallback para
+`actor_ref`, voz, sessão antiga ou pergunta de conhecimento.
+
+**A aprovação é específica, fresca, vinculada e de uso único:**
+
+```text
+CHANGED_SCOPE     = NEW_APPROVAL_REQUIRED
+STALE_APPROVAL    = INVALID
+REPLAYED_APPROVAL = INVALID
+REVOKED_APPROVAL  = INVALID
+CONSUMED_APPROVAL = INVALID_FOR_REUSE
+APPROVAL_SCOPE_HASH != CONTENT_HASH != LOCATOR
+```
+
+Revogar antes do consumo impede a execução; **depois de efeito
+irreversível, revogar não restaura conteúdo**.
+
+**Registros distintos, porque respondem a perguntas distintas:**
+
+```text
+APPROVAL_RECORD   != ERASURE_RECORD
+APPROVAL          != EXECUTION
+POLICY_RESOLUTION != HUMAN_APPROVAL
+```
+
+Texto e voz convergem ao mesmo envelope, com **as mesmas exigências** —
+governança assimétrica entre canais criaria um caminho preferencial.
+Biometria de voz não é autorizada.
+
+Nada disto está implementado: não há identidade, step-up, envelope,
+orquestrador, executor, storage, conector ou `ErasureRecord`. Fechar o
+contrato não constrói a infraestrutura que ele exige.
+
+```text
+DESTRUCTIVE_AUTHORITY_CONTRACT      = AUTHORIZED_NOT_IMPLEMENTED
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = CLOSED_CANDIDATE_BY_AUTHORIZATION
+POSTHUMOUS_SUCCESSION_AUTHORITY     = SEPARATE_FUTURE_MODULE
+CONTRACTS CLOSED != MODULE READY
+```
+
+Decisão integral em `EDR_E4_9_4_DESTRUCTIVE_EXECUTION_AUTHORITY.md`.
+
 ---
 
 ## 7. Defense in depth (§10)
