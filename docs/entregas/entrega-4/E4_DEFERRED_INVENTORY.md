@@ -41,7 +41,11 @@ modificado.
 | ~~campos de `MemoryContext`~~ | **RESOLVIDO em E4.2** | `domain_ids` + `session_id?` + `actor_ref?` + `purpose?`; nada mais |
 | forma de expressão de `rules` de policy | E4.3 (Governance) | Stop Condition 12 — não escolher motor por conveniência |
 | motor de policy (OPA / Cedar / DSL) | E4.3+ (Governance) | a semântica precede a ferramenta |
-| `on_expiry_action` de retenção | E4.9 | tensão com `CausalHistory` não resolvida — o preflight da E4.9 devolveu `ON_EXPIRY_ACTION_UNRESOLVED`, que **permanece aberta** |
+| `on_expiry_action` de retenção | E4.9 | o preflight devolveu `ON_EXPIRY_ACTION_UNRESOLVED`. **DECIDIDO pela E4.9.3** (cadeia 72): expiração inicia avaliação, nunca apagamento — `CLOSED_CANDIDATE_BY_AUTHORIZATION` |
+| lixeira reversível, segmentação da Biblioteca Cognitiva e pastas editáveis | **E4.9** | **AUTORIZADAS pela E4.9.3** (`EDR_E4_9_3_DELETE_TIMING_TRASH_DISPOSITIONS.md`). `AUTHORIZED_NOT_IMPLEMENTED`; nenhuma lixeira, pasta, busca ou interface existe |
+| nota qualitativa de revisão por transição de versão | **E4.9** | **AUTORIZADA pela E4.9.3**. Nasce durante a revisão, sobrevive ao apagamento e não pode reconstruir conteúdo. `AUTHORIZED_NOT_IMPLEMENTED` |
+| estado `VALIDATED_CURRENT` (artefato canônico) | **EDR próprio, não atribuído** | conceito autorizado pela E4.9.3, **sem lastro no schema**: `RevisionStatus` tem só `current` e `superseded`. Materializá-lo toca a E3 congelada |
+| envelope único de comando texto/voz | **E4.9.4** | autorizado conceitualmente pela E4.9.3; parser, ASR e interface **não** existem |
 | **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6. Direção congelada em A + B pela E4.9.0; **caminho normal DECIDIDO pela E4.9.2** (`CLOSED_CANDIDATE_CONDITIONAL`). A **exceção** que alcança o registro causal permanece aberta por desenho |
 | exceção: obrigação que alcança o próprio registro causal | **EDR próprio, não atribuído** | `EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION` (E4.9.2). Exige EDR jurídico-arquitetural com escopo concreto e autoridade explícita; o sistema **para** com exceção tipada |
 | primitiva de auditoria de apagamento (`ErasureRecord`) | **E4.9** | **AUTORIZADA prospectivamente pela E4.9.0** (`EDR_E4_9_0_ERASURE_AUDIT_PRIMITIVE.md`). `IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED`; nenhuma tabela, migração ou código existe |
@@ -235,4 +239,24 @@ registro causal continua aberta por desenho, e nada foi implementado:
 ON_EXPIRY_ACTION_UNRESOLVED         = OPEN
 DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
 ERASURE_EXECUTOR = NONE   ARTIFACT_STORAGE = DEFERRED
+```
+
+**Atualização da E4.9.3 (cadeia 72).** `on_expiry` deixou de estar em
+aberto: expiração **inicia avaliação**, e a decisão pertence ao usuário
+ou principal humano autorizado.
+
+```text
+ON_EXPIRY_ACTION_UNRESOLVED = CLOSED_CANDIDATE_BY_AUTHORIZATION
+AI_MODEL_DELETE_AUTHORITY   = NONE
+AUTOMATIC_PERMANENT_ERASURE = FORBIDDEN
+TRASH != LEGAL_ERASURE      TRASHED != SPACE RECLAIMED
+```
+
+Continua sem implementação — não há lixeira, executor, storage, conector,
+`ErasureRecord`, parser ou voz — e **uma** Stop Condition segue aberta,
+mais a exceção deferida:
+
+```text
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
+EXCEPTIONAL_CAUSAL_RECORD_ERASURE   = DEFERRED_STOP_CONDITION
 ```

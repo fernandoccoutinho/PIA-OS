@@ -310,6 +310,72 @@ está implementado: não existe storage, conector, credencial, executor,
 
 Decisão integral em `EDR_E4_9_2_LEGAL_ERASURE_CAUSAL_HISTORY.md`.
 
+### 6.4 Disposição e autoridade do usuário — E4.9.3 (cadeia 72)
+
+O §6.1 diz que a exclusão legítima precisa ser **explícita, registrada e
+distinguível**. A E4.9.2 decidiu o que sobrevive ao efeito; a E4.9.3
+decide **quem manda** e **quando**.
+
+```text
+COGNITIVE_PATRIMONY_OWNER   = USER
+DELETE_DECISION_OWNER       = USER_OR_AUTHORIZED_HUMAN_PRINCIPAL
+PIA_ROLE                    = ORGANIZE_INFORM_RECOMMEND
+AI_MODEL_DELETE_AUTHORITY   = NONE
+AUTOMATIC_PERMANENT_ERASURE = FORBIDDEN
+```
+
+**`on_expiry` está decidido pelo que a baseline permite afirmar com
+verdade:** nenhuma ação destrutiva existe, logo nenhuma pode ser
+prescrita como automática.
+
+```text
+EXPIRY_TRIGGERS_ASSESSMENT_NOT_DELETION
+RETENTION_POLICY != USER_DECISION
+NO_AUTOMATIC_ACTION = PRESERVE_AND_REPORT
+```
+
+Expiração inicia **avaliação**: o PIA explica motivo e impacto, apresenta
+disposições e obtém decisão humana vinculada ao escopo. Tamanho, idade,
+ausência de uso, silêncio, passagem do tempo e baixa confiança de voz
+**nunca** são consentimento.
+
+**Lixeira não é apagamento.**
+
+```text
+TRASH   != LEGAL_ERASURE
+TRASHED  = REVERSIBLE          TRASHED != SPACE RECLAIMED
+ERASED   = IRREVERSIBLE_WITHIN_VERIFIED_SCOPE
+```
+
+**Três distinções que a interface não pode colapsar:**
+
+```text
+FOLDER_DELETION       != CONTENT_DELETION
+CONVERSATION_DELETION != ARTIFACT_DELETION
+LATEST_TIMESTAMP      != VALIDATED_VERSION
+```
+
+**A história causal ganha memória qualitativa.** Cada transição de versão
+carrega uma nota curta sobre o que foi revisto, produzida **durante** a
+revisão — nunca reconstruída depois a partir do que restou. A nota
+sobrevive ao apagamento; o conteúdo, não. Se ela puder recompor o
+original, deixa de ser rastro e passa a integrar o alvo.
+
+```text
+QUALITY REVIEW MEMORY SURVIVES
+RECONSTRUCTIBLE CONTENT DOES NOT
+```
+
+Nada disso está implementado: não existe lixeira, executor, storage,
+conector, `ErasureRecord`, parser ou voz.
+
+```text
+ON_EXPIRY_ACTION_UNRESOLVED         = CLOSED_CANDIDATE_BY_AUTHORIZATION
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
+```
+
+Decisão integral em `EDR_E4_9_3_DELETE_TIMING_TRASH_DISPOSITIONS.md`.
+
 ---
 
 ## 7. Defense in depth (§10)
