@@ -376,6 +376,116 @@ DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
 
 Decisão integral em `EDR_E4_9_3_DELETE_TIMING_TRASH_DISPOSITIONS.md`.
 
+### 6.5 Legado de vida e herança dirigida — E4.9.3.1 (cadeia 73)
+
+A §6.4 decidiu quem manda sobre o que existe no sistema. Falta o que
+existiu **antes** dele e o que deve sobreviver **depois** do usuário.
+
+```text
+PIA_OS_PRESERVES_USER_AUTHORED_TRAJECTORY = REQUIRED
+LEGACY_CAUSAL_HISTORY != CV
+LEGACY_CAUSAL_HISTORY != FILE_BACKUP
+LEGACY_CAUSAL_HISTORY != AI_GENERATED_BIOGRAPHY
+```
+
+**A Biblioteca do Legado é uma vista, não um storage** — precedente
+direto do tratamento de pastas na §6.4:
+
+```text
+LEGACY_LIBRARY          = COGNITIVE_LIBRARY_USER_VIEW
+LEGACY_VIEW_MEMBERSHIP != CONTENT_DUPLICATION
+```
+
+**Inferência não vira fato.** Vocabulário conceitual, não persistido:
+`DOCUMENT_VERIFIED`, `USER_ATTESTED`, `THIRD_PARTY_ATTESTED`,
+`PIA_INFERRED_UNCONFIRMED`, `DISPUTED`, `UNKNOWN`.
+
+```text
+PIA_INFERRED_UNCONFIRMED != FACT
+INFERENCE ASKS A QUESTION, IT DOES NOT ANSWER ONE
+```
+
+Divergência entre fontes é preservada, não resolvida pela IA por
+conveniência. `DISPUTED` é estado terminal aceitável.
+
+**Proteção histórica**, sem reabrir a §6.4:
+
+```text
+OLD         != DISPOSABLE
+INACTIVE    != VALUELESS
+SUPERSEDED  != WITHOUT_HISTORICAL_VALUE
+LEGACY_ITEM != AUTOMATIC_CLEANUP_CANDIDATE
+```
+
+Retirar a proteção e excluir são decisões distintas, e nenhuma é do PIA.
+
+**Poderes são separados, e nenhum implica o seguinte:**
+
+```text
+READ_ACCESS           != STEWARDSHIP
+STEWARDSHIP           != PUBLICATION_AUTHORITY
+PUBLICATION_AUTHORITY != OWNERSHIP
+BENEFICIARY           != AUTHOR
+```
+
+Vínculo familiar não infere autoridade, papel nem escopo.
+
+**Nada ativa sucessão sozinho:**
+
+```text
+INACTIVITY          != DEATH
+ABSENCE             != INCAPACITY
+AI_INFERENCE        != SUCCESSION_PROOF
+BENEFICIARY_MESSAGE != VERIFIED_TRIGGER
+SCHEDULER_TIMEOUT   != POSTHUMOUS_AUTHORITY
+```
+
+**O plano não é instrumento jurídico:**
+
+```text
+PIA_LEGACY_PLAN    != LEGAL_WILL
+OPERATIONAL_INTENT != AUTOMATIC_RIGHT_TRANSFER
+```
+
+Conflito com legal hold, ordem válida, propriedade de terceiro, contrato
+ou instrumento sucessório **bloqueia** e escala para tratamento humano e
+jurídico. A distinção do §9 entre *control ownership* e *legal
+ownership* continua valendo sem alteração.
+
+**Segredo não é patrimônio transmissível:**
+
+```text
+CREDENTIALS     != INHERITABLE_CONTENT
+SECRET_TRANSFER != LEGACY_TRANSFER
+ACCOUNT_ACCESS  != CONTENT_INHERITANCE
+```
+
+**Revogar não apaga história:**
+
+```text
+LATEST_DIRECTIVE_TIMESTAMP != VALID_DIRECTIVE
+REVOCATION = NEW_CAUSAL_EVENT_NOT_HISTORICAL_ERASURE
+```
+
+`VALIDATED_CURRENT_LEGACY_DIRECTIVE` é **conceitual**; medido na cadeia
+72, `RevisionStatus = ['current','superseded']` e `VALIDATED_CURRENT`
+não existe. Reutilizar `RevisionStatus.CURRENT` como diretiva validada
+é proibido.
+
+Nada disto está implementado: não há Biblioteca do Legado, beneficiário,
+diretiva, gatilho verificado, custódia, publicação, exportador ou
+executor.
+
+```text
+LIFE_CAUSAL_LEGACY_CONTRACT         = AUTHORIZED_NOT_IMPLEMENTED
+USER_DIRECTED_INHERITANCE_PLAN      = AUTHORIZED_NOT_IMPLEMENTED
+POSTHUMOUS_EXECUTION_AUTHORITY      = NOT_AUTHORIZED
+POSTHUMOUS_SUCCESSION_AUTHORITY     = SEPARATE_FUTURE_MODULE
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
+```
+
+Decisão integral em `EDR_E4_9_3_1_LIFE_CAUSAL_LEGACY_INHERITANCE.md`.
+
 ---
 
 ## 7. Defense in depth (§10)

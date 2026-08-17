@@ -46,6 +46,13 @@ modificado.
 | nota qualitativa de revisão por transição de versão | **E4.9** | **AUTORIZADA pela E4.9.3**. Nasce durante a revisão, sobrevive ao apagamento e não pode reconstruir conteúdo. `AUTHORIZED_NOT_IMPLEMENTED` |
 | estado `VALIDATED_CURRENT` (artefato canônico) | **EDR próprio, não atribuído** | conceito autorizado pela E4.9.3, **sem lastro no schema**: `RevisionStatus` tem só `current` e `superseded`. Materializá-lo toca a E3 congelada |
 | envelope único de comando texto/voz | **E4.9.4** | autorizado conceitualmente pela E4.9.3; parser, ASR e interface **não** existem |
+| história causal de vida e Biblioteca do Legado | **não atribuído** | **AUTORIZADAS pela E4.9.3.1** (`EDR_E4_9_3_1_LIFE_CAUSAL_LEGACY_INHERITANCE.md`). Vista da Biblioteca Cognitiva, sem storage novo. `AUTHORIZED_NOT_IMPLEMENTED`; nenhuma trajetória, categoria, importador ou narrativa existe |
+| grau de confirmação de afirmação biográfica (`DOCUMENT_VERIFIED`…`UNKNOWN`) | **não atribuído** | vocabulário **conceitual** da E4.9.3.1, sem enum e sem coluna. `PIA_INFERRED_UNCONFIRMED != FACT` |
+| plano de legado e diretiva de herança dirigida | **não atribuído** | **AUTORIZADOS pela E4.9.3.1**. Modalidades conceituais e revogáveis; poderes separados (ler, custodiar, publicar, licenciar, transferir, excluir). Nenhum beneficiário, administrador, escopo ou versão existe |
+| gatilho verificado de morte ou incapacidade | **módulo futuro próprio, não atribuído** | `POSTHUMOUS_SUCCESSION_AUTHORITY = SEPARATE_FUTURE_MODULE`. Exige evidência externa verificável, revisão humana e compatibilidade jurídica. `INACTIVITY != DEATH`; **não** é herdado da E4.9.4 |
+| integração com instrumento jurídico sucessório | **fora da E4** | `LEGAL_INSTRUMENT_INTEGRATION = DEFERRED`. `PIA_LEGACY_PLAN != LEGAL_WILL`; jurisdição, documento e autoridade não são escolhidos por arquitetura |
+| recuperação ou delegação de conta e segredos | **arquitetura de segurança própria, não atribuída** | `CREDENTIALS != INHERITABLE_CONTENT`. Segredo nunca entra em legado, nota causal, recibo ou exportação |
+| exportação/portabilidade do legado | **não atribuído** | direção autorizada pela E4.9.3.1; formato não escolhido e nenhum exportador existe. `EXPORT != RIGHT_TRANSFER`; `EXPORT != SOURCE_ERASURE` |
 | **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6. Direção congelada em A + B pela E4.9.0; **caminho normal DECIDIDO pela E4.9.2** (`CLOSED_CANDIDATE_CONDITIONAL`). A **exceção** que alcança o registro causal permanece aberta por desenho |
 | exceção: obrigação que alcança o próprio registro causal | **EDR próprio, não atribuído** | `EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION` (E4.9.2). Exige EDR jurídico-arquitetural com escopo concreto e autoridade explícita; o sistema **para** com exceção tipada |
 | primitiva de auditoria de apagamento (`ErasureRecord`) | **E4.9** | **AUTORIZADA prospectivamente pela E4.9.0** (`EDR_E4_9_0_ERASURE_AUDIT_PRIMITIVE.md`). `IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED`; nenhuma tabela, migração ou código existe |
@@ -257,6 +264,34 @@ Continua sem implementação — não há lixeira, executor, storage, conector,
 mais a exceção deferida:
 
 ```text
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
+EXCEPTIONAL_CAUSAL_RECORD_ERASURE   = DEFERRED_STOP_CONDITION
+```
+
+**Atualização da E4.9.3.1 (cadeia 73).** Acrescenta uma disposição de
+**proteção histórica e legado**, sem reabrir `on_expiry` e sem alterar o
+placar acima.
+
+```text
+LEGACY_ITEM != AUTOMATIC_CLEANUP_CANDIDATE
+OLD != DISPOSABLE     INACTIVE != VALUELESS
+BENEFICIARY != AUTHOR    STEWARDSHIP != OWNERSHIP
+INACTIVITY != DEATH      AI_INFERENCE != SUCCESSION_PROOF
+PIA_LEGACY_PLAN != LEGAL_WILL
+```
+
+Item marcado como legado fica fora de sugestão automática de limpeza por
+idade, tamanho ou ausência de uso; retirar a proteção e excluir seguem
+sendo decisões distintas, e nenhuma é do PIA. Registrar intenção de
+transmissão é possível; **agir** sobre ela não, porque a autoridade
+executiva continua aberta e a autoridade de sucessão é módulo futuro
+próprio.
+
+```text
+LIFE_CAUSAL_LEGACY_CONTRACT         = AUTHORIZED_NOT_IMPLEMENTED
+USER_DIRECTED_INHERITANCE_PLAN      = AUTHORIZED_NOT_IMPLEMENTED
+POSTHUMOUS_EXECUTION_AUTHORITY      = NOT_AUTHORIZED
+POSTHUMOUS_SUCCESSION_AUTHORITY     = SEPARATE_FUTURE_MODULE
 DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
 EXCEPTIONAL_CAUSAL_RECORD_ERASURE   = DEFERRED_STOP_CONDITION
 ```
