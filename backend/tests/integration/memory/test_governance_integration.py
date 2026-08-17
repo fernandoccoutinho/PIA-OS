@@ -1177,3 +1177,412 @@ def test_gi434_no_writes_during_resolution():
         assert escritas == []
     finally:
         _limpar_policy(chave)
+
+
+# ======================================================================
+# E4.3.5 — Retention Operation Authority, contra o banco
+#
+# O que só o PostgreSQL demonstra: que policies JÁ PUBLICADAS não ganham
+# a autoridade nova, que o payload gravado antes do corretivo continua
+# byte-idêntico, e que resolver as operações novas não escreve nada.
+# ======================================================================
+
+
+_OPERACOES_E435 = (
+    CognitiveOperation.RETENTION_ASSESSMENT,
+    CognitiveOperation.RETENTION_DISPOSITION,
+    CognitiveOperation.LEGAL_ERASURE,
+)
+
+
+def _chave_e435() -> str:
+    return f"e435-{uuid.uuid4().hex[:10]}"
+
+
+def _descritor_e435(operacao: CognitiveOperation) -> CapabilityDescriptor:
+    return CapabilityDescriptor(operation=operacao, engagement=CapabilityEngagement.ANALYTICAL)
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_gi435_published_wildcard_policy_does_not_authorize_retention(operacao):
+    """O caso central do corretivo, contra uma policy REAL já gravada.
+
+    OLD WILDCARD AUTHORITY != FUTURE RETENTION AUTHORITY
+    """
+    chave = _chave_e435()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset(),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            historica = manager.resolve(
+                descriptor=CapabilityDescriptor(operation=CognitiveOperation.READ),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+            nova = manager.resolve(
+                descriptor=_descritor_e435(operacao),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+
+        assert historica.outcome is GovernanceOutcome.ADMISSIBLE
+        assert nova.outcome is GovernanceOutcome.NOT_APPLICABLE
+        assert nova.execution_authorized is False
+        assert nova.matched_rule_id is None
+    finally:
+        _limpar_policy(chave)
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_gi435_explicit_opt_in_authorizes_only_that_retention_operation(operacao):
+    """Opt-in explícito concede — e concede **só** a operação citada."""
+    chave = _chave_e435()
+    outras = [op for op in _OPERACOES_E435 if op is not operacao]
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="opt-in",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({operacao}),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            concedida = manager.resolve(
+                descriptor=_descritor_e435(operacao),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+            negadas = [
+                manager.resolve(
+                    descriptor=_descritor_e435(outra),
+                    context=MemoryContext(),
+                    policy_key=chave,
+                    moment=datetime(2024, 6, 1, tzinfo=UTC),
+                )
+                for outra in outras
+            ]
+
+        assert concedida.outcome is GovernanceOutcome.ADMISSIBLE
+        assert concedida.operation is operacao
+        assert concedida.matched_rule_id == "opt-in"
+        for resolucao in negadas:
+            assert resolucao.outcome is GovernanceOutcome.NOT_APPLICABLE
+    finally:
+        _limpar_policy(chave)
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_gi435_explicit_deny_is_inadmissible_against_the_database(operacao):
+    chave = _chave_e435()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="nega",
+                        effect=GovernanceEffect.DENY,
+                        operations=frozenset({operacao}),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            resolucao = GovernanceManager(GovernancePolicyRepository(uow.session)).resolve(
+                descriptor=_descritor_e435(operacao),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+
+        assert resolucao.outcome is GovernanceOutcome.INADMISSIBLE
+        assert resolucao.matched_rule_id == "nega"
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi435_published_policy_row_is_not_rewritten_by_the_corrective():
+    """Nenhuma linha de policy existente é alterada pelo corretivo.
+
+    Grava o payload, lê os bytes do JSONB, resolve as três operações
+    novas e confere que o payload permaneceu idêntico — inclusive o
+    `updated_at`, que denunciaria uma reescrita silenciosa.
+    """
+    chave = _chave_e435()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="historica",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset(
+                            {CognitiveOperation.READ, CognitiveOperation.TRANSFORM}
+                        ),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            antes = uow.session.execute(
+                sa.text(
+                    "SELECT rules::text, updated_at FROM governance_policies "
+                    "WHERE policy_key = :k"
+                ),
+                {"k": chave},
+            ).one()
+
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            for operacao in _OPERACOES_E435:
+                manager.resolve(
+                    descriptor=_descritor_e435(operacao),
+                    context=MemoryContext(),
+                    policy_key=chave,
+                    moment=datetime(2024, 6, 1, tzinfo=UTC),
+                )
+
+        with UnitOfWork() as uow:
+            depois = uow.session.execute(
+                sa.text(
+                    "SELECT rules::text, updated_at FROM governance_policies "
+                    "WHERE policy_key = :k"
+                ),
+                {"k": chave},
+            ).one()
+
+        assert depois[0] == antes[0]
+        assert depois[1] == antes[1]
+        # e o payload continua sem citar operação alguma do corretivo
+        for token in ("retention_assessment", "retention_disposition", "legal_erasure"):
+            assert token not in antes[0]
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi435_a_new_version_can_grant_what_the_old_one_could_not():
+    """A autoridade nova entra por **novo ato de publicação**, nunca
+    retroativamente na versão antiga."""
+    chave = _chave_e435()
+    operacao = CognitiveOperation.LEGAL_ERASURE
+    try:
+        with UnitOfWork() as uow:
+            repo = GovernancePolicyRepository(uow.session)
+            repo.add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset(),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+                effective_until=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+            repo.add_policy(
+                policy_key=chave,
+                version=2,
+                rules=(
+                    GovernanceRule(
+                        rule_id="opt-in",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({operacao}),
+                    ),
+                ),
+                effective_from=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            sob_v1 = manager.resolve(
+                descriptor=_descritor_e435(operacao),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 3, 1, tzinfo=UTC),
+            )
+            sob_v2 = manager.resolve(
+                descriptor=_descritor_e435(operacao),
+                context=MemoryContext(),
+                policy_key=chave,
+                moment=datetime(2024, 9, 1, tzinfo=UTC),
+            )
+
+        assert sob_v1.outcome is GovernanceOutcome.NOT_APPLICABLE
+        assert sob_v1.policy_version == 1
+        assert sob_v2.outcome is GovernanceOutcome.ADMISSIBLE
+        assert sob_v2.policy_version == 2
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi435_published_policy_cannot_be_mutated_to_gain_retention_authority():
+    """§9.4: policy publicada é imutável — nem pelo repositório, nem por
+    mutação ORM direta."""
+    chave = _chave_e435()
+    try:
+        with UnitOfWork() as uow:
+            repo = GovernancePolicyRepository(uow.session)
+            policy = repo.add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset(),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+            policy_id = policy.id
+
+        novas_regras = GovernancePolicy.serialize_rules(
+            (
+                GovernanceRule(
+                    rule_id="curinga",
+                    effect=GovernanceEffect.ADMIT,
+                    operations=frozenset(_OPERACOES_E435),
+                ),
+            )
+        )
+
+        with UnitOfWork() as uow:
+            repo = GovernancePolicyRepository(uow.session)
+            alvo = repo.get_version(chave, 1)
+            with pytest.raises(GovernancePolicyImmutableError):
+                alvo.rules = novas_regras
+                uow.session.flush()
+
+        with UnitOfWork() as uow:
+            preservada = GovernancePolicyRepository(uow.session).get_version(chave, 1)
+            assert preservada.id == policy_id
+            assert preservada.rules[0]["operations"] == []
+    finally:
+        _limpar_policy(chave)
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_gi435_no_writes_during_resolution_of_the_new_operations(operacao):
+    """Resolver autoridade de retenção não escreve nada — nem na policy,
+    nem no patrimônio. O corretivo é vocabulário."""
+    chave = _chave_e435()
+    escritas: list[str] = []
+
+    def _espiao(conn, cursor, statement, parameters, context, executemany):
+        if re.match(r"\s*(INSERT|UPDATE|DELETE)\b", statement, re.IGNORECASE):
+            escritas.append(statement)
+
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="opt-in",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({operacao}),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        event.listen(engine, "before_cursor_execute", _espiao)
+        try:
+            with UnitOfWork() as uow:
+                resolucao = GovernanceManager(GovernancePolicyRepository(uow.session)).resolve(
+                    descriptor=_descritor_e435(operacao),
+                    context=MemoryContext(),
+                    policy_key=chave,
+                    moment=datetime(2024, 6, 1, tzinfo=UTC),
+                )
+        finally:
+            event.remove(engine, "before_cursor_execute", _espiao)
+
+        assert resolucao.outcome is GovernanceOutcome.ADMISSIBLE
+        assert escritas == []
+    finally:
+        _limpar_policy(chave)
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_gi435_new_operation_round_trips_through_postgresql(operacao):
+    """O token atravessa o JSONB e volta como o mesmo membro tipado."""
+    chave = _chave_e435()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="r",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({operacao}),
+                    ),
+                ),
+                effective_from=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            gravado = uow.session.execute(
+                sa.text("SELECT rules::text FROM governance_policies WHERE policy_key = :k"),
+                {"k": chave},
+            ).scalar_one()
+            assert operacao.value in gravado
+
+            (regra,) = GovernancePolicyRepository(uow.session).get_version(chave, 1).typed_rules
+            assert regra.operations == frozenset({operacao})
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi435_corrective_created_no_table_and_no_migration_head_change():
+    """§14.3: nada de tabela ou migração. `retention_policies` não
+    existe, e o head do Alembic é o mesmo da cadeia 63."""
+    with UnitOfWork() as uow:
+        existe = uow.session.execute(
+            sa.text("SELECT to_regclass('public.retention_policies')")
+        ).scalar_one()
+    assert existe is None
+    assert migrations.head_revision() == "7b2e4c9a15df"
+    assert migrations.current_revision() == "7b2e4c9a15df"

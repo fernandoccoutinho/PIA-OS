@@ -18,7 +18,13 @@ class CognitiveOperation(StrEnum):
     como o que governança "pode futuramente controlar". A oitava,
     `ACCESSIBILITY_TRANSITION`, foi acrescentada pelo corretivo E4.3.3,
     com EDR próprio, para fechar a lacuna que o preflight da E4.7
-    confirmou (`GOVERNANCE_OPERATION_GAP`). Nenhuma inventada aqui.
+    confirmou (`GOVERNANCE_OPERATION_GAP`).
+
+    A nona, a décima e a décima primeira — `RETENTION_ASSESSMENT`,
+    `RETENTION_DISPOSITION` e `LEGAL_ERASURE` — vieram do corretivo
+    E4.3.5, também com EDR próprio, para fechar a Stop Condition
+    primária que o preflight da E4.9 encontrou
+    (`RETENTION_OPERATION_AUTHORITY_GAP`). Nenhuma inventada aqui.
 
     **Ampliar este enum de novo exige novo EDR.** E o alcance do curinga
     histórico é definido por `EMPTY_OPERATIONS_SCOPE_V1`, não por "todos
@@ -83,6 +89,54 @@ class CognitiveOperation(StrEnum):
         AUTHORITY VOCABULARY != ACCESSIBILITY MANAGER
     """
 
+    RETENTION_ASSESSMENT = "retention_assessment"
+    """Avaliar a política de retenção de um sujeito num contexto (E4.3.5).
+
+    Autoriza **avaliar**, e nada além disso. Não escreve, não esquece,
+    não dispõe e não apaga.
+
+    **Por que não `READ`.** Uma avaliação de retenção de fato lê dados
+    que `READ` já alcança, e nesse sentido estreito não amplia acesso a
+    informação nenhuma. Mas o que ela produz não é uma leitura: é uma
+    afirmação sobre a permanência futura do sujeito. Reusar `READ` faria
+    toda policy que hoje admite leitura passar a admitir, sem novo ato de
+    publicação, uma capacidade que ninguém lhe concedeu:
+
+        AUTHORITY TO READ != AUTHORITY TO ASSESS RETENTION
+    """
+
+    RETENTION_DISPOSITION = "retention_disposition"
+    """Propor ou autorizar uma disposição tipada após a avaliação (E4.3.5).
+
+    Separada de `RETENTION_ASSESSMENT` porque avaliar e dispor são atos
+    distintos, e o segundo pressupõe o primeiro sem se confundir com ele:
+
+        AUTHORITY TO ASSESS != AUTHORITY TO DISPOSE
+        RETENTION EXPIRY    != AUTHORIZATION TO DELETE
+
+    Autoriza representar a disposição. **Não** executa apagamento nem
+    fabrica recibo — quem executa é a E4.9, que não existe.
+    """
+
+    LEGAL_ERASURE = "legal_erasure"
+    """Autoridade específica para o efeito de apagamento legítimo (E4.3.5).
+
+    Distinta das duas anteriores, e a distinção é material: uma
+    disposição pode expirar sem que nada seja apagado, e um apagamento
+    obrigatório pode ser exigido fora de qualquer prazo de retenção.
+
+        AUTHORITY TO DISPOSE != AUTHORITY TO ERASE
+        AUTHORITY TO ERASE   != EFFECT EXECUTED
+
+    Autoriza **representar** essa autoridade numa policy. Não interpreta
+    lei, não localiza storage, não alcança conteúdo externo e não apaga
+    história causal — o preflight da E4.9 registrou que nenhuma dessas
+    capacidades existe hoje, e nomear a operação não cria nenhuma delas:
+
+        PERMISSION != EXECUTION
+        AUTHORITY VOCABULARY != ERASURE MECHANISM
+    """
+
 
 EMPTY_OPERATIONS_SCOPE_V1: frozenset[CognitiveOperation] = frozenset(
     {
@@ -120,6 +174,14 @@ faz o default seguro ser automático.
 publicadas até a cadeia 53. Incluir uma operação futura aqui seria
 ampliar retroativamente o alcance de versões imutáveis, e exige EDR
 explícito — não é manutenção de rotina.
+
+**O corretivo E4.3.5 não tocou este conjunto**, e é justamente o
+comportamento que se esperava dele: `RETENTION_ASSESSMENT`,
+`RETENTION_DISPOSITION` e `LEGAL_ERASURE` ficam de fora, como
+`ACCESSIBILITY_TRANSITION` já ficava. Uma policy publicada antes deles
+resolve as três como `NOT_APPLICABLE`.
+
+    OLD WILDCARD AUTHORITY != FUTURE RETENTION AUTHORITY
 """
 
 

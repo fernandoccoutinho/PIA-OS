@@ -7,6 +7,7 @@ requisitos que exigem banco (versionamento, vigência, concorrência,
 zero escritas na avaliação) vivem em `tests/integration/memory/`.
 """
 
+import ast
 import dataclasses
 import inspect
 import pathlib
@@ -64,7 +65,17 @@ def test_gv1_cognitive_operation_vocabulary_is_closed():
     Sete vieram da E4.3 — o que `E4_GOVERNANCE_BOUNDARIES.md` §9 lista
     como o que governança pode controlar. A oitava veio do corretivo
     E4.3.3, com EDR próprio, para fechar o `GOVERNANCE_OPERATION_GAP`
-    que o preflight da E4.7 confirmou. Ampliar de novo exige novo EDR.
+    que o preflight da E4.7 confirmou. As três últimas vieram do
+    corretivo E4.3.5, também com EDR próprio, para fechar o
+    `RETENTION_OPERATION_AUTHORITY_GAP` que o preflight da E4.9
+    encontrou. Ampliar de novo exige novo EDR.
+
+    **Nota do corretivo E4.3.5.** Este teste falhava na cadeia 63 depois
+    da ampliação do enum, e a falha é o comportamento correto dele: ele
+    existe justamente para que nenhuma operação entre no vocabulário sem
+    que alguém edite este conjunto literal e explique por quê. Foi
+    atualizado, não afrouxado — continua exaustivo, continua literal, e
+    continua falhando diante de qualquer membro não declarado aqui.
     """
     assert {op.value for op in CognitiveOperation} == {
         "read",
@@ -75,6 +86,9 @@ def test_gv1_cognitive_operation_vocabulary_is_closed():
         "synchronize",
         "consolidate",
         "accessibility_transition",
+        "retention_assessment",
+        "retention_disposition",
+        "legal_erasure",
     }
 
 
@@ -886,3 +900,435 @@ def test_e433_docs_no_longer_claim_empty_means_any_future_operation():
 
     fonte = pathlib.Path(schema_mod.__file__).read_text(encoding="utf-8")
     assert "EMPTY_OPERATIONS_SCOPE_V1" in fonte
+
+
+# ======================================================================
+# E4.3.5 — Retention Operation Authority
+#
+# O corretivo fecha a Stop Condition primária do preflight da E4.9:
+# as três autoridades de retenção não eram representáveis. Ele cria
+# VOCABULÁRIO, não capacidade:
+#
+#     AUTHORITY VOCABULARY != OPERATION IMPLEMENTATION
+#     PERMISSION != EXECUTION
+#     E4_3_5 != E4_9
+# ======================================================================
+
+
+def _fonte_executavel_de_metodo(metodo) -> str:
+    """`_executable_source` sobre um **método**.
+
+    O helper compartilhado (linha 29) foi escrito para alvos de nível de
+    módulo; `inspect.getsource` de um método vem indentado e o `ast.parse`
+    recusa. Desindentar antes é a única diferença — a remoção de
+    docstrings continua sendo a do helper, pela mesma razão do `gv16`.
+    """
+    import textwrap
+
+    fonte = textwrap.dedent(inspect.getsource(metodo))
+    arvore = ast.parse(fonte)
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Expr) and isinstance(no.value, ast.Constant):
+            no.value = ast.Constant(value="")
+    return ast.unparse(arvore)
+
+
+_AVALIACAO = CognitiveOperation.RETENTION_ASSESSMENT
+_DISPOSICAO = CognitiveOperation.RETENTION_DISPOSITION
+_APAGAMENTO = CognitiveOperation.LEGAL_ERASURE
+_OPERACOES_E435 = (_AVALIACAO, _DISPOSICAO, _APAGAMENTO)
+
+
+# --- 13.1 Vocabulário -------------------------------------------------
+
+
+def test_e435_new_operation_tokens_are_exact():
+    assert _AVALIACAO.value == "retention_assessment"
+    assert _DISPOSICAO.value == "retention_disposition"
+    assert _APAGAMENTO.value == "legal_erasure"
+
+
+def test_e435_the_three_authorities_are_distinct_members():
+    """Nenhuma é alias da outra, e nenhuma colapsa em operação anterior.
+
+    AUTHORITY TO ASSESS  != AUTHORITY TO DISPOSE
+    AUTHORITY TO DISPOSE != AUTHORITY TO ERASE
+    """
+    assert len({op for op in _OPERACOES_E435}) == 3
+    assert len({op.value for op in _OPERACOES_E435}) == 3
+    for nova in _OPERACOES_E435:
+        for antiga in (*_OPERACOES_HISTORICAS, _TRANSICAO):
+            assert nova is not antiga
+            assert nova.value != antiga.value
+
+
+def test_e435_no_generic_collapsing_operation_was_created():
+    """§4: proibido criar `RETENTION` ou `ERASURE` genérica que funda
+    avaliação, decisão e efeito num membro só."""
+    valores = {op.value for op in CognitiveOperation}
+    assert "retention" not in valores
+    assert "erasure" not in valores
+    assert "retention_forgetting" not in valores
+
+
+def test_e435_no_aliases_were_created():
+    """`StrEnum` com dois nomes para o mesmo valor viraria alias
+    silencioso. Cada membro tem valor próprio."""
+    valores = [op.value for op in CognitiveOperation]
+    assert len(valores) == len(set(valores))
+    assert len(CognitiveOperation.__members__) == len(valores)
+
+
+@pytest.mark.parametrize("token", ["retencao", "RETENTION_ASSESSMENT", "erase", "delete", ""])
+def test_e435_unknown_tokens_are_still_rejected(token):
+    """Vocabulário continua fechado: nenhum fallback para string
+    desconhecida."""
+    with pytest.raises(ValueError):
+        CognitiveOperation(token)
+
+
+# --- 13.2 O curinga histórico permanece fechado -----------------------
+
+
+def test_e435_historic_scope_still_has_exactly_the_seven_previous_operations():
+    assert frozenset(_OPERACOES_HISTORICAS) == EMPTY_OPERATIONS_SCOPE_V1
+    assert len(EMPTY_OPERATIONS_SCOPE_V1) == 7
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_new_operations_are_outside_the_historic_scope(operacao):
+    """Guarda contra inclusão acidental futura (§9.4)."""
+    assert operacao not in EMPTY_OPERATIONS_SCOPE_V1
+
+
+def test_e435_historic_scope_did_not_grow_with_the_enum():
+    """O conjunto é literal. Se alguém o derivasse do enum, ele teria
+    passado de 7 para 11 sozinho — que é exatamente o defeito que a
+    E4.3.3 corrigiu."""
+    assert len(EMPTY_OPERATIONS_SCOPE_V1) == 7
+    assert len(list(CognitiveOperation)) == 11
+    assert len(EMPTY_OPERATIONS_SCOPE_V1) < len(list(CognitiveOperation))
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+@pytest.mark.parametrize("effect", [GovernanceEffect.ADMIT, GovernanceEffect.DENY])
+def test_e435_wildcard_rule_does_not_reach_the_new_operations(operacao, effect):
+    """Nem admite nem nega: a regra simplesmente não se aplica.
+
+    OLD WILDCARD AUTHORITY != FUTURE RETENTION AUTHORITY
+    """
+    regra = _regra("curinga", effect, operations=frozenset())
+    assert not regra.matches(operation=operacao, **_SEM_DIMENSOES)
+
+
+def test_e435_wildcard_rule_still_reaches_every_historic_operation():
+    """Controle positivo: o corretivo não estreitou o curinga."""
+    regra = _regra("curinga", GovernanceEffect.ADMIT, operations=frozenset())
+    for operacao in _OPERACOES_HISTORICAS:
+        assert regra.matches(operation=operacao, **_SEM_DIMENSOES)
+
+
+def test_e435_matching_has_no_special_branch_per_operation():
+    """§8.2: as novas operações seguem o mecanismo positivo geral da
+    E4.3.3, sem `if` dedicado a nenhuma delas."""
+    fonte = _fonte_executavel_de_metodo(GovernanceRule.matches)
+    for token in ("retention_assessment", "retention_disposition", "legal_erasure"):
+        assert token not in fonte
+    for nome in ("RETENTION_ASSESSMENT", "RETENTION_DISPOSITION", "LEGAL_ERASURE"):
+        assert nome not in fonte
+
+
+# --- 13.3 Autoridade explícita ---------------------------------------
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_wildcard_only_policy_resolves_not_applicable(operacao):
+    decisao = _evaluate(
+        (_regra("curinga", GovernanceEffect.ADMIT, operations=frozenset()),),
+        operacao,
+        MemoryContext(),
+    )
+    assert decisao.outcome is GovernanceOutcome.NOT_APPLICABLE
+    assert decisao.matched_rule_id is None
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_explicit_opt_in_admits(operacao):
+    decisao = _evaluate(
+        (_regra("opt-in", GovernanceEffect.ADMIT, operations=frozenset({operacao})),),
+        operacao,
+        MemoryContext(),
+    )
+    assert decisao.outcome is GovernanceOutcome.ADMISSIBLE
+    assert decisao.matched_rule_id == "opt-in"
+    assert decisao.operation is operacao
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_explicit_deny_is_inadmissible_not_merely_not_applicable(operacao):
+    """`INADMISSIBLE` e `NOT_APPLICABLE` continuam diagnósticos
+    diferentes — alguém proibiu × ninguém decidiu."""
+    decisao = _evaluate(
+        (_regra("nega", GovernanceEffect.DENY, operations=frozenset({operacao})),),
+        operacao,
+        MemoryContext(),
+    )
+    assert decisao.outcome is GovernanceOutcome.INADMISSIBLE
+    assert decisao.matched_rule_id == "nega"
+
+
+@pytest.mark.parametrize("pedida", _OPERACOES_E435)
+def test_e435_authority_over_one_retention_operation_does_not_grant_the_others(pedida):
+    """O ponto central da separação em três: quem pode avaliar não pode
+    dispor, e quem pode dispor não pode apagar."""
+    outras = [op for op in _OPERACOES_E435 if op is not pedida]
+    for concedida in outras:
+        decisao = _evaluate(
+            (_regra("r", GovernanceEffect.ADMIT, operations=frozenset({concedida})),),
+            pedida,
+            MemoryContext(),
+        )
+        assert decisao.outcome is GovernanceOutcome.NOT_APPLICABLE
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_read_authority_does_not_grant_retention_authority(operacao):
+    """AUTHORITY TO READ != AUTHORITY TO FORGET"""
+    decisao = _evaluate(
+        (_regra("r", GovernanceEffect.ADMIT, operations=frozenset({CognitiveOperation.READ})),),
+        operacao,
+        MemoryContext(),
+    )
+    assert decisao.outcome is GovernanceOutcome.NOT_APPLICABLE
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_transform_and_transition_authority_do_not_grant_erasure(operacao):
+    """AUTHORITY TO TRANSFORM != AUTHORITY TO ERASE
+    AUTHORITY TO CHANGE ACCESSIBILITY != AUTHORITY TO DELETE
+    """
+    for concedida in (CognitiveOperation.TRANSFORM, _TRANSICAO):
+        decisao = _evaluate(
+            (_regra("r", GovernanceEffect.ADMIT, operations=frozenset({concedida})),),
+            operacao,
+            MemoryContext(),
+        )
+        assert decisao.outcome is GovernanceOutcome.NOT_APPLICABLE
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_deny_overrides_still_applies_to_the_new_operations(operacao):
+    """A disciplina vigente não muda: uma restrição que some porque
+    outra regra permite não é restrição."""
+    decisao = _evaluate(
+        (
+            _regra("admite", GovernanceEffect.ADMIT, operations=frozenset({operacao})),
+            _regra("nega", GovernanceEffect.DENY, operations=frozenset({operacao})),
+        ),
+        operacao,
+        MemoryContext(),
+    )
+    assert decisao.outcome is GovernanceOutcome.INADMISSIBLE
+    assert decisao.matched_rule_id == "nega"
+
+
+def test_e435_one_rule_may_enumerate_the_three_without_fusing_them():
+    """§8.3: combinar operações numa regra é permitido e **não** altera
+    a independência semântica entre elas."""
+    regra = _regra("tres", GovernanceEffect.ADMIT, operations=frozenset(_OPERACOES_E435))
+    for operacao in _OPERACOES_E435:
+        assert regra.matches(operation=operacao, **_SEM_DIMENSOES)
+    for operacao in (*_OPERACOES_HISTORICAS, _TRANSICAO):
+        assert not regra.matches(operation=operacao, **_SEM_DIMENSOES)
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_context_dimensions_still_bind_for_the_new_operations(operacao):
+    """Ator, propósito e domínio continuam vinculados normalmente —
+    o corretivo não abriu exceção contextual para retenção."""
+    dominio = uuid.uuid4()
+    regra = _regra(
+        "r",
+        GovernanceEffect.ADMIT,
+        operations=frozenset({operacao}),
+        domain_ids=frozenset({dominio}),
+        actor_refs=frozenset({"ana"}),
+        purposes=frozenset({"auditoria"}),
+    )
+    assert regra.matches(
+        operation=operacao,
+        domain_ids=frozenset({dominio}),
+        actor_ref="ana",
+        purpose="auditoria",
+    )
+    # dimensão ausente no contexto não casa com regra que a restringe
+    assert not regra.matches(
+        operation=operacao,
+        domain_ids=frozenset({dominio}),
+        actor_ref=None,
+        purpose="auditoria",
+    )
+    assert not regra.matches(
+        operation=operacao,
+        domain_ids=frozenset({uuid.uuid4()}),
+        actor_ref="ana",
+        purpose="auditoria",
+    )
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_decision_binds_the_evaluated_context(operacao):
+    """A E4.3.4 vale para as operações novas como para as antigas."""
+    dominio = uuid.uuid4()
+    contexto = MemoryContext.build(domain_ids=[dominio], actor_ref="ana", purpose="retencao")
+    decisao = _evaluate(
+        (_regra("r", GovernanceEffect.ADMIT, operations=frozenset({operacao})),),
+        operacao,
+        contexto,
+    )
+    assert decisao.context_domain_ids == (dominio,)
+    assert decisao.context_actor_ref == "ana"
+    assert decisao.context_purpose == "retencao"
+
+
+# --- 13.4 Serialização ------------------------------------------------
+
+
+@pytest.mark.parametrize("operacao", _OPERACOES_E435)
+def test_e435_new_operation_round_trips_deterministically(operacao):
+    regra = _regra("r", GovernanceEffect.ADMIT, operations=frozenset({operacao}))
+    payload = GovernancePolicy.serialize_rules((regra,))
+    assert payload[0]["operations"] == [operacao.value]
+    assert GovernancePolicy.serialize_rules((regra,)) == payload
+    (reconstruida,) = GovernancePolicy.deserialize_rules(payload)
+    assert reconstruida == regra
+    assert reconstruida.operations == frozenset({operacao})
+
+
+def test_e435_policy_with_all_three_round_trips():
+    regra = _regra("tres", GovernanceEffect.ADMIT, operations=frozenset(_OPERACOES_E435))
+    payload = GovernancePolicy.serialize_rules((regra,))
+    assert payload[0]["operations"] == sorted(op.value for op in _OPERACOES_E435)
+    (reconstruida,) = GovernancePolicy.deserialize_rules(payload)
+    assert reconstruida.operations == frozenset(_OPERACOES_E435)
+
+
+def test_e435_old_payloads_are_byte_identical_after_the_corrective():
+    """Nenhum payload publicado antes do corretivo muda de forma.
+
+    O payload é montado a partir de `op.value` ordenado, então
+    acrescentar membros ao enum não pode alterar bytes de regra alguma
+    que não os cite.
+    """
+    antiga = _regra(
+        "historica",
+        GovernanceEffect.ADMIT,
+        operations=frozenset({CognitiveOperation.READ, CognitiveOperation.TRANSFORM}),
+    )
+    curinga = _regra("curinga", GovernanceEffect.DENY, operations=frozenset())
+    payload = GovernancePolicy.serialize_rules((antiga, curinga))
+    assert payload == [
+        {
+            "rule_id": "historica",
+            "effect": "admit",
+            "operations": ["read", "transform"],
+            "domain_ids": [],
+            "actor_refs": [],
+            "purposes": [],
+        },
+        {
+            "rule_id": "curinga",
+            "effect": "deny",
+            "operations": [],
+            "domain_ids": [],
+            "actor_refs": [],
+            "purposes": [],
+        },
+    ]
+    assert GovernancePolicy.deserialize_rules(payload) == (antiga, curinga)
+
+
+def test_e435_unknown_operation_token_in_payload_still_raises():
+    """Uma policy gravada com token fora do vocabulário continua
+    falhando alto, em vez de virar regra silenciosamente inerte."""
+    with pytest.raises(ValueError):
+        GovernancePolicy.deserialize_rules(
+            [
+                {
+                    "rule_id": "r",
+                    "effect": "admit",
+                    "operations": ["retention"],
+                    "domain_ids": [],
+                    "actor_refs": [],
+                    "purposes": [],
+                }
+            ]
+        )
+
+
+# --- 13.5 Não capacidade ----------------------------------------------
+
+
+def test_e435_corrective_created_no_retention_capability():
+    """§9.5: o corretivo é vocabulário. Nada em `app/memory` ganhou
+    mecanismo de retenção, disposição ou apagamento.
+
+    Compara o **código executável** (AST sem docstrings), porque as
+    docstrings citam nominalmente o que o corretivo não faz — mesmo
+    falso positivo que a E4.3.1 corrigiu em `gv16` e que a E4.8 pagou
+    com guardas por substring solta.
+    """
+    import ast
+    import re
+
+    base = pathlib.Path(__file__).parents[3] / "app" / "memory"
+    assert base.is_dir(), f"caminho de app/memory não resolvido: {base}"
+
+    proibidos = (
+        "RetentionPolicy",
+        "RetentionRule",
+        "RetentionAssessment",
+        "RetentionDecision",
+        "ErasureRecord",
+        "retention_policies",
+    )
+    metodos_proibidos = ("assess_retention", "dispose", "erase", "forget")
+
+    for arquivo in sorted(base.rglob("*.py")):
+        arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
+        for no in ast.walk(arvore):
+            corpo = getattr(no, "body", None)
+            if isinstance(corpo, list):
+                no.body = [
+                    filho
+                    for filho in corpo
+                    if not (
+                        isinstance(filho, ast.Expr)
+                        and isinstance(filho.value, ast.Constant)
+                        and isinstance(filho.value.value, str)
+                    )
+                ] or [ast.Pass()]
+        executavel = ast.unparse(arvore)
+        for proibido in proibidos:
+            assert not re.search(rf"\b{proibido}\b", executavel), f"{arquivo}: {proibido}"
+        for metodo in metodos_proibidos:
+            assert not re.search(rf"\bdef {metodo}\b", executavel), f"{arquivo}: def {metodo}"
+
+
+def test_e435_production_diff_is_confined_to_the_enum_module():
+    """O corretivo não precisou tocar `matches()`, o manager, os
+    schemas de resultado nem repositório algum: o mecanismo positivo da
+    E4.3.3 já trata membro novo sem código novo."""
+    fonte_matches = _fonte_executavel_de_metodo(GovernanceRule.matches)
+    assert "EMPTY_OPERATIONS_SCOPE_V1" in fonte_matches
+    fonte_manager = _executable_source(GovernanceManager)
+    for token in ("retention", "erasure", "Retention", "Erasure"):
+        assert token not in fonte_manager
+
+
+def test_e435_governance_result_gained_no_execution_fields():
+    """§8.4: `GovernanceDecision` continua descrevendo só o resultado da
+    policy — sem approval, receipt ou efeito executado."""
+    campos = {campo.name for campo in dataclasses.fields(GovernanceDecision)}
+    for proibido in ("approval", "approved_by", "receipt", "executed", "effect_executed"):
+        assert proibido not in campos
