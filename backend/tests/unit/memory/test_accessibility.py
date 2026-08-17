@@ -147,16 +147,40 @@ class PolicyFalsa:
 
 
 class GovernanceFalso:
-    def __init__(self, resolution, *, eco_policy: bool = True) -> None:
+    def __init__(self, resolution, *, eco_policy: bool = True, eco_contexto: bool = True) -> None:
         self.resolution = resolution
         self.eco_policy = eco_policy
+        self.eco_contexto = eco_contexto
         self.chamadas: list[dict] = []
+
+    def _com_contexto(self, resolution, context):
+        """Reescreve o vínculo de contexto, como o manager REAL faz.
+
+        Sem isto, qualquer teste com domínios falharia a fidelidade
+        introduzida pelo corretivo E4.3.4 — e falharia com razão, porque
+        o dublê estaria devolvendo uma resolução emitida para outro
+        contexto. Testes que QUEREM essa divergência desligam o eco.
+        """
+        # Só ecoa sobre uma resolução REAL: alguns testes injetam
+        # propositalmente um objeto que não é `GovernanceResolution`
+        # para provar o diagnóstico de tipo, e o eco não pode
+        # atrapalhar essa prova.
+        if not self.eco_contexto or not isinstance(resolution, GovernanceResolution):
+            return resolution
+        return dataclasses.replace(
+            resolution,
+            context_domain_ids=context.domain_ids,
+            context_actor_ref=context.actor_ref,
+            context_purpose=context.purpose,
+        )
 
     def resolve(self, *, descriptor, context, policy_key=None, moment=None):
         self.chamadas.append({"descriptor": descriptor, "policy_key": policy_key, "moment": moment})
         if self.eco_policy and self.resolution.policy_key is not None:
-            return dataclasses.replace(self.resolution, policy_key=policy_key)
-        return self.resolution
+            return self._com_contexto(
+                dataclasses.replace(self.resolution, policy_key=policy_key), context
+            )
+        return self._com_contexto(self.resolution, context)
 
 
 class ContextoFalso:
@@ -168,6 +192,21 @@ class ContextoFalso:
 
 
 # --- Construtores -----------------------------------------------------
+
+
+_CONTEXTO_VAZIO: dict = {
+    "context_domain_ids": (),
+    "context_actor_ref": None,
+    "context_purpose": None,
+}
+"""Vínculo de contexto para os dublês (corretivo E4.3.4).
+
+As três dimensões passaram a ser **obrigatórias** em
+`GovernanceResolution`: omissão não é mais indistinguível de contexto
+explicitamente vazio. Os dublês declaram o vazio explicitamente, e o
+`GovernanceFalso` reescreve o vínculo com o contexto recebido — como o
+`GovernanceManager` real faz.
+"""
 
 
 def _resolucao(*, outcome=GovernanceOutcome.ADMISSIBLE, operation=None):
@@ -182,12 +221,14 @@ def _resolucao(*, outcome=GovernanceOutcome.ADMISSIBLE, operation=None):
                 "safety_rationale": "proibido",
             }
         return GovernanceResolution(
+            **_CONTEXTO_VAZIO,
             operation=operacao,
             outcome=outcome,
             safety_boundary_version=PLATFORM_SAFETY_BOUNDARY_VERSION,
             **extras,
         )
     return GovernanceResolution(
+        **_CONTEXTO_VAZIO,
         operation=operacao,
         outcome=outcome,
         policy_key=_GK,
@@ -2194,3 +2235,139 @@ def test_e473_serialization_of_real_edges_stays_deterministic():
     ida = AccessibilityPolicy.serialize_rules(original)
     assert AccessibilityPolicy.deserialize_rules(ida) == original
     assert AccessibilityPolicy.serialize_rules(AccessibilityPolicy.deserialize_rules(ida)) == ida
+
+
+# ======================================================================
+# E4.3.4 — vínculo de contexto verificado na Accessibility Policy
+# ======================================================================
+
+
+def _resolucao_para_contexto(
+    *, domain_ids=(), actor_ref=None, purpose=None, outcome=GovernanceOutcome.ADMISSIBLE
+):
+    campos: dict = {
+        "operation": CognitiveOperation.ACCESSIBILITY_TRANSITION,
+        "outcome": outcome,
+        "context_domain_ids": domain_ids,
+        "context_actor_ref": actor_ref,
+        "context_purpose": purpose,
+        "safety_boundary_version": PLATFORM_SAFETY_BOUNDARY_VERSION,
+    }
+    if outcome not in (GovernanceOutcome.NOT_APPLICABLE, GovernanceOutcome.PROHIBITED):
+        campos |= {
+            "policy_key": _GK,
+            "policy_version": 1,
+            "policy_id": uuid.uuid4(),
+            "matched_rule_id": "g",
+        }
+    if outcome is GovernanceOutcome.PROHIBITED:
+        from app.memory.services.platform_safety_boundary import CriticalCapability
+
+        campos |= {
+            "blocked_capabilities": (CriticalCapability.CATASTROPHIC_HARM_ENABLEMENT,),
+            "safety_rationale": "proibido",
+        }
+    return GovernanceResolution(**campos)
+
+
+def _manager_contexto_infiel(resolucao, sujeito):
+    subject_port = SubjectPortFalso(sujeito)
+    manager = AccessibilityPolicyManager(
+        subject_port,
+        TransitionPortFalso(),
+        EvidencePortFalso(),
+        PolicyRepoFalso(_policy(_regra())),
+        GovernanceFalso(resolucao, eco_policy=False, eco_contexto=False),
+        ContextoFalso(),
+    )
+    return manager, subject_port
+
+
+@pytest.mark.parametrize(
+    ("descricao", "divergencia", "trecho"),
+    [
+        ("domínio", {"domain_ids": (uuid.uuid4(),)}, "emitida para os domínios"),
+        ("ator", {"actor_ref": "bob"}, "emitida para o ator"),
+        ("propósito", {"purpose": "outro"}, "emitida para o propósito"),
+    ],
+)
+def test_e434a_resolution_for_another_context_is_refused_before_reading_the_subject(
+    descricao, divergencia, trecho
+):
+    """A verificação acontece antes de qualquer leitura, lock, estado,
+    AccessibilityPolicy ou evidência causal."""
+    sujeito = SujeitoFalso(uuid.uuid4())
+    manager, subject_port = _manager_contexto_infiel(
+        _resolucao_para_contexto(**divergencia), sujeito
+    )
+    with pytest.raises(AccessibilityTransitionContractViolationError) as exc:
+        _transicionar(manager, coid=sujeito.id, context=MemoryContext(actor_ref="ana"))
+    assert exc.value.code == "PIA-8037"
+    assert any(trecho in m for m in exc.value.reasons)
+    assert subject_port.buscas == []
+    assert subject_port.locks == []
+
+
+def test_e434a_every_divergence_is_accumulated():
+    sujeito = SujeitoFalso(uuid.uuid4())
+    manager, subject_port = _manager_contexto_infiel(
+        _resolucao_para_contexto(domain_ids=(uuid.uuid4(),), actor_ref="bob", purpose="outro"),
+        sujeito,
+    )
+    contexto = MemoryContext(domain_ids=(uuid.uuid4(),), actor_ref="ana", purpose="p")
+    with pytest.raises(AccessibilityTransitionContractViolationError) as exc:
+        _transicionar(manager, coid=sujeito.id, context=contexto)
+    assert len(exc.value.reasons) >= 3
+    assert subject_port.buscas == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        GovernanceOutcome.ADMISSIBLE,
+        GovernanceOutcome.INADMISSIBLE,
+        GovernanceOutcome.NOT_APPLICABLE,
+        GovernanceOutcome.PROHIBITED,
+    ],
+)
+def test_e434a_mismatch_in_a_refusal_still_does_not_read_the_subject(outcome):
+    sujeito = SujeitoFalso(uuid.uuid4())
+    manager, subject_port = _manager_contexto_infiel(
+        _resolucao_para_contexto(domain_ids=(uuid.uuid4(),), outcome=outcome), sujeito
+    )
+    with pytest.raises(AccessibilityTransitionContractViolationError):
+        _transicionar(manager, coid=sujeito.id)
+    assert subject_port.buscas == []
+
+
+def test_e434a_matching_context_preserves_the_four_outcomes():
+    """O corretivo não altera a máquina de estados da E4.7.2."""
+    for estado, alvo, policy, esperado in (
+        ("active", "latent", _policy(_regra()), "escrita"),
+        ("latent", "latent", _policy(_regra()), "no_op"),
+        ("active", "latent", _policy(_regra(effect=GovernanceEffect.DENY)), "recusa_policy"),
+    ):
+        sujeito = SujeitoFalso(uuid.uuid4(), estado=estado)
+        manager, _, _, _, _, _ = _manager(sujeito=sujeito, policy=policy)
+        resultado = _transicionar(manager, coid=sujeito.id, alvo=alvo)
+        if esperado == "escrita":
+            assert resultado.state_changed is True
+        elif esperado == "no_op":
+            assert resultado.no_change is True
+        else:
+            assert resultado.decision is not None
+            assert resultado.decision.outcome is GovernanceOutcome.INADMISSIBLE
+
+    sujeito = SujeitoFalso(uuid.uuid4())
+    negado, _, _, _, _, _ = _manager(
+        sujeito=sujeito, resolution=_resolucao(outcome=GovernanceOutcome.NOT_APPLICABLE)
+    )
+    r = _transicionar(negado, coid=sujeito.id)
+    assert r.governance_resolution.execution_authorized is False
+
+
+def test_e434a_result_constructor_refuses_a_mismatched_resolution():
+    with pytest.raises(ValueError, match="não foi emitida para este contexto"):
+        _resultado(
+            governance_resolution=_resolucao_para_contexto(domain_ids=(uuid.uuid4(),)),
+        )

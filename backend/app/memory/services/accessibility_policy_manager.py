@@ -100,7 +100,10 @@ from app.memory.schemas.accessibility import (
     AccessibilityDecision,
     AccessibilityTransitionResult,
 )
-from app.memory.schemas.governance import GovernanceResolution
+from app.memory.schemas.governance import (
+    GovernanceResolution,
+    resolucao_vincula_contexto,
+)
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.services.context_manager import ContextManager
 from app.memory.services.governance_manager import GovernanceManager
@@ -190,7 +193,10 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
             moment=instante,
         )
         self._verificar_fidelidade_da_resolucao(
-            resolution, descriptor=descriptor, policy_key=governance_policy_key
+            resolution,
+            descriptor=descriptor,
+            policy_key=governance_policy_key,
+            context=context,
         )
 
         if not resolution.execution_authorized:
@@ -490,7 +496,11 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
 
     @staticmethod
     def _verificar_fidelidade_da_resolucao(
-        resolution: object, *, descriptor: CapabilityDescriptor, policy_key: str
+        resolution: object,
+        *,
+        descriptor: CapabilityDescriptor,
+        policy_key: str,
+        context: MemoryContext,
     ) -> None:
         """A autorização tem de ser sobre **este** pedido.
 
@@ -523,6 +533,17 @@ class AccessibilityPolicyManager(Generic[SubjectT, StateT]):
                 f"policy de governança resolvida {resolution.policy_key!r} difere da "
                 f"solicitada {policy_key!r}"
             )
+        # Vínculo com o contexto avaliado (corretivo E4.3.4), antes de
+        # qualquer leitura do sujeito, lock, estado, AccessibilityPolicy
+        # ou evidência causal.
+        motivos.extend(
+            resolucao_vincula_contexto(
+                resolution,
+                domain_ids=context.domain_ids,
+                actor_ref=context.actor_ref,
+                purpose=context.purpose,
+            )
+        )
         if motivos:
             raise AccessibilityTransitionContractViolationError(tuple(motivos))
 

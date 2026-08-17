@@ -63,7 +63,10 @@ from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
 from app.memory.repositories.memory_domain_membership_repository import (
     MemoryDomainMembershipRepository,
 )
-from app.memory.schemas.governance import GovernanceResolution
+from app.memory.schemas.governance import (
+    GovernanceResolution,
+    resolucao_vincula_contexto,
+)
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.schemas.retrieval import (
     DEFAULT_LIMIT,
@@ -197,7 +200,7 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
             moment=moment,
         )
         self._verificar_fidelidade_da_resolucao(
-            resolution, descriptor=descriptor, policy_key=policy_key
+            resolution, descriptor=descriptor, policy_key=policy_key, context=contexto
         )
 
         if not resolution.execution_authorized:
@@ -326,6 +329,7 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         *,
         descriptor: CapabilityDescriptor,
         policy_key: str | None,
+        context: MemoryContext,
     ) -> None:
         """A autorização tem de ser sobre **este** pedido.
 
@@ -370,6 +374,23 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
                 f"policy resolvida {resolution.policy_key!r} difere da solicitada "
                 f"{policy_key!r}"
             )
+        # Vínculo com o contexto avaliado (corretivo E4.3.4). Verificar
+        # operação e policy não dizia SOB QUAL PERGUNTA a autorização
+        # foi emitida: uma resolução produzida para outro domínio, ator
+        # ou propósito era indetectável.
+        #
+        #     REQUESTED CONTEXT MUST EQUAL RESOLVED CONTEXT
+        #
+        # Vale em TODOS os outcomes, inclusive PROHIBITED e
+        # NOT_APPLICABLE, e antes de memberships e Search.
+        motivos.extend(
+            resolucao_vincula_contexto(
+                resolution,
+                domain_ids=context.domain_ids,
+                actor_ref=context.actor_ref,
+                purpose=context.purpose,
+            )
+        )
         if motivos:
             raise RetrievalContractViolationError(tuple(motivos))
 

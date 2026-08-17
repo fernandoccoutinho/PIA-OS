@@ -257,16 +257,17 @@ class GovernanceManager:
         avaliacao = assess_capability(descriptor)
 
         if avaliacao.prohibits:
-            return self._prohibited_resolution(descriptor, avaliacao)
+            return self._prohibited_resolution(descriptor, avaliacao, context)
 
         if policy_key is None:
-            return self._no_policy_resolution(descriptor, avaliacao)
+            return self._no_policy_resolution(descriptor, avaliacao, context)
 
         policy = self._policies.effective_version_at(policy_key, agora)
         if policy is None:
             return self._no_policy_resolution(
                 descriptor,
                 avaliacao,
+                context,
                 nota=(
                     f"nenhuma versão de '{policy_key}' vigente em {agora.isoformat()} — "
                     "ausência de policy não concede admissibilidade"
@@ -277,6 +278,12 @@ class GovernanceManager:
         return GovernanceResolution(
             outcome=decisao.outcome,
             operation=descriptor.operation,
+            # Propagado da DECISÃO, não recomposto do contexto: é a
+            # decisão que registra o que a policy de fato consumiu
+            # (corretivo E4.3.4).
+            context_domain_ids=decisao.context_domain_ids,
+            context_actor_ref=decisao.context_actor_ref,
+            context_purpose=decisao.context_purpose,
             safety_boundary_version=avaliacao.boundary_version,
             safety_rationale=avaliacao.rationale,
             preserved_intent=avaliacao.preserved_intent,
@@ -289,7 +296,9 @@ class GovernanceManager:
 
     @staticmethod
     def _prohibited_resolution(
-        descriptor: CapabilityDescriptor, avaliacao: SafetyAssessment
+        descriptor: CapabilityDescriptor,
+        avaliacao: SafetyAssessment,
+        context: MemoryContext,
     ) -> GovernanceResolution:
         """Resolução de um pedido recusado pela fronteira.
 
@@ -299,6 +308,12 @@ class GovernanceManager:
 
         Nenhum campo da policy local é preenchido — ela não foi
         consultada, e fingir que foi seria proveniência falsa.
+
+        O **contexto**, ao contrário, é vinculado (corretivo E4.3.4):
+        a fronteira não consultou policy, mas recebeu uma pergunta.
+
+            NO LOCAL POLICY CONSULTED != NO CONTEXT RECEIVED
+            CONTEXT BINDING != LOCAL POLICY PROVENANCE
         """
         preservou: list[str] = []
         perdeu: list[str] = ["a capacidade operacional solicitada"]
@@ -312,6 +327,9 @@ class GovernanceManager:
         return GovernanceResolution(
             outcome=GovernanceOutcome.PROHIBITED,
             operation=descriptor.operation,
+            context_domain_ids=context.domain_ids,
+            context_actor_ref=context.actor_ref,
+            context_purpose=context.purpose,
             safety_boundary_version=avaliacao.boundary_version,
             safety_rationale=avaliacao.rationale,
             blocked_capabilities=avaliacao.blocked_capabilities,
@@ -330,6 +348,7 @@ class GovernanceManager:
     def _no_policy_resolution(
         descriptor: CapabilityDescriptor,
         avaliacao: SafetyAssessment,
+        context: MemoryContext,
         *,
         nota: str = "nenhuma policy local informada",
     ) -> GovernanceResolution:
@@ -342,6 +361,9 @@ class GovernanceManager:
         return GovernanceResolution(
             outcome=GovernanceOutcome.NOT_APPLICABLE,
             operation=descriptor.operation,
+            context_domain_ids=context.domain_ids,
+            context_actor_ref=context.actor_ref,
+            context_purpose=context.purpose,
             safety_boundary_version=avaliacao.boundary_version,
             safety_rationale=avaliacao.rationale,
             preserved_intent=avaliacao.preserved_intent,

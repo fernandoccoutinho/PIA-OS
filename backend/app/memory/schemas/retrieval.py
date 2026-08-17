@@ -41,7 +41,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.memory.models.governance_enums import CognitiveOperation
-from app.memory.schemas.governance import GovernanceResolution
+from app.memory.schemas.governance import (
+    GovernanceResolution,
+    resolucao_vincula_contexto,
+)
 from app.memory.schemas.memory_context import MemoryContext
 
 DEFAULT_LIMIT = 50
@@ -193,6 +196,23 @@ class MemoryRetrievalResult:
                 f"{type(self.governance_resolution).__name__}"
             )
         object.__setattr__(self, "items", _itens(self.items))
+        # O construtor público não pode contornar a garantia que o
+        # manager verifica na fronteira (corretivo E4.3.4).
+        #
+        #     REQUESTED CONTEXT MUST EQUAL RESOLVED CONTEXT
+        #
+        # Implementação ÚNICA, compartilhada com o manager: duplicar a
+        # comparação faria as duas divergirem — lição da E4.5.1.
+        divergencias = resolucao_vincula_contexto(
+            self.governance_resolution,
+            domain_ids=self.context.domain_ids,
+            actor_ref=self.context.actor_ref,
+            purpose=self.context.purpose,
+        )
+        if divergencias:
+            raise ValueError(
+                "a resolução não foi emitida para este contexto: " + "; ".join(divergencias)
+            )
 
         if not isinstance(self.search_executed, bool):
             raise TypeError(

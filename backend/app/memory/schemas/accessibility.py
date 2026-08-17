@@ -33,7 +33,10 @@ from app.memory.models.governance_enums import (
     GovernanceEffect,
     GovernanceOutcome,
 )
-from app.memory.schemas.governance import GovernanceResolution
+from app.memory.schemas.governance import (
+    GovernanceResolution,
+    resolucao_vincula_contexto,
+)
 from app.memory.schemas.memory_context import MemoryContext
 
 ACCESSIBILITY_STATE_TOKENS: frozenset[str] = frozenset(
@@ -420,6 +423,24 @@ class AccessibilityTransitionResult:
         if self.evaluated_at.tzinfo is None:
             raise ValueError("evaluated_at deve ser timezone-aware")
         object.__setattr__(self, "evaluated_at", self.evaluated_at.astimezone(UTC))
+
+        # O construtor público não pode contornar a garantia que o
+        # manager verifica na fronteira (corretivo E4.3.4).
+        #
+        #     REQUESTED CONTEXT MUST EQUAL RESOLVED CONTEXT
+        #
+        # Implementação ÚNICA, compartilhada com o manager: duplicar a
+        # comparação faria as duas divergirem — lição da E4.5.1.
+        divergencias = resolucao_vincula_contexto(
+            self.governance_resolution,
+            domain_ids=self.context.domain_ids,
+            actor_ref=self.context.actor_ref,
+            purpose=self.context.purpose,
+        )
+        if divergencias:
+            raise ValueError(
+                "a resolução não foi emitida para este contexto: " + "; ".join(divergencias)
+            )
 
         if self.governance_resolution.operation is not CognitiveOperation.ACCESSIBILITY_TRANSITION:
             raise ValueError(

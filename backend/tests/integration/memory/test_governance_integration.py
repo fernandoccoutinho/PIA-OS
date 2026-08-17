@@ -57,8 +57,12 @@ from app.memory.services.governance_manager import GovernanceManager
 from app.memory.services.platform_safety_boundary import (
     CapabilityDescriptor,
     CapabilityEngagement,
+    CriticalCapability,
 )
 from app.repositories.unit_of_work import UnitOfWork
+
+_INICIO = datetime(2024, 1, 1, tzinfo=UTC)
+_MOMENTO = datetime(2024, 6, 1, tzinfo=UTC)
 
 _GOVERNANCE_TABLES = ("governance_policies",)
 _MEMORY_TABLES = ("memory_domain_memberships", "memory_domains")
@@ -993,6 +997,183 @@ def test_gi433_no_writes_during_resolution_of_the_new_operation():
             finally:
                 event.remove(engine, "before_cursor_execute", _contar)
 
+        assert escritas == []
+    finally:
+        _limpar_policy(chave)
+
+
+# ======================================================================
+# E4.3.4 — vínculo de contexto contra o banco real
+# ======================================================================
+
+
+def test_gi434_resolutions_for_different_domains_are_distinguishable():
+    """O defeito do preflight da E4.8, fechado com o manager real."""
+    chave = f"e434-{uuid.uuid4().hex[:10]}"
+    d1, d2 = uuid.uuid4(), uuid.uuid4()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({CognitiveOperation.READ}),
+                    ),
+                ),
+                effective_from=_INICIO,
+            )
+            uow.commit()
+
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            a = manager.resolve(
+                descriptor=CapabilityDescriptor(operation=CognitiveOperation.READ),
+                context=MemoryContext(domain_ids=(d1,)),
+                policy_key=chave,
+                moment=_MOMENTO,
+            )
+            b = manager.resolve(
+                descriptor=CapabilityDescriptor(operation=CognitiveOperation.READ),
+                context=MemoryContext(domain_ids=(d2,)),
+                policy_key=chave,
+                moment=_MOMENTO,
+            )
+        # mesmo outcome, mas resoluções distinguíveis
+        assert a.outcome is b.outcome is GovernanceOutcome.ADMISSIBLE
+        assert a != b
+        assert a.context_domain_ids == (d1,)
+        assert b.context_domain_ids == (d2,)
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi434_session_only_difference_keeps_resolutions_equal():
+    """`SESSION DIFFERENCE != GOVERNANCE DIFFERENCE`."""
+    chave = f"e434-{uuid.uuid4().hex[:10]}"
+    dominio = uuid.uuid4()
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="curinga",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({CognitiveOperation.READ}),
+                    ),
+                ),
+                effective_from=_INICIO,
+            )
+            uow.commit()
+        with UnitOfWork() as uow:
+            manager = GovernanceManager(GovernancePolicyRepository(uow.session))
+            comum = {
+                "descriptor": CapabilityDescriptor(operation=CognitiveOperation.READ),
+                "policy_key": chave,
+                "moment": _MOMENTO,
+            }
+            a = manager.resolve(
+                context=MemoryContext(domain_ids=(dominio,), session_id="s1"), **comum
+            )
+            b = manager.resolve(
+                context=MemoryContext(domain_ids=(dominio,), session_id="s2"), **comum
+            )
+        assert a == b
+    finally:
+        _limpar_policy(chave)
+
+
+@pytest.mark.parametrize("cenario", ["sem_policy", "sem_versao_vigente", "proibido"])
+def test_gi434_refusals_still_bind_the_received_context(cenario):
+    """`NO LOCAL POLICY CONSULTED != NO CONTEXT RECEIVED`."""
+    chave = f"e434-{uuid.uuid4().hex[:10]}"
+    dominio = uuid.uuid4()
+    contexto = MemoryContext(domain_ids=(dominio,), actor_ref="ana", purpose="curadoria")
+    try:
+        if cenario == "sem_versao_vigente":
+            with UnitOfWork() as uow:
+                GovernancePolicyRepository(uow.session).add_policy(
+                    policy_key=chave,
+                    version=1,
+                    rules=(),
+                    effective_from=datetime(2030, 1, 1, tzinfo=UTC),
+                )
+                uow.commit()
+
+        descritor = CapabilityDescriptor(operation=CognitiveOperation.READ)
+        policy_key: str | None = chave
+        if cenario == "sem_policy":
+            policy_key = None
+        elif cenario == "proibido":
+            policy_key = None
+            descritor = CapabilityDescriptor(
+                operation=CognitiveOperation.READ,
+                capabilities=frozenset({CriticalCapability.CATASTROPHIC_HARM_ENABLEMENT}),
+                engagement=CapabilityEngagement.OPERATIONAL_ENABLEMENT,
+            )
+
+        with UnitOfWork() as uow:
+            resolucao = GovernanceManager(GovernancePolicyRepository(uow.session)).resolve(
+                descriptor=descritor,
+                context=contexto,
+                policy_key=policy_key,
+                moment=_MOMENTO,
+            )
+
+        assert resolucao.execution_authorized is False
+        assert resolucao.context_domain_ids == (dominio,)
+        assert resolucao.context_actor_ref == "ana"
+        assert resolucao.context_purpose == "curadoria"
+        if cenario == "proibido":
+            assert resolucao.outcome is GovernanceOutcome.PROHIBITED
+            # a policy local continua não consultada
+            assert resolucao.policy_key is None
+            assert resolucao.matched_rule_id is None
+    finally:
+        _limpar_policy(chave)
+
+
+def test_gi434_no_writes_during_resolution():
+    chave = f"e434-{uuid.uuid4().hex[:10]}"
+    try:
+        with UnitOfWork() as uow:
+            GovernancePolicyRepository(uow.session).add_policy(
+                policy_key=chave,
+                version=1,
+                rules=(
+                    GovernanceRule(
+                        rule_id="r",
+                        effect=GovernanceEffect.ADMIT,
+                        operations=frozenset({CognitiveOperation.READ}),
+                    ),
+                ),
+                effective_from=_INICIO,
+            )
+            uow.commit()
+
+        escritas: list[str] = []
+
+        def _contar(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+                escritas.append(statement)
+
+        with UnitOfWork() as uow:
+            engine = uow.session.get_bind()
+            event.listen(engine, "before_cursor_execute", _contar)
+            try:
+                GovernanceManager(GovernancePolicyRepository(uow.session)).resolve(
+                    descriptor=CapabilityDescriptor(operation=CognitiveOperation.READ),
+                    context=MemoryContext(domain_ids=(uuid.uuid4(),)),
+                    policy_key=chave,
+                    moment=_MOMENTO,
+                )
+                assert not uow.session.dirty
+            finally:
+                event.remove(engine, "before_cursor_execute", _contar)
         assert escritas == []
     finally:
         _limpar_policy(chave)

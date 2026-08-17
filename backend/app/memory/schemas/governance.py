@@ -251,6 +251,64 @@ class GovernanceRule:
         return (self.effect.value, self.rule_id)
 
 
+def _contexto_avaliado(
+    domain_ids: object, actor_ref: object, purpose: object
+) -> tuple[tuple[uuid.UUID, ...], str | None, str | None]:
+    """Canonicaliza e valida as dimensões de contexto **efetivamente
+    consumidas** pela governança (corretivo E4.3.4).
+
+    Único ponto de implementação, compartilhado por `GovernanceDecision`
+    e `GovernanceResolution`: duas cópias da mesma regra divergem com o
+    tempo — foi o que a E4.5.1 encontrou ao achar duas verificações da
+    mesma coisa.
+
+    São exatamente as três que `GovernanceRule.matches()` consome.
+    `session_id` **não** entra:
+
+        CONTEXT != SESSION
+        SESSION PRESENCE != AUTHORIZATION
+        SESSION DIFFERENCE != GOVERNANCE DIFFERENCE
+
+    Duas perspectivas que diferem só por sessão podem legitimamente
+    produzir resoluções estruturalmente iguais; acrescentar sessão como
+    se tivesse fundamentado a decisão seria proveniência falsa.
+
+    Acesso direto tipado, sem `getattr`/`hasattr`/reflexão.
+    """
+    if isinstance(domain_ids, str | bytes) or not isinstance(domain_ids, Iterable):
+        raise TypeError(
+            "context_domain_ids deve ser uma coleção de uuid.UUID, recebido "
+            f"{type(domain_ids).__name__}"
+        )
+    itens = tuple(domain_ids)
+    for item in itens:
+        if not isinstance(item, uuid.UUID):
+            raise TypeError(
+                f"context_domain_ids aceita apenas uuid.UUID, recebido " f"{type(item).__name__}"
+            )
+    # Ordenada e desduplicada: a mesma perspectiva declarada em ordens
+    # diferentes é a mesma pergunta, e precisa produzir a mesma decisão
+    # — com o mesmo hash. Isolada da coleção original, porque `frozen`
+    # protege a referência, não o conteúdo.
+    canonicos = tuple(sorted(set(itens)))
+
+    textuais: list[str | None] = []
+    for nome, valor in (("context_actor_ref", actor_ref), ("context_purpose", purpose)):
+        if valor is None:
+            textuais.append(None)
+            continue
+        if not isinstance(valor, str):
+            raise TypeError(f"{nome} deve ser str ou None, recebido {type(valor).__name__}")
+        if not valor.strip():
+            raise ValueError(
+                f"{nome}, quando presente, não pode ser vazio — ausência se declara "
+                "com None, não com espaços"
+            )
+        textuais.append(valor)
+
+    return canonicos, textuais[0], textuais[1]
+
+
 @dataclass(frozen=True)
 class GovernanceDecision:
     """Resultado explicável de uma avaliação. **Não persistido.**
@@ -272,9 +330,9 @@ class GovernanceDecision:
     policy_key: str
     policy_version: int
     policy_id: uuid.UUID
-    context_domain_ids: tuple[uuid.UUID, ...] = ()
-    context_actor_ref: str | None = None
-    context_purpose: str | None = None
+    context_domain_ids: tuple[uuid.UUID, ...]
+    context_actor_ref: str | None
+    context_purpose: str | None
     matched_rule_id: str | None = None
     """Regra que fundamentou o resultado.
 
@@ -286,6 +344,24 @@ class GovernanceDecision:
     reason: str = ""
     """Fundamento em texto, para quem lê o resultado sem o código à
     mão. Descritivo; nunca é o que a máquina consome."""
+
+    def __post_init__(self) -> None:
+        """Endurece as dimensões de contexto (corretivo E4.3.4).
+
+        A baseline oferecia defaults para as três, o que tornava
+        **omissão** indistinguível de contexto explicitamente vazio:
+
+            OMITTED CONTEXT != EXPLICITLY EMPTY CONTEXT
+
+        Agora são obrigatórias. Um contexto legitimamente vazio se
+        declara passando `()`, `None`, `None`.
+        """
+        dominios, ator, proposito = _contexto_avaliado(
+            self.context_domain_ids, self.context_actor_ref, self.context_purpose
+        )
+        object.__setattr__(self, "context_domain_ids", dominios)
+        object.__setattr__(self, "context_actor_ref", ator)
+        object.__setattr__(self, "context_purpose", proposito)
 
     @property
     def is_admissible(self) -> bool:
@@ -336,6 +412,9 @@ class GovernanceResolution:
 
     outcome: GovernanceOutcome
     operation: CognitiveOperation
+    context_domain_ids: tuple[uuid.UUID, ...]
+    context_actor_ref: str | None
+    context_purpose: str | None
     safety_boundary_version: int
     safety_rationale: str = ""
     blocked_capabilities: tuple[CriticalCapability, ...] = ()
@@ -380,6 +459,26 @@ class GovernanceResolution:
             "safety_boundary_version",
             _validated_version("safety_boundary_version", self.safety_boundary_version),
         )
+        # Vínculo com o contexto AVALIADO (corretivo E4.3.4). Sem ele, o
+        # preflight da E4.8 demonstrou que `resolução(D1) ==
+        # resolução(D2)` sob policy curinga: nada na resolução dizia
+        # sobre QUAL pergunta ela respondia.
+        #
+        #     MATCHED RULE ID     != EVALUATED CONTEXT
+        #     POLICY ID           != EVALUATED CONTEXT
+        #     EXECUTION_AUTHORIZED != PROOF OF THE QUESTION THAT WAS AUTHORIZED
+        #
+        # Vale para TODOS os outcomes: `PROHIBITED` e `NOT_APPLICABLE`
+        # não consultam policy local, mas receberam uma pergunta.
+        #
+        #     NO LOCAL POLICY CONSULTED != NO CONTEXT RECEIVED
+        #     CONTEXT BINDING != LOCAL POLICY PROVENANCE
+        dominios, ator, proposito = _contexto_avaliado(
+            self.context_domain_ids, self.context_actor_ref, self.context_purpose
+        )
+        object.__setattr__(self, "context_domain_ids", dominios)
+        object.__setattr__(self, "context_actor_ref", ator)
+        object.__setattr__(self, "context_purpose", proposito)
         object.__setattr__(
             self,
             "blocked_capabilities",
@@ -519,3 +618,49 @@ class GovernanceResolution:
         ```
         """
         return False
+
+
+def resolucao_vincula_contexto(
+    resolution: GovernanceResolution,
+    *,
+    domain_ids: tuple[uuid.UUID, ...],
+    actor_ref: str | None,
+    purpose: str | None,
+) -> tuple[str, ...]:
+    """Motivos pelos quais a resolução **não** corresponde ao contexto
+    solicitado (corretivo E4.3.4).
+
+    Tupla vazia significa fidelidade confirmada.
+
+        REQUESTED CONTEXT MUST EQUAL RESOLVED CONTEXT
+        RESOLUTION EXPLAINS; IT DOES NOT FABRICATE THE QUESTION
+
+    Implementação única, usada pelos managers da E4.6/E4.7 e pelos
+    respectivos value objects — o manager verifica a fronteira, e o
+    value object impede que o construtor público contorne a mesma
+    garantia. Duplicar a comparação faria as duas divergirem.
+
+    Comparação **exata**, sem normalização: `domain_ids` já vem
+    canonicalizado dos dois lados (`MemoryContext` e a própria
+    resolução ordenam e desduplicam), então a igualdade de tupla é
+    comparação de conjunto canônico, não de ordem acidental.
+    """
+    motivos: list[str] = []
+    if resolution.context_domain_ids != domain_ids:
+        motivos.append(
+            f"a resolução foi emitida para os domínios "
+            f"{[str(d) for d in resolution.context_domain_ids]}, mas o contexto "
+            f"solicitado declara {[str(d) for d in domain_ids]}"
+        )
+    if resolution.context_actor_ref != actor_ref:
+        motivos.append(
+            f"a resolução foi emitida para o ator {resolution.context_actor_ref!r}, "
+            f"mas o contexto solicitado declara {actor_ref!r}"
+        )
+    if resolution.context_purpose != purpose:
+        motivos.append(
+            f"a resolução foi emitida para o propósito "
+            f"{resolution.context_purpose!r}, mas o contexto solicitado declara "
+            f"{purpose!r}"
+        )
+    return tuple(motivos)

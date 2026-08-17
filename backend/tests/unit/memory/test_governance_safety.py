@@ -8,7 +8,9 @@ código anterior. Um teste que passasse nos dois lados não provaria
 correção alguma.
 """
 
+import dataclasses
 import inspect
+import pathlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -23,7 +25,12 @@ from app.memory.models.governance_enums import (
 )
 from app.memory.models.governance_policy import GovernancePolicy
 from app.memory.repositories.governance_policy_repository import GovernancePolicyRepository
-from app.memory.schemas.governance import GovernanceResolution, GovernanceRule
+from app.memory.schemas.governance import (
+    GovernanceDecision,
+    GovernanceResolution,
+    GovernanceRule,
+    resolucao_vincula_contexto,
+)
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.services.governance_manager import GovernanceManager
 from app.memory.services.platform_safety_boundary import (
@@ -635,6 +642,9 @@ def test_sb9_preserved_intent_appears_in_a_prohibited_resolution(memory_session)
             engagement=CapabilityEngagement.OPERATIONAL_ENABLEMENT,
         ),
         avaliacao,
+        # Corretivo E4.3.4: o helper passou a receber o contexto, porque
+        # PROHIBITED não consulta policy local mas RECEBEU uma pergunta.
+        MemoryContext(),
     )
 
     assert resolucao.preserved_intent == "proteção de vítimas"
@@ -652,12 +662,27 @@ def test_sb9_preserved_intent_appears_in_a_prohibited_resolution(memory_session)
 # ======================================================================
 
 
+_CONTEXTO_VAZIO: dict = {
+    "context_domain_ids": (),
+    "context_actor_ref": None,
+    "context_purpose": None,
+}
+"""Vínculo de contexto explícito (corretivo E4.3.4).
+
+As três dimensões passaram a ser obrigatórias, porque omissão não podia
+seguir indistinguível de contexto explicitamente vazio:
+
+    OMITTED CONTEXT != EXPLICITLY EMPTY CONTEXT
+"""
+
+
 def _valid_prohibited(**kw) -> GovernanceResolution:
     base = {
         "outcome": GovernanceOutcome.PROHIBITED,
         "operation": CognitiveOperation.READ,
         "safety_boundary_version": PLATFORM_SAFETY_BOUNDARY_VERSION,
         "blocked_capabilities": (CriticalCapability.CHILD_SEXUAL_EXPLOITATION,),
+        **_CONTEXTO_VAZIO,
     }
     base.update(kw)
     return GovernanceResolution(**base)
@@ -672,6 +697,7 @@ def _valid_admissible(**kw) -> GovernanceResolution:
         "policy_version": 1,
         "policy_id": uuid.uuid4(),
         "matched_rule_id": "r",
+        **_CONTEXTO_VAZIO,
     }
     base.update(kw)
     return GovernanceResolution(**base)
@@ -797,6 +823,7 @@ def test_e432_non_prohibited_outcomes_carry_no_blocked_capabilities(outcome):
         "operation": CognitiveOperation.READ,
         "safety_boundary_version": 1,
         "blocked_capabilities": (CriticalCapability.CHILD_SEXUAL_EXPLOITATION,),
+        **_CONTEXTO_VAZIO,
     }
     if outcome is GovernanceOutcome.INADMISSIBLE:
         kw |= {
@@ -814,6 +841,7 @@ def test_e432_prohibited_requires_at_least_one_blocked_capability():
     como auditar nem propor alternativa."""
     with pytest.raises(ValueError, match="ao menos uma capacidade"):
         GovernanceResolution(
+            **_CONTEXTO_VAZIO,
             outcome=GovernanceOutcome.PROHIBITED,
             operation=CognitiveOperation.READ,
             safety_boundary_version=1,
@@ -846,6 +874,7 @@ def test_e432_partial_policy_identity_is_rejected():
     """Identidade de policy é tudo-ou-nada, e regra exige identidade."""
     with pytest.raises(ValueError, match="incompleta"):
         GovernanceResolution(
+            **_CONTEXTO_VAZIO,
             outcome=GovernanceOutcome.NOT_APPLICABLE,
             operation=CognitiveOperation.READ,
             safety_boundary_version=1,
@@ -853,6 +882,7 @@ def test_e432_partial_policy_identity_is_rejected():
         )
     with pytest.raises(ValueError, match="sem identidade de policy"):
         GovernanceResolution(
+            **_CONTEXTO_VAZIO,
             outcome=GovernanceOutcome.NOT_APPLICABLE,
             operation=CognitiveOperation.READ,
             safety_boundary_version=1,
@@ -864,6 +894,7 @@ def test_e432_not_applicable_cites_no_rule():
     """Se nenhuma regra se aplicou, não há regra a citar."""
     with pytest.raises(ValueError, match="não cita regra"):
         GovernanceResolution(
+            **_CONTEXTO_VAZIO,
             outcome=GovernanceOutcome.NOT_APPLICABLE,
             operation=CognitiveOperation.READ,
             safety_boundary_version=1,
@@ -958,3 +989,156 @@ def test_e432_resolutions_from_resolve_remain_valid(memory_session):
     for resolucao in (proibida, admitida, sem_policy):
         assert isinstance(hash(resolucao), int)
         assert isinstance(resolucao.blocked_capabilities, tuple)
+
+
+# ======================================================================
+# E4.3.4 — Governance Resolution Context Binding
+# ======================================================================
+#
+# O preflight da E4.8 provou que, na cadeia 58:
+#
+#     resolution(context=D1) == resolution(context=D2)
+#
+# sob policy curinga. Nada na resolução dizia sobre QUAL pergunta ela
+# respondia:
+#
+#     MATCHED RULE ID      != EVALUATED CONTEXT
+#     POLICY ID            != EVALUATED CONTEXT
+#     EXECUTION_AUTHORIZED != PROOF OF THE QUESTION THAT WAS AUTHORIZED
+
+_D1 = uuid.uuid4()
+_D2 = uuid.uuid4()
+
+
+def test_e434_resolutions_for_different_domains_are_no_longer_equal():
+    """O defeito A, fechado."""
+    a = _valid_admissible(context_domain_ids=(_D1,))
+    b = _valid_admissible(context_domain_ids=(_D2,), policy_id=a.policy_id)
+    assert a != b
+    assert a.context_domain_ids != b.context_domain_ids
+
+
+def test_e434_domain_order_is_canonicalized():
+    """A mesma perspectiva declarada em ordens diferentes é a mesma
+    pergunta — e precisa ter o mesmo hash."""
+    identidade = uuid.uuid4()
+    a = _valid_admissible(context_domain_ids=(_D1, _D2), policy_id=identidade)
+    b = _valid_admissible(context_domain_ids=(_D2, _D1), policy_id=identidade)
+    assert a.context_domain_ids == b.context_domain_ids == tuple(sorted((_D1, _D2)))
+    assert a == b
+    assert hash(a) == hash(b)
+
+
+def test_e434_duplicate_domains_are_deduplicated():
+    resolucao = _valid_admissible(context_domain_ids=(_D1, _D1, _D2))
+    assert resolucao.context_domain_ids == tuple(sorted({_D1, _D2}))
+
+
+def test_e434_external_list_is_isolated_and_becomes_a_tuple():
+    """`frozen` protege a referência, não o conteúdo."""
+    dominios = [_D1]
+    resolucao = _valid_admissible(context_domain_ids=dominios)
+    dominios.append(_D2)
+    assert resolucao.context_domain_ids == (_D1,)
+    assert isinstance(resolucao.context_domain_ids, tuple)
+    assert isinstance(hash(resolucao), int)
+
+
+@pytest.mark.parametrize("invalido", [None, "abc", b"abc", 123, _D1])
+def test_e434_invalid_domain_collections_are_refused(invalido):
+    with pytest.raises(TypeError, match="context_domain_ids"):
+        _valid_admissible(context_domain_ids=invalido)
+
+
+def test_e434_non_uuid_domain_is_refused():
+    with pytest.raises(TypeError, match="apenas uuid.UUID"):
+        _valid_admissible(context_domain_ids=("nao-e-uuid",))
+
+
+@pytest.mark.parametrize("campo", ["context_actor_ref", "context_purpose"])
+@pytest.mark.parametrize(("valor", "excecao"), [(123, TypeError), ("  ", ValueError)])
+def test_e434_actor_and_purpose_are_typed_and_non_blank(campo, valor, excecao):
+    """Ausência se declara com `None`, não com espaços."""
+    with pytest.raises(excecao):
+        _valid_admissible(**{campo: valor})
+
+
+def test_e434_omitting_the_context_arguments_does_not_build():
+    """`OMITTED CONTEXT != EXPLICITLY EMPTY CONTEXT`."""
+    with pytest.raises(TypeError, match="context_domain_ids"):
+        GovernanceResolution(
+            outcome=GovernanceOutcome.NOT_APPLICABLE,
+            operation=CognitiveOperation.READ,
+            safety_boundary_version=PLATFORM_SAFETY_BOUNDARY_VERSION,
+        )
+
+
+def test_e434_explicitly_empty_context_is_valid():
+    resolucao = _valid_admissible()
+    assert resolucao.context_domain_ids == ()
+    assert resolucao.context_actor_ref is None
+    assert resolucao.context_purpose is None
+
+
+def test_e434_decision_enforces_the_same_context_invariants():
+    """`GovernanceDecision` já transportava as três dimensões, mas com
+    defaults — omissão era indistinguível de contexto vazio."""
+    with pytest.raises(TypeError, match="context_domain_ids"):
+        GovernanceDecision(
+            outcome=GovernanceOutcome.ADMISSIBLE,
+            operation=CognitiveOperation.READ,
+            policy_key="p",
+            policy_version=1,
+            policy_id=uuid.uuid4(),
+        )
+    dominios = [_D2, _D1, _D1]
+    decisao = GovernanceDecision(
+        outcome=GovernanceOutcome.ADMISSIBLE,
+        operation=CognitiveOperation.READ,
+        policy_key="p",
+        policy_version=1,
+        policy_id=uuid.uuid4(),
+        context_domain_ids=dominios,
+        context_actor_ref="ana",
+        context_purpose="curadoria",
+        matched_rule_id="r",
+    )
+    dominios.append(uuid.uuid4())
+    assert decisao.context_domain_ids == tuple(sorted({_D1, _D2}))
+    assert isinstance(hash(decisao), int)
+
+
+def test_e434_session_id_is_not_part_of_the_resolution():
+    """`CONTEXT != SESSION`; `SESSION DIFFERENCE != GOVERNANCE DIFFERENCE`.
+
+    `session_id` não participa de `GovernanceRule.matches()`; acrescentá-lo
+    seria proveniência falsa.
+    """
+    campos = {f.name for f in dataclasses.fields(GovernanceResolution)}
+    assert "context_session_id" not in campos
+    assert "session_id" not in campos
+
+
+def test_e434_helper_is_shared_between_decision_and_resolution():
+    """Duas cópias da mesma regra divergem com o tempo — lição da
+    E4.5.1."""
+    import app.memory.schemas.governance as mod
+
+    assert hasattr(mod, "_contexto_avaliado")
+    fonte = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+    assert fonte.count("def _contexto_avaliado(") == 1
+    assert fonte.count("_contexto_avaliado(") >= 3
+
+
+def test_e434_binding_comparison_reports_every_divergence():
+    resolucao = _valid_admissible(
+        context_domain_ids=(_D1,), context_actor_ref="ana", context_purpose="p1"
+    )
+    assert (
+        resolucao_vincula_contexto(resolucao, domain_ids=(_D1,), actor_ref="ana", purpose="p1")
+        == ()
+    )
+    motivos = resolucao_vincula_contexto(
+        resolucao, domain_ids=(_D2,), actor_ref="bob", purpose="p2"
+    )
+    assert len(motivos) == 3
