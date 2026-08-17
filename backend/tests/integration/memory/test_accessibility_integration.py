@@ -799,7 +799,11 @@ def test_ai20_migration_head_is_the_new_one_and_single():
     from alembic.script import ScriptDirectory
 
     heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
-    assert tuple(heads) == ("7b2e4c9a15df",), f"migration head: {heads}"
+    # Atualizado pela E4.9.5: a migração `9d4f1a7c2be8` cria
+    # `erasure_records`, primeira fatia de runtime da E4.9. O head
+    # continua ÚNICO — o que este guarda protege é a ausência de
+    # branching, não a imobilidade.
+    assert tuple(heads) == ("9d4f1a7c2be8",), f"migration head: {heads}"
 
 
 def test_ai21_no_new_column_on_cognitive_object():

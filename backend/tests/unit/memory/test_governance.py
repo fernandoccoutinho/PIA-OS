@@ -1294,6 +1294,22 @@ def test_e435_corrective_created_no_retention_capability():
     )
     metodos_proibidos = ("assess_retention", "dispose", "erase", "forget")
 
+    # Atualizado pela E4.9.5: `ErasureRecord` deixou de ser ausência
+    # e passou a ser primitiva persistente autorizada, em QUATRO
+    # arquivos nomeados. A proibição continua valendo em todo o resto
+    # de `app/memory` — e todas as proibições de RETENÇÃO seguem
+    # intactas, porque a E4.9.5 não criou policy, avaliação nem
+    # disposição.
+    autorizados_e495 = {
+        base / "models" / "erasure_record.py",
+        base / "models" / "erasure_enums.py",
+        base / "models" / "__init__.py",
+        base / "schemas" / "erasure_record.py",
+        base / "repositories" / "erasure_record_repository.py",
+        base / "errors" / "codes.py",
+        base / "errors" / "exceptions.py",
+    }
+
     for arquivo in sorted(base.rglob("*.py")):
         arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
         for no in ast.walk(arvore):
@@ -1310,6 +1326,8 @@ def test_e435_corrective_created_no_retention_capability():
                 ] or [ast.Pass()]
         executavel = ast.unparse(arvore)
         for proibido in proibidos:
+            if proibido == "ErasureRecord" and arquivo in autorizados_e495:
+                continue
             assert not re.search(rf"\b{proibido}\b", executavel), f"{arquivo}: {proibido}"
         for metodo in metodos_proibidos:
             assert not re.search(rf"\bdef {metodo}\b", executavel), f"{arquivo}: def {metodo}"

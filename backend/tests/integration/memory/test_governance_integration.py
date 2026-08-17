@@ -1584,5 +1584,9 @@ def test_gi435_corrective_created_no_table_and_no_migration_head_change():
             sa.text("SELECT to_regclass('public.retention_policies')")
         ).scalar_one()
     assert existe is None
-    assert migrations.head_revision() == "7b2e4c9a15df"
-    assert migrations.current_revision() == "7b2e4c9a15df"
+    # Atualizado pela E4.9.5: o head passou a `9d4f1a7c2be8`
+    # (`erasure_records`). O que este teste protege continua sendo
+    # a AUSÊNCIA de `retention_policies` — asseverada acima e
+    # inalterada: a E4.9.5 não cria policy de retenção.
+    assert migrations.head_revision() == "9d4f1a7c2be8"
+    assert migrations.current_revision() == "9d4f1a7c2be8"

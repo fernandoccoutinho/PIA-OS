@@ -372,3 +372,28 @@ Categoria `SYSTEM`, não `VALIDATION`: chegar aqui não significa pedido
 inválido — isso já foi recusado antes — e sim que colaboradores internos
 discordam entre si. Uma decisão `INADMISSIBLE`, `NOT_APPLICABLE` ou
 `PROHIBITED` é resultado válido de autoridade, **nunca** esta exceção."""
+
+
+PIA_8041_ERASURE_RECORD_IMMUTABLE = ErrorCode(
+    code="PIA-8041",
+    default_message="erasure_record_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de alterar ou remover um recibo de apagamento (`E4.9.5`).
+
+Um `ErasureRecord` é append-only nas três camadas — eventos de mapper,
+repositório e trigger no PostgreSQL. Este código nomeia a recusa das
+duas primeiras.
+
+Não há "corrigir o recibo": ele registra o que foi **observado** numa
+tentativa material. Se a observação estava errada, o fato novo é uma
+observação nova, não a reescrita da anterior — mesma disciplina de
+`PIA-8028` e `PIA-8036` para versões publicadas, com um motivo
+adicional:
+
+```text
+ERASING THE RECEIPT OF AN ERASURE = MAKING DESTRUCTION UNAUDITABLE
+```
+"""

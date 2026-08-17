@@ -61,7 +61,7 @@ modificado.
 | hash de escopo da aprovação | **E4.9** | conceitualmente autorizado pela E4.9.4 com limite duro: `APPROVAL_SCOPE_HASH != CONTENT_HASH` e `!= LOCATOR`. Canonicalização e algoritmo ficam para a implementação |
 | **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6. Direção congelada em A + B pela E4.9.0; **caminho normal DECIDIDO pela E4.9.2** (`CLOSED_CANDIDATE_CONDITIONAL`). A **exceção** que alcança o registro causal permanece aberta por desenho |
 | exceção: obrigação que alcança o próprio registro causal | **EDR próprio, não atribuído** | `EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION` (E4.9.2). Exige EDR jurídico-arquitetural com escopo concreto e autoridade explícita; o sistema **para** com exceção tipada |
-| primitiva de auditoria de apagamento (`ErasureRecord`) | **E4.9** | **AUTORIZADA prospectivamente pela E4.9.0** (`EDR_E4_9_0_ERASURE_AUDIT_PRIMITIVE.md`). `IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED`; nenhuma tabela, migração ou código existe |
+| primitiva de auditoria de apagamento (`ErasureRecord`) | **E4.9** | Autorizada pela E4.9.0 e **IMPLEMENTADA pela E4.9.5** (cadeia 75, migration `9d4f1a7c2be8`): modelo, tabela, repository append-only em três camadas e testes. `IMPLEMENTATION_STATUS = COMPLETE_CANDIDATE`. **Nenhum escritor runtime foi composto** — `ERASURE_RECORD_RUNTIME_WRITER = NOT_COMPOSED`, `ERASURE_EFFECT = NONE` |
 | contrato de alvo e custódia para erasure (`ErasureTargetDescriptor`, portas de resolução e efeito) | **E4.9** | **AUTORIZADO prospectivamente pela E4.9.1** (`EDR_E4_9_1_ERASURE_TARGET_CUSTODY_CONTRACT.md`). `AUTHORIZED_NOT_IMPLEMENTED`; nenhum resolvedor, storage, conector, credencial ou executor existe |
 | Artifact Storage e conectores externos | **não atribuído** | `ARTIFACT_STORAGE = DEFERRED`; a E4.9.1 autorizou o CONTRATO de alvo, não o mecanismo. Sem eles, nenhuma classe de alvo é executável |
 | portabilidade de `MemoryDomain` | **E4.3+** | E4.1 manteve `MEMORY_DOMAIN_SYNC = DEFERRED`: o critério decisivo (*se carregar semântica de acesso, é LOCAL*) só é avaliável depois de Governance existir |
@@ -328,4 +328,26 @@ CONTRACTS CLOSED != MODULE READY
 E4_9_IMPLEMENTATION = NOT_STARTED
 EXCEPTIONAL_CAUSAL_RECORD_ERASURE = DEFERRED_STOP_CONDITION
 POSTHUMOUS_SUCCESSION_AUTHORITY   = SEPARATE_FUTURE_MODULE
+```
+
+**Atualização da E4.9.5 (cadeia 75).** Primeira fatia de **runtime** da
+E4.9. `erasure_records` existe, é append-only em ORM, repositório e
+PostgreSQL, e **ninguém escreve nela**.
+
+```text
+ERASURE_RECORD_FOUNDATION     = COMPLETE_CANDIDATE
+ERASURE_RECORD_RUNTIME_WRITER = NOT_COMPOSED
+ERASURE_EFFECT                = NONE
+E4_9_IMPLEMENTATION           = IN_PROGRESS_NOT_OPERATIONAL
+```
+
+Continuam ausentes em runtime: identidade e autenticação, step-up,
+envelope e registro de aprovação, orquestrador dos cinco estados,
+resolvedor de alvo e portas de efeito, `ArtifactStorage` e conectores,
+`RetentionPolicy` e lixeira.
+
+```text
+ERASURE_RECORD_PERSISTENCE != ERASURE_EXECUTION
+ERASURE_RECORD_PERSISTENCE != DELETION_AUTHORITY
+ERASURE_RECORD_PERSISTENCE != RETENTION_POLICY
 ```

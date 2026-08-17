@@ -57,7 +57,14 @@ _E4_TABLES = (
     # `pi13` continua exigindo o conjunto EXATO de tabelas: o que ele
     # protege é a ausência de tabela NÃO declarada, não a imobilidade do
     # schema entre módulos.
+    #
+    # Atualizado pela E4.9.5: `erasure_records` entra pelo mesmo
+    # critério — primeira fatia de runtime da E4.9, autorizada pelo
+    # prompt canônico. As três tabelas proibidas por `pi13`
+    # (`persistence_records`, `persistence_assessments`,
+    # `memory_items`) continuam ausentes.
     "accessibility_policies",
+    "erasure_records",
     "governance_policies",
     "memory_domain_memberships",
     "memory_domains",

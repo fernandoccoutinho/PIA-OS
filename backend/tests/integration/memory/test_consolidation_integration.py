@@ -700,7 +700,11 @@ def test_ci27_migration_head_is_unchanged_and_single():
     # `accessibility_policies`, entidade persistente autorizada pelo
     # §14 do prompt canônico. O head continua ÚNICO — o que este
     # guarda protege é a ausência de branching, não a imobilidade.
-    assert tuple(heads) == ("7b2e4c9a15df",), f"migration head mudou: {heads}"
+    # Atualizado pela E4.9.5: a migração `9d4f1a7c2be8` cria
+    # `erasure_records`, primeira fatia de runtime da E4.9. O head
+    # continua ÚNICO — o que este guarda protege é a ausência de
+    # branching, não a imobilidade.
+    assert tuple(heads) == ("9d4f1a7c2be8",), f"migration head mudou: {heads}"
 
 
 def test_ci28_no_new_e4_model_or_table_was_introduced():
@@ -714,11 +718,16 @@ def test_ci28_no_new_e4_model_or_table_was_introduced():
         if mapper.class_.__module__.startswith("app.memory")
     }
     # `accessibility_policies` entra pela E4.7 — ver nota acima.
+    # Atualizado pela E4.9.5: `erasure_records` entra como primeira
+    # fatia de runtime da E4.9, autorizada pelo prompt canônico. O
+    # guarda continua exigindo o conjunto EXATO: nada além do
+    # declarado foi introduzido.
     assert tabelas_memoria == {
         "memory_domains",
         "memory_domain_memberships",
         "governance_policies",
         "accessibility_policies",
+        "erasure_records",
     }, tabelas_memoria
     assert not hasattr(memory_models, "ConsolidationRecord")
 

@@ -31,6 +31,7 @@ from app.memory.errors.codes import (
     PIA_8038_ACCESSIBILITY_SUBJECT_NOT_FOUND,
     PIA_8039_ISOLATION_SCOPE_REQUIRED,
     PIA_8040_ISOLATION_CONTRACT_VIOLATION,
+    PIA_8041_ERASURE_RECORD_IMMUTABLE,
 )
 
 
@@ -306,4 +307,33 @@ class IsolationContractViolationError(PIAOSException):
         super().__init__(
             message="contrato de isolamento violado: " + "; ".join(reasons),
             detail={"reasons": list(reasons)},
+        )
+
+
+class ErasureRecordImmutableError(PIAOSException):
+    """Um recibo de apagamento não pode ser alterado nem removido (`E4.9.5`).
+
+    Levantada pelos eventos de mapper e pelo repositório. A terceira
+    camada — a trigger no PostgreSQL — recusa antes de chegar aqui, e
+    é a única que continua valendo em SQL bruto.
+
+    Não existe correção de recibo. Ele registra o que foi observado
+    numa tentativa material; observação nova é registro novo.
+
+    ```text
+    ERASING THE RECEIPT OF AN ERASURE = MAKING DESTRUCTION UNAUDITABLE
+    ```
+    """
+
+    error_code = PIA_8041_ERASURE_RECORD_IMMUTABLE
+
+    def __init__(self, record_id: uuid.UUID | None, operation: str) -> None:
+        self.record_id = record_id
+        self.operation = operation
+        super().__init__(
+            message=(
+                f"ErasureRecord {record_id} é imutável — operação '{operation}' "
+                "recusada; um recibo registra o que foi observado e não se reescreve."
+            ),
+            detail={"record_id": str(record_id) if record_id else None, "operation": operation},
         )

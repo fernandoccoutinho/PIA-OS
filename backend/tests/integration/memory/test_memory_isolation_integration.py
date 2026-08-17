@@ -705,7 +705,11 @@ def test_ii16_no_schema_orm_drift_and_single_head():
     assert [d for d in diferencas if "test_" not in str(d)] == []
 
     heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
-    assert tuple(heads) == ("7b2e4c9a15df",), f"migration head: {heads}"
+    # Atualizado pela E4.9.5: a migração `9d4f1a7c2be8` cria
+    # `erasure_records`, primeira fatia de runtime da E4.9. O head
+    # continua ÚNICO — o que este guarda protege é a ausência de
+    # branching, não a imobilidade.
+    assert tuple(heads) == ("9d4f1a7c2be8",), f"migration head: {heads}"
 
 
 def test_ii17_no_new_table_was_introduced():
