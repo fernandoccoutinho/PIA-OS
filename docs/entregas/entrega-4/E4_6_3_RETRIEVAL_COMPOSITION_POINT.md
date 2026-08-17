@@ -61,11 +61,31 @@ tabela, migração ou código de erro.
 | 11 | retorno não-`bool` falha tipadamente | `_gate_aprova`, `type(...) is not bool` | `test_e463_non_bool_gate_result_fails_typed` (9 casos), `test_ri463_...` (4 casos), controle positivo `..._exact_bool_is_accepted` |
 | 12 | exceção do gate falha tipadamente e preserva causa | `raise ... from exc` | `test_e463_gate_exception_fails_typed_and_preserves_cause`, `..._not_converted_into_an_empty_view`, `test_ri463_...` |
 | 13 | gates distintos em chamadas sucessivas não compartilham estado | parâmetro, nunca atributo | `test_e463_successive_calls_with_different_gates_do_not_share_state`, `..._gate_is_not_stored_on_the_manager`, `test_ri463_...` |
-| 14 | gate não acrescenta nem reordena | forma do `Protocol` | `test_e463_gate_cannot_add_or_reorder_because_of_the_signature`, `..._result_is_always_a_subsequence_of_the_ungated_result` (6 cenários) |
+| 14 | gate não acrescenta nem reordena | forma do `Protocol` | `test_e463_gate_cannot_add_or_reorder_because_of_the_signature`, `..._result_is_always_a_subsequence_of_the_ungated_result` (6 cenários) — **insuficiente na cadeia 68; ver a nota abaixo** |
 | 15 | sem regressão em isolamento, governança e chamadas à Search | — | `test_e463_search_call_count_is_unchanged...`, `..._does_not_duplicate_search_or_governance_calls`, `test_ri463_isolation_e48_is_unaffected...` |
 | 16 | conformidade estática do `Protocol` e cobertura | `tests/static/test_retrieval_gate_port.py` | prova por mypy + `test_e463_real_gate_satisfies_the_protocol_at_runtime`, `..._port_is_exported_by_the_public_ports_package` |
 | — | neutralidade semântica (§5) | — | `test_e463_gate_protocol_carries_no_retention_semantics` (AST), `..._manager_does_not_import_retention_or_erasure` |
 | — | rejeição é transitória e não escreve | — | `test_e463_rejection_is_transitory_and_writes_nothing`, `test_ri463_rejection_writes_nothing_and_is_transitory` (espião de escritas = 0 + estado persistido conferido) |
+
+### Correção posterior — E4.6.3.1
+
+A auditoria independente da cadeia 68 devolveu `E4_6_3_AUDIT = FAIL`. O
+item 14 desta matriz **não provava sua alegação**: devolver apenas
+`bool` impede o colaborador de retornar uma coleção, mas não impede que
+ele **mute o argumento compartilhado** antes da projeção.
+
+```text
+E4_6_3_AUDIT = FAIL   (cadeia 68)
+DEFECT = SHARED MUTABLE REFERENCE AT THE GATE BOUNDARY
+RESOLVED_BY = E4.6.3.1
+RESOLVED_AT_PATCH_CHAIN = 69
+```
+
+Tudo o mais que esta entrega afirma — posição do gate no pipeline,
+injeção por chamada, paginação, fail-closed do retorno e neutralidade
+semântica — foi **aceito pela auditoria** e continua valendo. O relato
+acima é preservado como registro do que a cadeia 68 entregou; o
+corretivo está em `E4_6_3_1_ISOLATED_CANDIDATE_SNAPSHOT.md`.
 
 ---
 

@@ -102,6 +102,81 @@ patrimônio de uma vez.
 """
 
 
+@dataclass(frozen=True, slots=True)
+class _RetrievalCandidateSnapshot:
+    """Cópia **por valor** do candidato, entregue ao `candidate_gate`.
+
+    ## Por que existe (corretivo E4.6.3.1)
+
+    A E4.6.3 entregava ao gate a **própria instância** devolvida pela
+    Search. `CognitiveObjectView` é um `Protocol` de propriedades
+    somente-leitura, o que protege o código tipado comum — e **não**
+    torna o objeto concreto imutável em runtime. A auditoria
+    independente executou um gate que fez `object.__setattr__` no
+    candidato antes de devolver `True`, e o COID fabricado saiu no
+    resultado projetado.
+
+    ```text
+    BOOLEAN RETURN   != IMMUTABLE ARGUMENT
+    SHARED REFERENCE != STRICTLY REDUCTIVE GATE
+    ```
+
+    Em produção o risco é maior: o candidato pode ser uma entidade ORM
+    ligada à `Session`, e sujá-la alcançaria um flush posterior,
+    contradizendo `DATABASE_WRITES = 0`.
+
+    ## O que garante
+
+    O gate recebe **isto**, nunca o hit. Um gate hostil que use
+    `object.__setattr__` contra a cópia altera apenas a cópia, que morre
+    ao fim da iteração.
+
+    ```text
+    GATE_RECEIVES_SNAPSHOT_NOT_SEARCH_HIT = TRUE
+    PROJECTION_SOURCE = ORIGINAL_VALIDATED_HIT
+    SNAPSHOT_MUTATION_EFFECT = NONE_OUTSIDE_GATE
+    ```
+
+    `frozen=True` recusa atribuição normal; `slots=True` impede que um
+    colaborador acrescente atributos novos. Nenhum dos dois impede
+    `object.__setattr__` — e não precisam: o **isolamento por valor** é
+    a fronteira, não a imutabilidade da cópia.
+
+    ## O que NÃO carrega
+
+    Somente os seis valores do contrato, todos imutáveis. Sem payload,
+    conteúdo, `Session`, repositório, relacionamento ORM, callback,
+    objeto de contexto ou coleção mutável — qualquer um deles devolveria
+    ao gate um caminho de volta à entidade real, que é exatamente o que
+    este corretivo fecha.
+
+    **Detecção posterior foi rejeitada.** Comparar impressões digitais
+    depois da chamada deixaria a mutação acontecer, o estado da Session
+    potencialmente sujo e a restauração ambígua.
+
+        ISOLATION BEFORE THE CALL != DAMAGE DETECTION AFTER IT
+    """
+
+    id: uuid.UUID
+    clid: uuid.UUID | None
+    accessibility: str
+    revision_status: str | None
+    created_at: datetime
+    deleted_at: datetime | None
+
+    @staticmethod
+    def de(objeto: CognitiveObjectView) -> "_RetrievalCandidateSnapshot":
+        """Captura os valores do hit **já validado e admitido**."""
+        return _RetrievalCandidateSnapshot(
+            id=objeto.id,
+            clid=objeto.clid,
+            accessibility=objeto.accessibility,
+            revision_status=objeto.revision_status,
+            created_at=objeto.created_at,
+            deleted_at=objeto.deleted_at,
+        )
+
+
 @dataclass(frozen=True)
 class _Escopo:
     """Recorte contextual de domínios, resolvido uma única vez.
@@ -555,7 +630,14 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
     def _gate_aprova(
         candidate_gate: RetrievalCandidateGatePort, objeto: CognitiveObjectView
     ) -> bool:
-        """Consulta o gate **fail-closed** (E4.6.3).
+        """Consulta o gate **fail-closed**, sobre uma cópia isolada.
+
+        O colaborador recebe um `_RetrievalCandidateSnapshot`, nunca o
+        hit da Search (corretivo E4.6.3.1):
+
+        ```text
+        GATE_RECEIVES_SNAPSHOT_NOT_SEARCH_HIT = TRUE
+        ```
 
         Duas falhas possíveis do colaborador, e nenhuma delas pode virar
         decisão silenciosa sobre a vista:
@@ -576,14 +658,22 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         colaborador atravessar a fronteira sem código PIA; engoli-la
         faria o objeto entrar ou sair sem que ninguém decidisse. A causa
         é preservada em `__cause__`.
+
+        **O diagnóstico cita o COID do hit ORIGINAL**, lido antes da
+        chamada. Ler o `id` da cópia depois exibiria um identificador
+        que o próprio colaborador pode ter fabricado.
+
+            ERROR IDENTITY = ORIGINAL COID, NEVER THE COPY'S
         """
+        coid_original = objeto.id
+        snapshot = _RetrievalCandidateSnapshot.de(objeto)
         try:
-            resultado = candidate_gate.allows(objeto)
+            resultado = candidate_gate.allows(snapshot)
         except Exception as exc:
             raise RetrievalContractViolationError(
                 (
                     f"o candidate_gate levantou {type(exc).__name__} ao avaliar o "
-                    f"candidato {objeto.id} — falha de colaborador não é decisão "
+                    f"candidato {coid_original} — falha de colaborador não é decisão "
                     "sobre a vista",
                 )
             ) from exc
@@ -591,7 +681,7 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
             raise RetrievalContractViolationError(
                 (
                     f"o candidate_gate devolveu {type(resultado).__name__} ao avaliar "
-                    f"o candidato {objeto.id}; o contrato exige bool exato — valor "
+                    f"o candidato {coid_original}; o contrato exige bool exato — valor "
                     "truthy/falsy não é resposta",
                 )
             )

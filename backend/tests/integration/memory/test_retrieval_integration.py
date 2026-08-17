@@ -1622,3 +1622,225 @@ def test_ri463_isolation_e48_is_unaffected_and_does_not_expose_a_gate():
 
     assinatura = inspect.signature(MemoryIsolationManager.retrieve_isolated)
     assert "candidate_gate" not in assinatura.parameters
+
+
+# ======================================================================
+# E4.6.3.1 — isolamento contra entidade ORM REAL
+#
+# O que só o banco demonstra: que um gate hostil não suja a `Session`.
+# Um `CognitiveObject` ligado à sessão, mutado pelo colaborador, entraria
+# em `session.dirty` e alcançaria um flush posterior — contradizendo
+# `DATABASE_WRITES = 0` e a natureza transitória do gate.
+# ======================================================================
+
+
+class GateHostilReal:
+    """Reproduz a prova adversarial da auditoria contra o ORM real."""
+
+    def __init__(self, *, tudo: bool = False) -> None:
+        self.fabricado = uuid.uuid4()
+        self.tudo = tudo
+        self.recebidos: list[object] = []
+
+    def allows(self, candidate) -> bool:
+        self.recebidos.append(candidate)
+        object.__setattr__(candidate, "id", self.fabricado)
+        object.__setattr__(candidate, "accessibility", "latent")
+        if self.tudo:
+            object.__setattr__(candidate, "clid", uuid.uuid4())
+            object.__setattr__(candidate, "revision_status", "superseded")
+            object.__setattr__(candidate, "deleted_at", datetime(2030, 1, 1, tzinfo=UTC))
+        return True
+
+
+def test_ri4631_gate_receives_a_snapshot_not_the_orm_entity():
+    """GATE RECEIVES SNAPSHOT, NOT SEARCH HIT"""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(2, trace_id=trace)
+    try:
+        recebidos: list[object] = []
+
+        class Captura:
+            def allows(self, candidate) -> bool:
+                recebidos.append(candidate)
+                return True
+
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=Captura(),
+            )
+            entidades = (
+                uow.session.query(CognitiveObject).filter(CognitiveObject.id.in_(coids)).all()
+            )
+            por_coid = {e.id: e for e in entidades}
+            for visto in recebidos:
+                assert visto is not por_coid[visto.id]
+                assert not isinstance(visto, CognitiveObject)
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri4631_hostile_gate_does_not_dirty_the_session():
+    """O ponto central: `session.dirty` vazio depois da avaliação."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(3, trace_id=trace)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=GateHostilReal(tudo=True),
+            )
+            sujas = list(uow.session.dirty)
+            novas = list(uow.session.new)
+            removidas = list(uow.session.deleted)
+
+        assert sujas == []
+        assert novas == []
+        assert removidas == []
+        assert set(resultado.coids) == set(coids)
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri4631_hostile_gate_produces_no_write_and_no_flush():
+    """Nenhum INSERT/UPDATE/DELETE decorre do gate."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(3, trace_id=trace)
+    escritas: list[str] = []
+
+    def _espiao(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip()[:6].upper() in {"INSERT", "UPDATE", "DELETE"}:
+            escritas.append(statement)
+
+    try:
+        from sqlalchemy import event
+
+        from app.database.engine import engine
+
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            event.listen(engine, "before_cursor_execute", _espiao)
+            try:
+                manager.retrieve(
+                    context=MemoryContext(),
+                    descriptor=_descritor(),
+                    criteria=SearchCriteria(trace_id=trace),
+                    policy_key=chave,
+                    limit=10,
+                    candidate_gate=GateHostilReal(tudo=True),
+                )
+                uow.session.flush()
+            finally:
+                event.remove(engine, "before_cursor_execute", _espiao)
+
+        assert escritas == []
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri4631_persisted_state_is_untouched_after_a_hostile_gate():
+    """O banco não mudou: COIDs, acessibilidade e `deleted_at` intactos."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(3, trace_id=trace)
+    try:
+        gate = GateHostilReal(tudo=True)
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=gate,
+            )
+
+        with UnitOfWork() as uow:
+            linhas = uow.session.execute(
+                sa.text(
+                    "SELECT id, accessibility, revision_status, clid, deleted_at "
+                    "FROM cognitive_objects WHERE id = ANY(:c ::uuid[])"
+                ),
+                {"c": [str(c) for c in coids]},
+            ).all()
+            fabricado = uow.session.execute(
+                sa.text("SELECT COUNT(*) FROM cognitive_objects WHERE id = :i"),
+                {"i": str(gate.fabricado)},
+            ).scalar_one()
+
+        assert len(linhas) == 3
+        for _id, acessibilidade, revisao, clid, apagado in linhas:
+            assert acessibilidade == "active"
+            assert revisao is None
+            assert clid is None
+            assert apagado is None
+        assert fabricado == 0
+        assert gate.fabricado not in set(resultado.coids)
+        assert set(resultado.coids) == set(coids)
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri4631_result_with_hostile_gate_is_a_subsequence_of_the_base_view():
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(5, trace_id=trace)
+    try:
+        ordem = _ordem_canonica(chave, trace)
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=GateHostilReal(),
+            )
+        assert list(resultado.coids) == ordem
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri4631_snapshot_carries_the_real_values_of_the_orm_entity():
+    """O gate decide com os valores ORIGINAIS lidos da entidade real."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    ativos = _criar_objetos(2, trace_id=trace)
+    latentes = _criar_objetos(1, trace_id=trace, accessibility=AccessibilityState.LATENT)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=GateEspiaoReal(lambda c: c.accessibility == "active"),
+            )
+        assert set(resultado.coids) == set(ativos)
+        assert not set(resultado.coids) & set(latentes)
+    finally:
+        _limpar(ativos + latentes, [], [chave])

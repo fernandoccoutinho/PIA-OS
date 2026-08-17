@@ -62,6 +62,38 @@ booleano** não tem por onde acrescentar, reordenar ou transformar.
 THE SHAPE OF THE CONTRACT IS THE GUARANTEE
 ```
 
+### Correção posterior — E4.6.3.1
+
+O parágrafo acima descreve o raciocínio da cadeia 68 e **estava
+parcialmente errado**. A auditoria independente demonstrou que "não tem
+por onde transformar" é falso: devolver apenas `bool` impede retornar
+uma coleção, mas não impede **mutar o argumento compartilhado** antes da
+projeção. Um gate hostil usou `object.__setattr__` no candidato e o COID
+fabricado saiu no resultado.
+
+```text
+BOOLEAN RETURN   != IMMUTABLE ARGUMENT
+SHARED REFERENCE != STRICTLY REDUCTIVE GATE
+```
+
+A formulação `THE SHAPE OF THE CONTRACT IS THE GUARANTEE` fica
+registrada como **overclaim**: a forma do contrato governa o que o
+colaborador pode *devolver*, e o `Protocol` somente-leitura governa o
+código tipado — nenhum dos dois torna a instância concreta imutável em
+runtime.
+
+Formulação normativa que passa a valer:
+
+```text
+CONTRACT SHAPE GOVERNS THE RETURN
+VALUE ISOLATION GOVERNS THE ARGUMENT
+BOTH ARE REQUIRED
+```
+
+Corrigido pelo corretivo **E4.6.3.1** (cadeia 69), que entrega ao gate
+um snapshot imutável por valor. Ver
+`E4_6_3_1_ISOLATED_CANDIDATE_SNAPSHOT.md`.
+
 ---
 
 ## 3. A decisão

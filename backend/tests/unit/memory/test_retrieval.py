@@ -60,6 +60,25 @@ from app.memory.services.retrieval_manager import (
 _BASE = datetime(2024, 1, 1, tzinfo=UTC)
 
 
+def _fonte_executavel_de_metodo(metodo) -> str:
+    """Código-fonte de um **método**, sem docstrings.
+
+    `inspect.getsource` de um método vem indentado e o `ast.parse`
+    recusa, então é preciso desindentar antes. A remoção de docstrings
+    segue a disciplina do `gv16` (E4.3.1): guardas estruturais comparam o
+    código EXECUTÁVEL, porque docstrings citam nominalmente o que o
+    módulo não faz.
+    """
+    import inspect
+    import textwrap
+
+    arvore = ast.parse(textwrap.dedent(inspect.getsource(metodo)))
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Expr) and isinstance(no.value, ast.Constant):
+            no.value = ast.Constant(value="")
+    return ast.unparse(arvore)
+
+
 # --- Dublês -----------------------------------------------------------
 
 
@@ -2286,3 +2305,394 @@ def test_e463_manager_does_not_import_retention_or_erasure():
     for modulo in importados:
         assert "retention" not in modulo
         assert "erasure" not in modulo
+
+
+# ======================================================================
+# E4.6.3.1 — Isolated Immutable Candidate Snapshot
+#
+# A auditoria independente da cadeia 68 mostrou que a garantia da
+# E4.6.3 estava correta na intenção e INCOMPLETA no alcance: devolver
+# apenas `bool` impede retornar uma coleção, mas não impede transformar
+# o argumento compartilhado antes da projeção.
+#
+#     BOOLEAN RETURN   != IMMUTABLE ARGUMENT
+#     SHARED REFERENCE != STRICTLY REDUCTIVE GATE
+#
+# O gate passa a receber um snapshot por valor. Estes testes provam o
+# isolamento por EFEITO OBSERVÁVEL, não por inspeção de assinatura.
+# ======================================================================
+
+
+@dataclasses.dataclass
+class ObjetoMutavel:
+    """Hit de Search **mutável**, como uma entidade ORM real.
+
+    `ObjetoFalso` é `frozen` e por isso não serviria: um dublê imutável
+    esconderia justamente o defeito que a auditoria encontrou.
+    """
+
+    id: uuid.UUID
+    clid: uuid.UUID | None = None
+    accessibility: str = "active"
+    revision_status: str | None = None
+    created_at: datetime = _BASE
+    deleted_at: datetime | None = None
+
+
+class GateHostil:
+    """Reproduz **exatamente** a prova adversarial da auditoria."""
+
+    def __init__(self, *, fabricado: uuid.UUID | None = None, tudo: bool = False) -> None:
+        self.fabricado = fabricado or uuid.uuid4()
+        self.tudo = tudo
+        self.recebidos: list[object] = []
+
+    def allows(self, candidate) -> bool:
+        self.recebidos.append(candidate)
+        object.__setattr__(candidate, "id", self.fabricado)
+        object.__setattr__(candidate, "accessibility", "latent")
+        if self.tudo:
+            object.__setattr__(candidate, "clid", uuid.uuid4())
+            object.__setattr__(candidate, "revision_status", "superseded")
+            object.__setattr__(candidate, "created_at", _BASE + timedelta(days=999))
+            object.__setattr__(candidate, "deleted_at", _BASE + timedelta(days=1))
+        return True
+
+
+def _manager_mutavel(objetos):
+    """Composição com hits MUTÁVEIS."""
+    porta = PortaFalsa(objetos)
+    governanca = GovernanceFalso(_resolucao())
+    manager = MemoryRetrievalManager(porta, governanca, ContextoFalso(), MembershipsFalsas())
+    return manager, porta
+
+
+# --- 15.1 O gate não recebe o hit da Search ---------------------------
+
+
+def test_e4631_gate_receives_an_instance_distinct_from_the_search_hit():
+    """GATE RECEIVES SNAPSHOT, NOT SEARCH HIT"""
+    original = ObjetoMutavel(id=uuid.uuid4())
+    manager, _ = _manager_mutavel([original])
+    gate = GateEspiao()
+    _executar(manager, candidate_gate=gate)
+    # `GateEspiao` guarda só o id; um espião que guarde a instância:
+    recebidos: list[object] = []
+
+    class Captura:
+        def allows(self, candidate) -> bool:
+            recebidos.append(candidate)
+            return True
+
+    manager2, _ = _manager_mutavel([original])
+    _executar(manager2, candidate_gate=Captura())
+    assert recebidos[0] is not original
+
+
+def test_e4631_snapshot_satisfies_the_view_protocol_with_the_original_values():
+    """O snapshot é um `CognitiveObjectView` e carrega os valores do hit
+    **antes** de qualquer callback."""
+    original = ObjetoMutavel(
+        id=uuid.uuid4(),
+        clid=uuid.uuid4(),
+        accessibility="active",
+        revision_status="current",
+        created_at=_BASE + timedelta(minutes=5),
+        deleted_at=None,
+    )
+    recebidos: list[CognitiveObjectView] = []
+
+    class Captura:
+        def allows(self, candidate: CognitiveObjectView) -> bool:
+            recebidos.append(candidate)
+            return True
+
+    manager, _ = _manager_mutavel([original])
+    _executar(manager, candidate_gate=Captura())
+
+    (visto,) = recebidos
+    assert isinstance(visto, CognitiveObjectView)
+    assert visto.id == original.id
+    assert visto.clid == original.clid
+    assert visto.accessibility == original.accessibility
+    assert visto.revision_status == original.revision_status
+    assert visto.created_at == original.created_at
+    assert visto.deleted_at == original.deleted_at
+
+
+def test_e4631_snapshot_refuses_normal_assignment_and_new_attributes():
+    """`frozen=True` recusa atribuição; `slots=True` recusa atributo novo.
+
+    **Nota sobre a exceção do segundo caso.** Uma dataclass
+    `frozen=True, slots=True` é *recriada* pelo decorador, e o
+    `__setattr__` gerado guarda uma referência à classe anterior. Ao
+    tentar atribuir um atributo inexistente, o CPython levanta
+    `TypeError: super(type, obj)...` em vez de `AttributeError`. O teste
+    aceita as três exceções possíveis porque o que importa é **que a
+    atribuição falhe**, não qual exceção o interpretador escolhe.
+
+    E vale dizer o que este teste **não** prova: `object.__setattr__`
+    contorna as duas proteções. A garantia do corretivo não é a
+    imutabilidade da cópia — é o **isolamento por valor**, provado nos
+    testes adversariais abaixo.
+
+        SNAPSHOT IMMUTABILITY != THE GUARANTEE
+        VALUE ISOLATION       =  THE GUARANTEE
+    """
+    capturados: list[object] = []
+
+    class Captura:
+        def allows(self, candidate) -> bool:
+            capturados.append(candidate)
+            return True
+
+    manager, _ = _manager_mutavel([ObjetoMutavel(id=uuid.uuid4())])
+    _executar(manager, candidate_gate=Captura())
+    (instantaneo,) = capturados
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        instantaneo.id = uuid.uuid4()
+    with pytest.raises((AttributeError, TypeError, dataclasses.FrozenInstanceError)):
+        instantaneo.campo_novo = 1
+
+
+def test_e4631_snapshot_carries_no_reference_back_to_the_entity():
+    """Nenhum campo do snapshot é o objeto original, e não há atributo
+    escondido apontando para ele — `slots` torna isso verificável."""
+    original = ObjetoMutavel(id=uuid.uuid4(), clid=uuid.uuid4())
+    capturados: list[object] = []
+
+    class Captura:
+        def allows(self, candidate) -> bool:
+            capturados.append(candidate)
+            return True
+
+    manager, _ = _manager_mutavel([original])
+    _executar(manager, candidate_gate=Captura())
+    (instantaneo,) = capturados
+
+    assert not hasattr(instantaneo, "__dict__")
+    campos = {c.name for c in dataclasses.fields(instantaneo)}
+    assert campos == {
+        "id",
+        "clid",
+        "accessibility",
+        "revision_status",
+        "created_at",
+        "deleted_at",
+    }
+    for nome in campos:
+        assert getattr(instantaneo, nome) is not original
+
+
+# --- 15.2 A prova adversarial da auditoria ----------------------------
+
+
+def test_e4631_adversarial_gate_cannot_alter_the_search_hit():
+    """**Regressão exata da auditoria.** Falha na cadeia 68, passa aqui.
+
+    RESULT.coid = fabricated_id   ← era o que acontecia
+    """
+    original = ObjetoMutavel(id=uuid.uuid4())
+    coid_original = original.id
+    estado_original = original.accessibility
+
+    manager, _ = _manager_mutavel([original])
+    gate = GateHostil()
+    resultado = _executar(manager, limit=10, candidate_gate=gate)
+
+    # o hit da Search permanece intacto
+    assert original.id == coid_original
+    assert original.accessibility == estado_original
+    # o COID fabricado NUNCA aparece
+    assert resultado.items[0].coid == coid_original
+    assert resultado.items[0].coid != gate.fabricado
+    assert resultado.items[0].accessibility == estado_original
+
+
+def test_e4631_adversarial_gate_cannot_alter_any_projected_field():
+    """O gate hostil troca os SEIS campos; nenhum atravessa."""
+    original = ObjetoMutavel(
+        id=uuid.uuid4(),
+        clid=uuid.uuid4(),
+        accessibility="active",
+        revision_status="current",
+        created_at=_BASE,
+        deleted_at=None,
+    )
+    antes = dataclasses.asdict(original)
+
+    manager, _ = _manager_mutavel([original])
+    resultado = _executar(manager, limit=10, candidate_gate=GateHostil(tudo=True))
+
+    assert dataclasses.asdict(original) == antes
+    item = resultado.items[0]
+    assert item.coid == antes["id"]
+    assert item.clid == antes["clid"]
+    assert item.accessibility == antes["accessibility"]
+    assert item.revision_status == antes["revision_status"]
+    assert item.created_at == antes["created_at"]
+
+
+def test_e4631_fabricated_coid_never_appears_in_the_result():
+    objetos = [ObjetoMutavel(id=uuid.uuid4()) for _ in range(4)]
+    fabricado = uuid.uuid4()
+    manager, _ = _manager_mutavel(objetos)
+    resultado = _executar(manager, limit=10, candidate_gate=GateHostil(fabricado=fabricado))
+    assert fabricado not in {i.coid for i in resultado.items}
+    assert [i.coid for i in resultado.items] == [o.id for o in objetos]
+
+
+def test_e4631_result_with_hostile_gate_is_still_a_subsequence_of_the_base_view():
+    """A propriedade que a auditoria mostrou ser violável volta a valer."""
+    objetos = [ObjetoMutavel(id=uuid.uuid4()) for _ in range(5)]
+    manager, _ = _manager_mutavel(objetos)
+    base = [i.coid for i in _executar(manager, limit=10).items]
+
+    manager2, _ = _manager_mutavel(objetos)
+    com_hostil = [i.coid for i in _executar(manager2, limit=10, candidate_gate=GateHostil()).items]
+    assert com_hostil == base
+
+
+def test_e4631_mutating_the_snapshot_does_not_leak_between_candidates():
+    """Cada candidato recebe o próprio snapshot: mutar um não contamina
+    o seguinte."""
+    objetos = [ObjetoMutavel(id=uuid.uuid4()) for _ in range(3)]
+    vistos: list[uuid.UUID] = []
+
+    class Contaminador:
+        def allows(self, candidate) -> bool:
+            vistos.append(candidate.id)
+            object.__setattr__(candidate, "id", uuid.UUID(int=0))
+            return True
+
+    manager, _ = _manager_mutavel(objetos)
+    resultado = _executar(manager, limit=10, candidate_gate=Contaminador())
+    assert vistos == [o.id for o in objetos]
+    assert [i.coid for i in resultado.items] == [o.id for o in objetos]
+
+
+# --- 15.3 Fail-closed preservado, com o COID ORIGINAL -----------------
+
+
+def test_e4631_invalid_return_error_cites_the_original_coid():
+    """Um gate hostil não escolhe o identificador que aparece no erro."""
+    original = ObjetoMutavel(id=uuid.uuid4())
+    fabricado = uuid.uuid4()
+
+    class HostilComRetornoInvalido:
+        def allows(self, candidate):
+            object.__setattr__(candidate, "id", fabricado)
+            return 1
+
+    manager, _ = _manager_mutavel([original])
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager, candidate_gate=HostilComRetornoInvalido())
+    assert str(original.id) in str(exc.value)
+    assert str(fabricado) not in str(exc.value)
+
+
+def test_e4631_exception_error_cites_the_original_coid_and_preserves_cause():
+    original = ObjetoMutavel(id=uuid.uuid4())
+    fabricado = uuid.uuid4()
+    causa = RuntimeError("colaborador quebrou")
+
+    class HostilQueLevanta:
+        def allows(self, candidate):
+            object.__setattr__(candidate, "id", fabricado)
+            raise causa
+
+    manager, _ = _manager_mutavel([original])
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager, candidate_gate=HostilQueLevanta())
+    assert exc.value.__cause__ is causa
+    assert str(original.id) in str(exc.value)
+    assert str(fabricado) not in str(exc.value)
+    # e o hit segue intacto mesmo no caminho de erro
+    assert original.id != fabricado
+
+
+# --- 15.4 Ordem e paginação preservadas -------------------------------
+
+
+def test_e4631_duplicate_is_still_detected_before_the_snapshot():
+    """A duplicata é aferida sobre o COID ORIGINAL, antes de o gate ver
+    qualquer coisa."""
+    objeto = ObjetoMutavel(id=uuid.uuid4())
+    manager, _ = _manager_mutavel([objeto, objeto])
+    gate = GateHostil()
+    with pytest.raises(RetrievalDuplicateCoidError):
+        _executar(manager, limit=5, candidate_gate=gate)
+
+
+def test_e4631_pagination_still_correct_with_a_mutating_gate():
+    """Backfill, `offset`, `limit` e `has_more` seguem contando os
+    aprovados pelos valores ORIGINAIS."""
+    objetos = [ObjetoMutavel(id=uuid.uuid4()) for _ in range(6)]
+    rejeitados = {objetos[0].id, objetos[2].id}
+
+    class RejeitaEMuta:
+        def allows(self, candidate) -> bool:
+            decisao = candidate.id not in rejeitados
+            object.__setattr__(candidate, "id", uuid.uuid4())
+            return decisao
+
+    manager, _ = _manager_mutavel(objetos)
+    resultado = _executar(manager, limit=3, candidate_gate=RejeitaEMuta())
+    assert [i.coid for i in resultado.items] == [
+        objetos[1].id,
+        objetos[3].id,
+        objetos[4].id,
+    ]
+    assert resultado.has_more is True
+
+
+def test_e4631_gate_decides_using_the_original_values():
+    """O snapshot carrega os valores originais, então uma decisão que
+    depende deles continua correta."""
+    ativo = ObjetoMutavel(id=uuid.uuid4(), accessibility="active")
+    latente = ObjetoMutavel(id=uuid.uuid4(), accessibility="latent")
+    manager, _ = _manager_mutavel([ativo, latente])
+    resultado = _executar(
+        manager,
+        limit=10,
+        candidate_gate=GateEspiao(lambda c: c.accessibility == "active"),
+    )
+    assert [i.coid for i in resultado.items] == [ativo.id]
+
+
+def test_e4631_governance_denial_still_hides_everything_from_a_hostile_gate():
+    original = ObjetoMutavel(id=uuid.uuid4())
+    coid = original.id
+    porta = PortaFalsa([original])
+    governanca = GovernanceFalso(_resolucao(outcome=GovernanceOutcome.INADMISSIBLE))
+    manager = MemoryRetrievalManager(porta, governanca, ContextoFalso(), MembershipsFalsas())
+    gate = GateHostil()
+    resultado = _executar(manager, candidate_gate=gate)
+    assert resultado.execution_authorized is False
+    assert gate.recebidos == []
+    assert original.id == coid
+
+
+def test_e4631_successive_calls_do_not_share_snapshots():
+    objetos = [ObjetoMutavel(id=uuid.uuid4()) for _ in range(2)]
+    manager, _ = _manager_mutavel(objetos)
+    _executar(manager, limit=10, candidate_gate=GateHostil(tudo=True))
+    segunda = _executar(manager, limit=10)
+    assert [i.coid for i in segunda.items] == [o.id for o in objetos]
+
+
+# --- 15.5 O snapshot não é fonte de projeção --------------------------
+
+
+def test_e4631_projection_never_reads_the_snapshot():
+    """Prova estrutural: `_projetar` é chamado com o hit original.
+
+    O guarda compara o **código executável** de `_coletar` (AST sem
+    docstrings): a projeção usa `objeto`, e nenhuma variável de snapshot
+    aparece como argumento dela.
+    """
+    fonte = _fonte_executavel_de_metodo(MemoryRetrievalManager._coletar)
+    assert "self._projetar(objeto)" in fonte
+    assert "_projetar(instantaneo" not in fonte
+    assert "_projetar(self._snapshot" not in fonte
