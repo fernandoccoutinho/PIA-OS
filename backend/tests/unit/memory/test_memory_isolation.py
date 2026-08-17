@@ -1585,3 +1585,212 @@ def test_e481_helper_uses_a_stable_policy_id_per_published_version():
     primeira = _resolucao(contexto=_contexto(_D1))
     segunda = _resolucao(contexto=_contexto(_D2))
     assert primeira.policy_id == segunda.policy_id == _POLICY_ID
+
+
+# ======================================================================
+# E4.8.2 — Denied-Path Authority Coherence
+# ======================================================================
+#
+# A E4.8.1 centralizou a coerência numa função pura, mas o manager só a
+# chamava DEPOIS do `return` da recusa atômica. Com isso, um pedido com
+# identidades locais divergentes em que alguma decisão recusava escapava
+# como `ValueError` cru, sem `PIA-8040`.
+#
+# A função pura não estava errada; a POSIÇÃO da chamada estava.
+#
+#     COLLABORATOR DISAGREEMENT != INVALID REQUEST
+
+
+class _GovernancaPorDominio:
+    """Resolve cada domínio conforme um plano explícito.
+
+    Permite montar combinações de outcome e identidade local que o
+    repositório real não produziria, para exercitar a fronteira.
+    """
+
+    def __init__(self, plano: dict) -> None:
+        self.plano = plano
+        self.chamadas: list[uuid.UUID] = []
+
+    def resolve(self, *, descriptor, context, policy_key=None, moment=None):
+        dominio = context.domain_ids[0]
+        self.chamadas.append(dominio)
+        outcome, policy_id, rule = self.plano[dominio]
+        return _res_livre(
+            domain_ids=context.domain_ids,
+            outcome=outcome,
+            policy_id=policy_id if policy_id is not None else _POLICY_ID,
+            matched_rule_id=rule,
+        )
+
+
+def _manager_por_dominio(plano):
+    retrieval = RetrievalFalsa()
+    memberships = MembershipsFalsas({_D1: (), _D2: ()})
+    manager = MemoryIsolationManager(
+        retrieval, _GovernancaPorDominio(plano), ContextoFalso(), memberships
+    )
+    return manager, retrieval, memberships
+
+
+@pytest.mark.parametrize(
+    ("descricao", "plano"),
+    [
+        (
+            "ADMISSIBLE(A) + INADMISSIBLE(B)",
+            {
+                _D1: (GovernanceOutcome.ADMISSIBLE, _POLICY_ID, "r"),
+                _D2: (GovernanceOutcome.INADMISSIBLE, _PID_OUTRO, "r"),
+            },
+        ),
+        (
+            "INADMISSIBLE(A) + INADMISSIBLE(B)",
+            {
+                _D1: (GovernanceOutcome.INADMISSIBLE, _POLICY_ID, "r"),
+                _D2: (GovernanceOutcome.INADMISSIBLE, _PID_OUTRO, "r"),
+            },
+        ),
+        (
+            "INADMISSIBLE(A) + ADMISSIBLE(B)",
+            {
+                _D1: (GovernanceOutcome.INADMISSIBLE, _POLICY_ID, "r"),
+                _D2: (GovernanceOutcome.ADMISSIBLE, _PID_OUTRO, "r"),
+            },
+        ),
+    ],
+)
+def test_e482_divergent_identity_on_the_denied_path_raises_pia_8040(descricao, plano):
+    """`ONE REQUEST != MULTIPLE AUTHORITY PROVENANCES`.
+
+    Vale **independentemente dos outcomes**: o que invalida o pedido é
+    transportar duas identidades locais, não haver ou não uma recusa.
+    """
+    manager, retrieval, memberships = _manager_por_dominio(plano)
+    with pytest.raises(IsolationContractViolationError) as exc:
+        _executar(manager, context=_contexto(_D1, _D2))
+    assert exc.value.code == "PIA-8040"
+    assert any("identidades de policy local diferentes" in m for m in exc.value.reasons)
+    # e nada de patrimônio é tocado antes de confirmar a coerência
+    assert memberships.chamadas == []
+    assert retrieval.chamadas == []
+
+
+def test_e482_divergent_identity_is_never_a_raw_value_error():
+    """O diagnóstico é de colaborador, não de pedido inválido."""
+    manager, _, _ = _manager_por_dominio(
+        {
+            _D1: (GovernanceOutcome.ADMISSIBLE, _POLICY_ID, "r"),
+            _D2: (GovernanceOutcome.INADMISSIBLE, _PID_OUTRO, "r"),
+        }
+    )
+    with pytest.raises(IsolationContractViolationError) as exc:
+        _executar(manager, context=_contexto(_D1, _D2))
+    assert type(exc.value) is IsolationContractViolationError
+    assert exc.value.code == "PIA-8040"
+
+
+def test_e482_same_identity_with_a_refusal_is_a_normal_atomic_denial():
+    """`ADMISSIBLE(A) + INADMISSIBLE(A)` continua recusa atômica."""
+    manager, retrieval, memberships = _manager_por_dominio(
+        {
+            _D1: (GovernanceOutcome.ADMISSIBLE, _POLICY_ID, "r"),
+            _D2: (GovernanceOutcome.INADMISSIBLE, _POLICY_ID, "r"),
+        }
+    )
+    resultado = _executar(manager, context=_contexto(_D1, _D2))
+    assert resultado.authorized is False
+    assert resultado.retrieval is None
+    assert resultado.refused_domain_ids == (_D2,)
+    assert memberships.chamadas == []
+    assert retrieval.chamadas == []
+
+
+def test_e482_admissible_plus_prohibited_remains_valid():
+    """`PROHIBITED` não carrega proveniência local, então não há duas
+    identidades — a fronteira simplesmente não consultou policy."""
+    manager, retrieval, _ = _manager_por_dominio(
+        {
+            _D1: (GovernanceOutcome.ADMISSIBLE, _POLICY_ID, "r"),
+            _D2: (GovernanceOutcome.PROHIBITED, None, "r"),
+        }
+    )
+    resultado = _executar(manager, context=_contexto(_D1, _D2))
+    assert resultado.authorized is False
+    assert resultado.retrieval is None
+    assert retrieval.chamadas == []
+
+
+def test_e482_different_matched_rules_of_the_same_version_remain_valid():
+    """`MATCHED RULE != POLICY IDENTITY`, também no caminho recusado."""
+    manager, _, _ = _manager_por_dominio(
+        {
+            _D1: (GovernanceOutcome.ADMISSIBLE, _POLICY_ID, "regra-a"),
+            _D2: (GovernanceOutcome.INADMISSIBLE, _POLICY_ID, "regra-b"),
+        }
+    )
+    resultado = _executar(manager, context=_contexto(_D1, _D2))
+    assert resultado.authorized is False
+    assert resultado.retrieval is None
+
+
+def test_e482_direct_constructor_still_raises_value_error():
+    """O value object continua levantando `ValueError` — a distinção de
+    categoria entre manager e construtor é deliberada."""
+    contexto = _contexto(_D1, _D2)
+    decisoes = tuple(
+        sorted(
+            (
+                DomainIsolationDecision(domain_id=_D1, resolution=_res_livre(domain_ids=(_D1,))),
+                DomainIsolationDecision(
+                    domain_id=_D2,
+                    resolution=_res_livre(
+                        domain_ids=(_D2,),
+                        outcome=GovernanceOutcome.INADMISSIBLE,
+                        policy_id=_PID_OUTRO,
+                    ),
+                ),
+            ),
+            key=lambda d: d.domain_id,
+        )
+    )
+    with pytest.raises(ValueError) as exc:
+        MemoryIsolationResult(context=contexto, decisions=decisoes, evaluated_at=_MOMENTO)
+    assert type(exc.value) is ValueError
+    assert "identidades de policy local diferentes" in str(exc.value)
+
+
+def test_e482_coherence_is_checked_before_the_atomic_refusal_branch():
+    """A ordem é o que o corretivo estabelece.
+
+    Prova estrutural: no corpo de `retrieve_isolated`, a chamada a
+    `_verificar_coerencia` com `apenas_decisoes=True` aparece **antes**
+    do ramo `if not all(d.authorized ...)`.
+    """
+    import app.memory.services.memory_isolation_manager as manager_mod
+
+    fonte = pathlib.Path(manager_mod.__file__).read_text(encoding="utf-8")
+    corpo = fonte[fonte.index("def retrieve_isolated(") :]
+    corpo = corpo[: corpo.index("    @staticmethod")]
+    posicao_verificacao = corpo.index("apenas_decisoes=True")
+    posicao_ramo = corpo.index("if not all(d.authorized for d in decisoes):")
+    assert (
+        posicao_verificacao < posicao_ramo
+    ), "a coerência precisa ser verificada antes do ramo de recusa atômica"
+
+
+def test_e482_no_second_coherence_implementation_was_created():
+    """Nenhuma segunda implementação da regra, e nenhuma comparação de
+    identidade feita à mão no manager."""
+    import app.memory.schemas.isolation as schema_mod
+    import app.memory.services.memory_isolation_manager as manager_mod
+
+    fonte_schema = pathlib.Path(schema_mod.__file__).read_text(encoding="utf-8")
+    fonte_manager = pathlib.Path(manager_mod.__file__).read_text(encoding="utf-8")
+    assert fonte_schema.count("def verificar_coerencia_resultado_isolado(") == 1
+    assert "def verificar_coerencia_resultado_isolado(" not in fonte_manager
+    for proibido in ("policy_version", "policy_id", "_identidade_local"):
+        assert proibido not in fonte_manager, f"o manager compara {proibido} por conta própria"
+    # e a chamada redundante foi removida: exatamente duas no fluxo
+    corpo = fonte_manager[fonte_manager.index("def retrieve_isolated(") :]
+    corpo = corpo[: corpo.index("    @staticmethod")]
+    assert corpo.count("self._verificar_coerencia(") == 2

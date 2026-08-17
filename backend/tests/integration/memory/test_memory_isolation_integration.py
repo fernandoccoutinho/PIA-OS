@@ -920,3 +920,123 @@ def test_ii21_faithful_wrapper_control_still_passes():
         assert set(resultado.retrieval.coids) == {a}
     finally:
         _limpar([a], [d1], [chave])
+
+
+class _GovernancaComIdentidadeDivergente:
+    """Chama o `GovernanceManager` real e troca o `policy_id` do segundo
+    domínio resolvido.
+
+    A resolução continua legítima em tudo o mais — outcome, operação,
+    contexto vinculado. O que diverge é a identidade da autoridade
+    local, e é isso que o corretivo E4.8.2 recusa mesmo quando alguma
+    decisão já recusa por policy.
+    """
+
+    def __init__(self, real: GovernanceManager, *, outcome_do_segundo=None) -> None:
+        self._real = real
+        self._outcome_do_segundo = outcome_do_segundo
+        self.chamadas = 0
+
+    def resolve(self, *, descriptor, context, policy_key=None, moment=None):
+        self.chamadas += 1
+        resolucao = self._real.resolve(
+            descriptor=descriptor,
+            context=context,
+            policy_key=policy_key,
+            moment=moment,
+        )
+        if self.chamadas == 1:
+            return resolucao
+        return dataclasses.replace(resolucao, policy_id=uuid.UUID(int=4242))
+
+
+def test_ii22_divergent_identity_on_the_denied_path_raises_pia_8040():
+    """Defeito da E4.8.2 contra o banco real: o `ValueError` cru virou
+    `PIA-8040`, e nada de patrimônio é lido."""
+    trace = _trace()
+    a, b = _criar_objeto(trace), _criar_objeto(trace)
+    d1, d2 = _criar_dominio(), _criar_dominio()
+    _associar(d1, a)
+    _associar(d2, b)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar(chave)
+    try:
+        escritas: list[str] = []
+
+        def _contar(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "TRUNCATE")):
+                escritas.append(statement)
+
+        with UnitOfWork() as uow:
+            engine = uow.session.get_bind()
+            sa.event.listen(engine, "before_cursor_execute", _contar)
+            try:
+                retrieval = MemoryRetrievalManager(
+                    SearchEngine(SearchRepository(uow.session)),
+                    GovernanceManager(GovernancePolicyRepository(uow.session)),
+                    ContextManager(MemoryDomainRepository(uow.session)),
+                    MemoryDomainMembershipRepository(uow.session),
+                )
+                governanca = _GovernancaComIdentidadeDivergente(
+                    GovernanceManager(GovernancePolicyRepository(uow.session))
+                )
+                manager = MemoryIsolationManager(
+                    retrieval,
+                    governanca,
+                    ContextManager(MemoryDomainRepository(uow.session)),
+                    MemoryDomainMembershipRepository(uow.session),
+                )
+                with pytest.raises(IsolationContractViolationError) as exc:
+                    manager.retrieve_isolated(
+                        context=MemoryContext(domain_ids=(d1, d2)),
+                        descriptor=_descritor(),
+                        criteria=SearchCriteria(trace_id=trace),
+                        policy_key=chave,
+                        moment=_MOMENTO,
+                    )
+                assert not uow.session.dirty
+                uow.session.flush()
+            finally:
+                sa.event.remove(engine, "before_cursor_execute", _contar)
+
+        assert exc.value.code == "PIA-8040"
+        assert any("identidades de policy local diferentes" in m for m in exc.value.reasons)
+        assert governanca.chamadas == 2
+        assert escritas == []
+    finally:
+        _limpar([a, b], [d1, d2], [chave])
+
+
+def test_ii23_real_denied_path_with_one_identity_stays_a_normal_refusal():
+    """Controle: policy real que admite só `D1` recusa atomicamente, com
+    uma única identidade local — sem `PIA-8040`."""
+    trace = _trace()
+    a, b = _criar_objeto(trace), _criar_objeto(trace)
+    d1, d2 = _criar_dominio(), _criar_dominio()
+    _associar(d1, a)
+    _associar(d2, b)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar(chave, dominios=(d1,))
+    try:
+        with UnitOfWork() as uow:
+            resultado = _isolar(
+                uow.session,
+                MemoryContext(domain_ids=(d1, d2)),
+                chave,
+                trace_id=trace,
+            )
+        assert resultado.authorized is False
+        assert resultado.retrieval is None
+        assert resultado.refused_domain_ids == (d2,)
+        identidades = {
+            (
+                d.resolution.policy_key,
+                d.resolution.policy_version,
+                d.resolution.policy_id,
+            )
+            for d in resultado.decisions
+            if d.resolution.policy_id is not None
+        }
+        assert len(identidades) == 1
+    finally:
+        _limpar([a, b], [d1, d2], [chave])

@@ -163,6 +163,26 @@ class MemoryIsolationManager(Generic[CriteriaT_contra]):
             for domain_id in sorted(context.domain_ids)
         )
 
+        # Coerência entre as decisões IMEDIATAMENTE após produzi-las e
+        # ANTES do ramo de recusa atômica (corretivo E4.8.2).
+        #
+        # A E4.8.1 colocou esta chamada depois do `return` da recusa, e
+        # com isso a função compartilhada só era usada quando TODAS as
+        # decisões autorizavam: um pedido com identidades locais
+        # divergentes em que alguma decisão recusava escapava como
+        # `ValueError` cru, sem `PIA-8040`.
+        #
+        # A função pura não estava errada; a POSIÇÃO da chamada estava.
+        #
+        #     COLLABORATOR DISAGREEMENT != INVALID REQUEST
+        #     ONE REQUEST != MULTIPLE AUTHORITY PROVENANCES
+        #
+        # Identidades divergentes invalidam o pedido independentemente
+        # dos outcomes — e nada de patrimônio é lido antes disso.
+        self._verificar_coerencia(
+            context=context, decisoes=decisoes, resultado=None, apenas_decisoes=True
+        )
+
         if not all(d.authorized for d in decisoes):
             # Recusa atômica. Nenhuma membership é lida, nenhuma
             # Retrieval é executada, e o contexto NÃO é estreitado
@@ -178,14 +198,6 @@ class MemoryIsolationManager(Generic[CriteriaT_contra]):
                 },
             )
             return MemoryIsolationResult(context=context, decisions=decisoes, evaluated_at=instante)
-
-        # Coerência entre as decisões ANTES do snapshot: identidades de
-        # policy divergentes já invalidam o pedido, e ler memberships
-        # depois disso seria tocar patrimônio sob autoridade incoerente
-        # (corretivo E4.8.1).
-        self._verificar_coerencia(
-            context=context, decisoes=decisoes, resultado=None, apenas_decisoes=True
-        )
 
         # Snapshot capturado SOMENTE depois da autoridade, e uma vez.
         # Garantia conservadora no instante observado: sem lock de

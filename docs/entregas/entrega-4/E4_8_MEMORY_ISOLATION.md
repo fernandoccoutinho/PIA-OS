@@ -394,3 +394,120 @@ Repassar o mesmo `moment` continua necessário — e é o que impede a
 composição por versões diferentes na prática —, mas a garantia
 verificável é de identidade, não temporal. A garantia geral do módulo
 permanece **application-level, explicit-scope, read-path**.
+
+---
+
+## 13. Corretivo E4.8.2 — Denied-Path Authority Coherence
+
+**Patch 63.** A auditoria encontrou que a verificação de coerência
+introduzida pela E4.8.1 só era exercida quando **todas** as decisões
+autorizavam.
+
+### 13.1 Reprodução contra a cadeia 62
+
+Pedido com dois domínios sob a mesma `policy_key` e o mesmo `moment`:
+
+```text
+D1 → ADMISSIBLE,   policy_key=K, version=1, policy_id=A
+D2 → INADMISSIBLE, policy_key=K, version=1, policy_id=B   (A != B)
+```
+
+Executado pelo caminho público `retrieve_isolated(...)`:
+
+```text
+EXCEPTION_TYPE = ValueError
+code           = None
+IS_PIA_8040    = FALSE
+memberships    = 0
+retrieval      = 0
+```
+
+O mesmo com `INADMISSIBLE(A) + INADMISSIBLE(B)`.
+
+### 13.2 Causa-raiz
+
+No corpo de `retrieve_isolated()` da cadeia 62:
+
+1. as decisões eram produzidas;
+2. o ramo `if not all(d.authorized ...)` **retornava**;
+3. `_verificar_coerencia(..., apenas_decisoes=True)` aparecia só
+   **depois** desse retorno.
+
+A incoerência era então detectada pelo `__post_init__` do value object —
+corretamente, mas como `ValueError` cru, sem o diagnóstico do caminho
+canônico.
+
+**A função pura não estava errada. A posição da chamada estava.**
+
+Registro isso como erro meu de sequenciamento: ao mover a verificação
+para "antes do snapshot" na E4.8.1, coloquei-a depois de um `return` que
+já existia, e nenhum teste da E4.8.1 cobria o caminho recusado com
+identidades divergentes.
+
+### 13.3 Correção
+
+Ordem agora exigida e implementada:
+
+```text
+1. produzir todas as decisões
+2. verificar coerência contextual e identidade comum das decisões
+3. se incoerentes → PIA-8040
+4. se coerentes e alguma não autoriza → recusa atômica normal
+5. se todas autorizam → snapshot, Retrieval e verificação final
+```
+
+A chamada anterior, que ficava antes do snapshot, tornou-se redundante e
+foi **removida**. Restam exatamente duas no fluxo: a das decisões e a
+final, sobre o resultado da Retrieval.
+
+Nenhuma segunda função foi criada, e o manager continua sem comparar
+`policy_key`, `policy_version` ou `policy_id` por conta própria — há
+teste estrutural provando ambas as coisas, e outro provando a **ordem**
+das chamadas dentro do método.
+
+### 13.4 Semântica congelada
+
+`PIA-8040` para identidades locais divergentes **independentemente dos
+outcomes** — `ADMISSIBLE+INADMISSIBLE`, `INADMISSIBLE+INADMISSIBLE`, e
+qualquer combinação que transporte duas identidades locais.
+
+Continuam legítimos, com teste cada um:
+
+- `ADMISSIBLE + INADMISSIBLE` com a **mesma** identidade → recusa
+  atômica normal;
+- `ADMISSIBLE + PROHIBITED` → `PROHIBITED` não carrega proveniência
+  local, então não há duas identidades;
+- `matched_rule_id` diferentes da mesma versão → válido;
+- construtor direto de `MemoryIsolationResult` → continua `ValueError`.
+
+Nenhuma membership ou Retrieval é consultada antes de confirmar a
+coerência — provado com contadores nos dublês e com listener SQL contra
+o banco real.
+
+### 13.5 Classificação contra a cadeia 62
+
+```text
+FAILS_ON_CHAIN_62_BY_BEHAVIOR ......... 5
+PASSES_ON_BOTH_SIDES_AS_GUARD ......... 7
+FAILS_ONLY_BY_NEW_SYMBOL_OR_IMPORT .... 0
+```
+
+Os testes do defeito coletam e falham por comportamento na cadeia 62.
+
+### 13.6 Resultados
+
+```text
+FULL_SUITE = 2291 passed / 1 skipped / 0 failed   (candidata: 2279)
+RAW_SUITE  = 1957 passed / 335 skipped / 0 failed
+E4.8 = 146 (era 134)   demais módulos delta 0
+
+GLOBAL_COVERAGE = 99,13%   (inalterado)
+APP_MEMORY = 100%   APP_COGNITIVE = 100%
+RUFF = PASS   BLACK = PASS (`black --check .`, black 24.10.0)
+MYPY_NEW_ERRORS = 0   ALEMBIC_SINGLE_HEAD = 7b2e4c9a15df
+NEW_ERROR_CODE = NO   NEW_MIGRATION = NO   E3_MODIFIED = NO
+```
+
+Produção: **um único arquivo**,
+`backend/app/memory/services/memory_isolation_manager.py`. A função pura
+não precisou mudar.
