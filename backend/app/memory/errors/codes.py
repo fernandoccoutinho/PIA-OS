@@ -397,3 +397,33 @@ adicional:
 ERASING THE RECEIPT OF AN ERASURE = MAKING DESTRUCTION UNAUDITABLE
 ```
 """
+
+
+PIA_8042_RETENTION_POLICY_VERSION_EXISTS = ErrorCode(
+    code="PIA-8042",
+    default_message="retention_policy_version_exists",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""A versão de `RetentionPolicy` já existe (`E4.9.6`).
+
+Recusa determinística, nunca absorção silenciosa como idempotência —
+mesmo padrão de `PIA-8027` e `PIA-8035`. Sobrescrever a versão
+apagaria a regra sob a qual itens se tornaram elegíveis a avaliação, e
+a pergunta "sob qual regra isto foi avaliado?" deixaria de ter
+resposta.
+"""
+
+PIA_8043_RETENTION_POLICY_IMMUTABLE = ErrorCode(
+    code="PIA-8043",
+    default_message="retention_policy_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de alterar ou remover uma versão publicada (`E4.9.6`).
+
+Correção semântica cria versão nova. Vale aqui a mesma disciplina de
+`PIA-8028`, `PIA-8036` e `PIA-8041`.
+"""

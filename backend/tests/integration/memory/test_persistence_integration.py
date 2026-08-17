@@ -63,8 +63,11 @@ _E4_TABLES = (
     # prompt canônico. As três tabelas proibidas por `pi13`
     # (`persistence_records`, `persistence_assessments`,
     # `memory_items`) continuam ausentes.
+    # Atualizado pela E4.9.6: `retention_policies` entra pelo mesmo
+    # critério. As três tabelas proibidas por `pi13` continuam ausentes.
     "accessibility_policies",
     "erasure_records",
+    "retention_policies",
     "governance_policies",
     "memory_domain_memberships",
     "memory_domains",

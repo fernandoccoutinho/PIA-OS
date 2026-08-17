@@ -431,8 +431,13 @@ def test_i20_trio_de_retencao_completo_aceito():
 
 def test_i21_round_trip_da_migration():
     """upgrade → downgrade → upgrade, removendo trigger e função."""
+    # Atualizado pela E4.9.6: `erasure_records` deixou de ser a última
+    # migração, então `downgrade -1` agora remove `retention_policies`.
+    # Descer DUAS revisões é o que exercita de novo o round trip desta
+    # tabela — e o teste continua provando o mesmo: a tabela some, a
+    # função não fica órfã, e o reupgrade restaura tudo.
     migrations.upgrade("head")
-    migrations.downgrade("-1")
+    migrations.downgrade("-2")
 
     with engine.connect() as conn:
         assert conn.execute(sa.text("SELECT to_regclass('erasure_records')")).scalar() is None
@@ -453,8 +458,9 @@ def test_i21_round_trip_da_migration():
 
 
 def test_i22_single_head():
-    assert migrations.head_revision() == "9d4f1a7c2be8"
-    assert migrations.current_revision() == "9d4f1a7c2be8"
+    # Atualizado pela E4.9.6 — head único, agora `c8a3f5017e94`.
+    assert migrations.head_revision() == "c8a3f5017e94"
+    assert migrations.current_revision() == "c8a3f5017e94"
 
 
 # --- Guardas do §15.3 ----------------------------------------------------

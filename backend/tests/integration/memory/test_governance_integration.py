@@ -1577,16 +1577,21 @@ def test_gi435_new_operation_round_trips_through_postgresql(operacao):
 
 
 def test_gi435_corrective_created_no_table_and_no_migration_head_change():
-    """§14.3: nada de tabela ou migração. `retention_policies` não
-    existe, e o head do Alembic é o mesmo da cadeia 63."""
+    """§14.3: o corretivo da E4.3.5 é vocabulário — não criou tabela
+    nem migração.
+
+    Atualizado pela E4.9.6. Até a cadeia 75 este teste asseverava a
+    AUSÊNCIA de `retention_policies`; a tabela passou a existir pela
+    migração `c8a3f5017e94`, autorizada pelo prompt canônico da
+    E4.9.6. O que continua protegido é a **autoria**: a tabela foi
+    criada por aquela fatia, não por este corretivo — e o guarda
+    irmão `test_e435_production_diff_is_confined_to_the_enum_module`
+    segue provando que a E4.3.5 não tocou produção além do enum.
+    """
     with UnitOfWork() as uow:
         existe = uow.session.execute(
             sa.text("SELECT to_regclass('public.retention_policies')")
         ).scalar_one()
-    assert existe is None
-    # Atualizado pela E4.9.5: o head passou a `9d4f1a7c2be8`
-    # (`erasure_records`). O que este teste protege continua sendo
-    # a AUSÊNCIA de `retention_policies` — asseverada acima e
-    # inalterada: a E4.9.5 não cria policy de retenção.
-    assert migrations.head_revision() == "9d4f1a7c2be8"
-    assert migrations.current_revision() == "9d4f1a7c2be8"
+    assert existe is not None
+    assert migrations.head_revision() == "c8a3f5017e94"
+    assert migrations.current_revision() == "c8a3f5017e94"

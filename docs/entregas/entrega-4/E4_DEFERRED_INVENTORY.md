@@ -41,7 +41,7 @@ modificado.
 | ~~campos de `MemoryContext`~~ | **RESOLVIDO em E4.2** | `domain_ids` + `session_id?` + `actor_ref?` + `purpose?`; nada mais |
 | forma de expressão de `rules` de policy | E4.3 (Governance) | Stop Condition 12 — não escolher motor por conveniência |
 | motor de policy (OPA / Cedar / DSL) | E4.3+ (Governance) | a semântica precede a ferramenta |
-| `on_expiry_action` de retenção | E4.9 | o preflight devolveu `ON_EXPIRY_ACTION_UNRESOLVED`. **DECIDIDO pela E4.9.3** (cadeia 72): expiração inicia avaliação, nunca apagamento — `CLOSED_CANDIDATE_BY_AUTHORIZATION` |
+| `on_expiry_action` de retenção | E4.9 | decidido pela E4.9.3 e **MATERIALIZADO pela E4.9.6** (cadeia 76, migration `c8a3f5017e94`) como `RetentionExpiryAction.ASSESS_AND_INFORM` — enum de **um único membro**, para que ampliar exija contrato novo. `RETENTION_EVALUATOR = NOT_COMPOSED`: a policy diz quando avaliar, e nada avalia |
 | lixeira reversível, segmentação da Biblioteca Cognitiva e pastas editáveis | **E4.9** | **AUTORIZADAS pela E4.9.3** (`EDR_E4_9_3_DELETE_TIMING_TRASH_DISPOSITIONS.md`). `AUTHORIZED_NOT_IMPLEMENTED`; nenhuma lixeira, pasta, busca ou interface existe |
 | nota qualitativa de revisão por transição de versão | **E4.9** | **AUTORIZADA pela E4.9.3**. Nasce durante a revisão, sobrevive ao apagamento e não pode reconstruir conteúdo. `AUTHORIZED_NOT_IMPLEMENTED` |
 | estado `VALIDATED_CURRENT` (artefato canônico) | **EDR próprio, não atribuído** | conceito autorizado pela E4.9.3, **sem lastro no schema**: `RevisionStatus` tem só `current` e `superseded`. Materializá-lo toca a E3 congelada |
@@ -351,3 +351,31 @@ ERASURE_RECORD_PERSISTENCE != ERASURE_EXECUTION
 ERASURE_RECORD_PERSISTENCE != DELETION_AUTHORITY
 ERASURE_RECORD_PERSISTENCE != RETENTION_POLICY
 ```
+
+**Atualização da E4.9.6 (cadeia 76).** Segunda fatia de **runtime**.
+`retention_policies` existe, é versionada e append-only em ORM,
+repositório e PostgreSQL — e **ninguém a lê para agir**.
+
+```text
+RETENTION_POLICY_RUNTIME      = PERSISTED_LOCAL_VERSIONED
+EXPIRY_BEHAVIOR               = ASSESS_AND_INFORM_ONLY
+RETENTION_EVALUATOR           = NOT_COMPOSED
+TRASH_RUNTIME                 = NONE
+DESTRUCTIVE_EFFECT            = NONE
+ERASURE_RECORD_RUNTIME_WRITER = NOT_COMPOSED
+```
+
+A âncora é `created_at`, única desta versão: o preflight mediu que
+`updated_at` se move por transição de acessibilidade, e ancorar
+retenção nele faria um objeto reclassificado rejuvenescer.
+
+```text
+RETENTION_POLICY_PERSISTENCE != RETENTION_EVALUATION
+RETENTION_EVALUATION         != USER_DECISION
+USER_DECISION                != DESTRUCTIVE_EXECUTION
+```
+
+Continuam deferidos: avaliação, lixeira, seleção por tamanho/data,
+identidade e step-up, envelope e registro de aprovação, orquestrador
+dos cinco estados, resolvedor de alvo, `ArtifactStorage`, conectores,
+parser de texto e voz.

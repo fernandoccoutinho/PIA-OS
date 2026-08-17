@@ -156,13 +156,17 @@ def test_s07_a_primitiva_nao_menciona_efeito_destrutivo() -> None:
 
 def test_s08_target_resolver_effect_approval_e_retention_continuam_ausentes() -> None:
     """A fatia não antecipou nenhuma das fundações seguintes."""
+    # Atualizado pela E4.9.6: `RetentionPolicy` saiu da lista porque
+    # passou a existir como primitiva persistente autorizada. A guarda
+    # fez exatamente o que devia — acusou a chegada da fatia seguinte.
+    # As demais continuam ausentes, e o próprio isolamento da retenção
+    # é provado em `test_retention_policy_isolation.py`.
     ausentes = (
         "ErasureEffectPort",
         "ErasureTargetResolverPort",
         "ErasureTargetDescriptor",
         "DestructiveApprovalEnvelope",
         "ApprovalRecord",
-        "RetentionPolicy",
     )
     encontrados: list[str] = []
     for arquivo in _fontes():

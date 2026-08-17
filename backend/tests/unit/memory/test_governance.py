@@ -1310,6 +1310,25 @@ def test_e435_corrective_created_no_retention_capability():
         base / "errors" / "exceptions.py",
     }
 
+    # Atualizado pela E4.9.6: `RetentionPolicy`, `RetentionRule` e
+    # `retention_policies` deixaram de ser ausência e passaram a ser
+    # primitiva persistente autorizada, em arquivos NOMEADOS. A
+    # proibição continua valendo em todo o resto de `app/memory`, e as
+    # proibições de AVALIAÇÃO e DISPOSIÇÃO (`RetentionAssessment`,
+    # `RetentionDecision`, `assess_retention`, `dispose`, `erase`,
+    # `forget`) seguem INTACTAS em todos os arquivos — inclusive
+    # nestes: a E4.9.6 persiste a regra, não a executa.
+    autorizados_e496 = {
+        base / "models" / "retention_policy.py",
+        base / "models" / "retention_enums.py",
+        base / "models" / "__init__.py",
+        base / "schemas" / "retention.py",
+        base / "repositories" / "retention_policy_repository.py",
+        base / "errors" / "codes.py",
+        base / "errors" / "exceptions.py",
+    }
+    proibidos_e496 = {"RetentionPolicy", "RetentionRule", "retention_policies"}
+
     for arquivo in sorted(base.rglob("*.py")):
         arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
         for no in ast.walk(arvore):
@@ -1327,6 +1346,8 @@ def test_e435_corrective_created_no_retention_capability():
         executavel = ast.unparse(arvore)
         for proibido in proibidos:
             if proibido == "ErasureRecord" and arquivo in autorizados_e495:
+                continue
+            if proibido in proibidos_e496 and arquivo in autorizados_e496:
                 continue
             assert not re.search(rf"\b{proibido}\b", executavel), f"{arquivo}: {proibido}"
         for metodo in metodos_proibidos:

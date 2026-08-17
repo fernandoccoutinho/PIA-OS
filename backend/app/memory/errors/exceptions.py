@@ -32,6 +32,8 @@ from app.memory.errors.codes import (
     PIA_8039_ISOLATION_SCOPE_REQUIRED,
     PIA_8040_ISOLATION_CONTRACT_VIOLATION,
     PIA_8041_ERASURE_RECORD_IMMUTABLE,
+    PIA_8042_RETENTION_POLICY_VERSION_EXISTS,
+    PIA_8043_RETENTION_POLICY_IMMUTABLE,
 )
 
 
@@ -336,4 +338,39 @@ class ErasureRecordImmutableError(PIAOSException):
                 "recusada; um recibo registra o que foi observado e não se reescreve."
             ),
             detail={"record_id": str(record_id) if record_id else None, "operation": operation},
+        )
+
+
+class RetentionPolicyVersionExistsError(PIAOSException):
+    """`UNIQUE(policy_key, version)` recusou a publicação (`E4.9.6`)."""
+
+    error_code = PIA_8042_RETENTION_POLICY_VERSION_EXISTS
+
+    def __init__(self, policy_key: str, version: int) -> None:
+        self.policy_key = policy_key
+        self.version = version
+        super().__init__(
+            message=(
+                f"RetentionPolicy '{policy_key}' versão {version} já existe — "
+                "publique a próxima versão; sobrescrever apagaria a regra que "
+                "fundamentou avaliações passadas."
+            ),
+            detail={"policy_key": policy_key, "version": version},
+        )
+
+
+class RetentionPolicyImmutableError(PIAOSException):
+    """Uma versão publicada não pode ser alterada nem removida (`E4.9.6`)."""
+
+    error_code = PIA_8043_RETENTION_POLICY_IMMUTABLE
+
+    def __init__(self, policy_id: uuid.UUID | None, operation: str) -> None:
+        self.policy_id = policy_id
+        self.operation = operation
+        super().__init__(
+            message=(
+                f"RetentionPolicy {policy_id} é imutável — operação '{operation}' "
+                "recusada; publique uma nova versão."
+            ),
+            detail={"policy_id": str(policy_id) if policy_id else None, "operation": operation},
         )
