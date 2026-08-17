@@ -1242,3 +1242,383 @@ def test_ri434_faithful_wrapper_preserves_normal_behaviour():
         assert resolucao.context_purpose == contexto.purpose
     finally:
         _limpar(coids, [dominio], [chave])
+
+
+# ======================================================================
+# E4.6.3 — Retrieval Composition Point, contra PostgreSQL real
+#
+# O que só o banco demonstra: que o gate compõe com a Search REAL da
+# E3.8 (lotes, ordem canônica, junção de proveniência), que o backfill
+# atravessa lotes de verdade, e que rejeitar não escreve nada.
+# ======================================================================
+
+
+def _erro_de_contrato():
+    from app.memory.errors.exceptions import RetrievalContractViolationError
+
+    return RetrievalContractViolationError
+
+
+def _ordem_canonica(chave: str, trace: str) -> list[uuid.UUID]:
+    """Ordem REAL devolvida pela E4.6 sem gate.
+
+    Os objetos de teste nascem na MESMA transação, então `created_at` é
+    idêntico (o `now()` do PostgreSQL é o instante de início da
+    transação) e o desempate canônico cai em `id ASC` — UUID aleatório.
+    Assumir a ordem de criação faria o teste passar por sorte; a ordem é
+    derivada do próprio caminho canônico.
+    """
+    with UnitOfWork() as uow:
+        manager, _ = _compor(uow.session)
+        return list(
+            manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=100,
+            ).coids
+        )
+
+
+class GateEspiaoReal:
+    """Gate real, injetado na composição verdadeira. Registra o que viu."""
+
+    def __init__(self, decisao=None, *, erro: Exception | None = None, retorno=None) -> None:
+        self._decisao = decisao
+        self._erro = erro
+        self._retorno = retorno
+        self.vistos: list[uuid.UUID] = []
+
+    def allows(self, candidate):
+        self.vistos.append(candidate.id)
+        if self._erro is not None:
+            raise self._erro
+        if self._retorno is not None:
+            return self._retorno
+        return True if self._decisao is None else self._decisao(candidate)
+
+
+def test_ri463_gate_composes_with_the_real_search_engine():
+    """O gate recebe o `CognitiveObject` REAL da E3, satisfazendo
+    `CognitiveObjectView` apenas por sua forma."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(4, trace_id=trace)
+    try:
+        ordem = _ordem_canonica(chave, trace)
+        vistos_tipados: list[bool] = []
+
+        def _decidir(candidato):
+            vistos_tipados.append(isinstance(candidato, CognitiveObjectView))
+            return candidato.id != ordem[1]
+
+        gate = GateEspiaoReal(_decidir)
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=gate,
+            )
+
+        assert all(vistos_tipados)
+        assert gate.vistos == ordem
+        assert list(resultado.coids) == [c for c in ordem if c != ordem[1]]
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_backfill_crosses_real_search_batches():
+    """Rejeitar candidatos força a coleta a puxar lotes seguintes da
+    Search real até completar a página — e a página sai completa."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(8, trace_id=trace)
+    try:
+        ordem = _ordem_canonica(chave, trace)
+        # rejeita os 5 primeiros: a página de 3 só fecha com os 3 últimos
+        rejeitados = set(ordem[:5])
+        gate = GateEspiaoReal(lambda c: c.id not in rejeitados)
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=3,
+                candidate_gate=gate,
+            )
+        assert list(resultado.coids) == ordem[5:]
+        assert len(resultado.items) == 3
+        assert resultado.has_more is False
+        assert gate.vistos == ordem
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_offset_and_has_more_count_only_approved_candidates():
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(6, trace_id=trace)
+    try:
+        ordem = _ordem_canonica(chave, trace)
+        rejeitados = {ordem[0], ordem[1]}
+        aprovados = [c for c in ordem if c not in rejeitados]
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            pagina = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=2,
+                offset=1,
+                candidate_gate=GateEspiaoReal(lambda c: c.id not in rejeitados),
+            )
+        # offset=1 corta o primeiro APROVADO, não o primeiro bruto
+        assert list(pagina.coids) == aprovados[1:3]
+        assert pagina.has_more is True
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_gate_never_sees_candidates_denied_by_governance():
+    """Sob recusa nada é tocado: nem Search, nem memberships, nem gate."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.DENY)
+    coids = _criar_objetos(3, trace_id=trace)
+    try:
+        gate = GateEspiaoReal()
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            resultado = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                candidate_gate=gate,
+            )
+        assert resultado.execution_authorized is False
+        assert resultado.search_executed is False
+        assert gate.vistos == []
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_gate_never_sees_candidates_outside_the_base_scope():
+    """Soft-deleted e inacessível são descartados pela admissibilidade
+    base e nunca chegam ao gate."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    visiveis = _criar_objetos(2, trace_id=trace)
+    ocultos = _criar_objetos(1, trace_id=trace, accessibility=AccessibilityState.INACCESSIBLE)
+    apagados = _criar_objetos(1, trace_id=trace, soft_delete=True)
+    try:
+        gate = GateEspiaoReal()
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=gate,
+            )
+        assert set(gate.vistos) == set(visiveis)
+        assert not set(gate.vistos) & set(ocultos + apagados)
+    finally:
+        _limpar(visiveis + ocultos + apagados, [], [chave])
+
+
+@pytest.mark.parametrize("retorno", [0, 1, "sim", []], ids=["zero", "um", "str", "lista"])
+def test_ri463_non_bool_gate_result_fails_typed_against_the_database(retorno):
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(2, trace_id=trace)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            with pytest.raises(_erro_de_contrato()):
+                manager.retrieve(
+                    context=MemoryContext(),
+                    descriptor=_descritor(),
+                    criteria=SearchCriteria(trace_id=trace),
+                    policy_key=chave,
+                    candidate_gate=GateEspiaoReal(retorno=retorno),
+                )
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_gate_exception_fails_typed_and_preserves_cause():
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(2, trace_id=trace)
+    original = RuntimeError("colaborador quebrou")
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            with pytest.raises(_erro_de_contrato()) as exc:
+                manager.retrieve(
+                    context=MemoryContext(),
+                    descriptor=_descritor(),
+                    criteria=SearchCriteria(trace_id=trace),
+                    policy_key=chave,
+                    candidate_gate=GateEspiaoReal(erro=original),
+                )
+        assert exc.value.__cause__ is original
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_rejection_writes_nothing_and_is_transitory():
+    """`False` não marca, não apaga, não transiciona.
+
+    NOT RETURNED IN THIS RESPONSE != FORGOTTEN
+    """
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(3, trace_id=trace)
+    escritas: list[str] = []
+
+    def _espiao(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip()[:6].upper() in {"INSERT", "UPDATE", "DELETE"}:
+            escritas.append(statement)
+
+    try:
+        from sqlalchemy import event
+
+        from app.database.engine import engine
+
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            event.listen(engine, "before_cursor_execute", _espiao)
+            try:
+                vazio = manager.retrieve(
+                    context=MemoryContext(),
+                    descriptor=_descritor(),
+                    criteria=SearchCriteria(trace_id=trace),
+                    policy_key=chave,
+                    limit=10,
+                    candidate_gate=GateEspiaoReal(lambda c: False),
+                )
+            finally:
+                event.remove(engine, "before_cursor_execute", _espiao)
+
+        assert vazio.items == ()
+        assert vazio.has_more is False
+        assert escritas == []
+
+        # e o patrimônio continua lá, íntegro, na chamada seguinte
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            depois = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+            )
+        assert list(depois.coids) == _ordem_canonica(chave, trace)
+
+        with UnitOfWork() as uow:
+            estados = uow.session.execute(
+                sa.text(
+                    "SELECT accessibility, deleted_at FROM cognitive_objects "
+                    "WHERE id = ANY(:c ::uuid[])"
+                ),
+                {"c": [str(c) for c in coids]},
+            ).all()
+        assert all(estado == "active" and apagado is None for estado, apagado in estados)
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_none_gate_reproduces_the_baseline_result():
+    """Chamadas sem gate continuam válidas e idênticas à cadeia 67."""
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(5, trace_id=trace)
+    try:
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            sem = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=3,
+            )
+            com_none = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=3,
+                candidate_gate=None,
+            )
+        assert list(sem.coids) == list(com_none.coids)
+        assert sem.has_more == com_none.has_more is True
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_successive_calls_with_different_gates_are_independent():
+    trace = _trace()
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    coids = _criar_objetos(4, trace_id=trace)
+    try:
+        ordem = _ordem_canonica(chave, trace)
+        with UnitOfWork() as uow:
+            manager, _ = _compor(uow.session)
+            r1 = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=GateEspiaoReal(lambda c: c.id != ordem[0]),
+            )
+            r2 = manager.retrieve(
+                context=MemoryContext(),
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                limit=10,
+                candidate_gate=GateEspiaoReal(lambda c: c.id != ordem[3]),
+            )
+        assert list(r1.coids) == ordem[1:]
+        assert list(r2.coids) == ordem[:3]
+    finally:
+        _limpar(coids, [], [chave])
+
+
+def test_ri463_isolation_e48_is_unaffected_and_does_not_expose_a_gate():
+    """A E4.8 não foi alterada: o caminho isolado segue chamando a E4.6
+    sem gate, e sua assinatura não o admite.
+
+        E4.6.3 OFFERS COMPOSITION
+        E4.6.3 DOES NOT MAKE ANY CALLER RETENTION-AWARE
+    """
+    import inspect
+
+    from app.memory.services.memory_isolation_manager import MemoryIsolationManager
+
+    assinatura = inspect.signature(MemoryIsolationManager.retrieve_isolated)
+    assert "candidate_gate" not in assinatura.parameters

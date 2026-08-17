@@ -29,7 +29,11 @@ from app.memory.ports.isolation import (
     IsolatedRetrievalPort,
     MembershipView,
 )
-from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
+from app.memory.ports.retrieval import (
+    CognitiveObjectView,
+    CognitiveSearchPort,
+    RetrievalCandidateGatePort,
+)
 
 __all__ = [
     "ContextValidationPort",
@@ -46,4 +50,5 @@ __all__ = [
     "CognitiveSearchPort",
     "MultiInputTransformationPort",
     "MultiInputTransformationReceiptPort",
+    "RetrievalCandidateGatePort",
 ]

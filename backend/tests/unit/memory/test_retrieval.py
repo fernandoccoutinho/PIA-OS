@@ -31,7 +31,11 @@ from app.memory.models.governance_enums import (
     GovernanceEffect,
     GovernanceOutcome,
 )
-from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
+from app.memory.ports.retrieval import (
+    CognitiveObjectView,
+    CognitiveSearchPort,
+    RetrievalCandidateGatePort,
+)
 from app.memory.schemas.governance import GovernanceResolution
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.schemas.retrieval import (
@@ -1835,3 +1839,450 @@ def test_e434r_comparison_is_exact_without_normalization():
     with pytest.raises(RetrievalContractViolationError):
         _executar(manager, context=MemoryContext(actor_ref="ana"))
     assert porta.chamadas == []
+
+
+# ======================================================================
+# E4.6.3 — Retrieval Composition Point
+#
+# Um ponto de composição tipado, POR CHAMADA e estritamente redutor.
+#
+#     GATE REDUCES A RESPONSE
+#     GATE DOES NOT ADD, REORDER, TRANSFORM OR REVEAL
+#     COMPOSITION POINT != RETENTION DECISION
+#
+# Os testes provam EFEITOS OBSERVÁVEIS e ORDEM por spies, nunca
+# replicando a implementação.
+# ======================================================================
+
+
+class GateEspiao:
+    """Gate que registra o que viu, na ordem em que viu."""
+
+    def __init__(self, decisao=None, *, erro: Exception | None = None, retorno=_AUSENTE) -> None:
+        self._decisao = decisao
+        self._erro = erro
+        self._retorno = retorno
+        self.vistos: list[uuid.UUID] = []
+
+    def allows(self, candidate):
+        self.vistos.append(candidate.id)
+        if self._erro is not None:
+            raise self._erro
+        if self._retorno is not _AUSENTE:
+            return self._retorno
+        if self._decisao is None:
+            return True
+        return self._decisao(candidate)
+
+
+def _janelas(porta: PortaFalsa) -> list[tuple[int | None, int | None]]:
+    """Janelas (limit, offset) pedidas à Search, na ordem."""
+    return [(c["limit"], c["offset"]) for c in porta.chamadas]
+
+
+def _gate_que_rejeita(*coids: uuid.UUID) -> GateEspiao:
+    alvos = set(coids)
+    return GateEspiao(lambda candidato: candidato.id not in alvos)
+
+
+# --- 14.1 `None` preserva a baseline ----------------------------------
+
+
+def test_e463_none_preserves_behaviour_and_pagination():
+    objetos = _objetos(5)
+    manager, porta, _, _, _ = _manager(objetos=objetos)
+    sem_gate = _executar(manager, limit=3)
+
+    manager2, porta2, _, _, _ = _manager(objetos=objetos)
+    com_none = _executar(manager2, limit=3, candidate_gate=None)
+
+    assert [i.coid for i in sem_gate.items] == [i.coid for i in com_none.items]
+    assert sem_gate.has_more == com_none.has_more is True
+    assert sem_gate.limit == com_none.limit
+    assert sem_gate.offset == com_none.offset
+    # `criteria` é um `object()` novo por chamada; o que importa é a
+    # sequência de janelas pedidas à Search.
+    assert _janelas(porta) == _janelas(porta2)
+
+
+def test_e463_gate_is_keyword_only_and_optional():
+    """A assinatura dos chamadores existentes não muda: nenhum precisa
+    passar o gate, e ninguém pode passá-lo posicionalmente."""
+    import inspect
+
+    parametro = inspect.signature(MemoryRetrievalManager.retrieve).parameters["candidate_gate"]
+    assert parametro.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parametro.default is None
+
+
+def test_e463_gate_is_not_stored_on_the_manager():
+    """GATE IS AN ARGUMENT, NOT STATE"""
+    objetos = _objetos(3)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    antes = dict(vars(manager))
+    _executar(manager, candidate_gate=GateEspiao())
+    assert dict(vars(manager)) == antes
+
+
+# --- 14.2 Gate que aprova tudo ----------------------------------------
+
+
+def test_e463_gate_that_approves_all_preserves_order_content_and_pagination():
+    objetos = _objetos(5)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    referencia = _executar(manager, limit=3)
+
+    manager2, _, _, _, _ = _manager(objetos=objetos)
+    gate = GateEspiao()
+    resultado = _executar(manager2, limit=3, candidate_gate=gate)
+
+    assert [i.coid for i in resultado.items] == [i.coid for i in referencia.items]
+    assert resultado.has_more == referencia.has_more
+    # o gate viu os candidatos na ordem da Search
+    assert gate.vistos[: len(objetos)] == [o.id for o in objetos][: len(gate.vistos)]
+
+
+# --- 14.3 Rejeição causa backfill -------------------------------------
+
+
+def test_e463_rejected_candidates_are_backfilled_until_the_page_is_full():
+    """Rejeitar não encurta a página: o laço continua coletando."""
+    objetos = _objetos(6)
+    rejeitados = (objetos[0].id, objetos[2].id)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    resultado = _executar(manager, limit=3, candidate_gate=_gate_que_rejeita(*rejeitados))
+
+    assert [i.coid for i in resultado.items] == [objetos[1].id, objetos[3].id, objetos[4].id]
+    assert len(resultado.items) == 3
+    assert resultado.has_more is True
+
+
+def test_e463_rejection_never_promotes_an_object_that_was_not_next():
+    """Backfill puxa o PRÓXIMO aprovado da ordem da Search — não
+    reordena e não inventa candidato."""
+    objetos = _objetos(4)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    resultado = _executar(manager, limit=4, candidate_gate=_gate_que_rejeita(objetos[1].id))
+    assert [i.coid for i in resultado.items] == [objetos[0].id, objetos[2].id, objetos[3].id]
+
+
+# --- 14.4 Gate que rejeita tudo ---------------------------------------
+
+
+def test_e463_gate_that_rejects_all_returns_empty_and_has_more_false():
+    objetos = _objetos(5)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    resultado = _executar(manager, limit=3, candidate_gate=GateEspiao(lambda candidato: False))
+    assert resultado.items == ()
+    assert resultado.has_more is False
+    # e continua sendo vista executada, não recusa de governança
+    assert resultado.search_executed is True
+    assert resultado.execution_authorized is True
+
+
+# --- 14.5 e 14.6 `offset` e `has_more` contam só aprovados ------------
+
+
+def test_e463_offset_is_applied_after_the_gate():
+    objetos = _objetos(6)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    # sem gate, offset=1 devolveria [1, 2]
+    resultado = _executar(
+        manager, limit=2, offset=1, candidate_gate=_gate_que_rejeita(objetos[0].id)
+    )
+    # com o 0 rejeitado, os aprovados são [1,2,3,4,5]; offset=1 os corta em [2,3]
+    assert [i.coid for i in resultado.items] == [objetos[2].id, objetos[3].id]
+
+
+def test_e463_has_more_counts_only_approved_candidates():
+    """Com exatamente `limit` aprovados, `has_more` é False mesmo
+    havendo objetos rejeitados depois deles."""
+    objetos = _objetos(5)
+    rejeitados = (objetos[3].id, objetos[4].id)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    resultado = _executar(manager, limit=3, candidate_gate=_gate_que_rejeita(*rejeitados))
+    assert len(resultado.items) == 3
+    assert resultado.has_more is False
+
+
+# --- 14.7 e 14.8 Autoridade é anterior e independente -----------------
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        GovernanceOutcome.INADMISSIBLE,
+        GovernanceOutcome.NOT_APPLICABLE,
+        GovernanceOutcome.PROHIBITED,
+    ],
+)
+def test_e463_gate_is_never_called_under_governance_denial(outcome):
+    """Sob recusa nada é tocado — e o gate menos ainda.
+
+    GATE IS CONSULTED AFTER AUTHORITY, NEVER INSTEAD OF IT
+    """
+    objetos = _objetos(3)
+    manager, porta, _, _, associacoes = _manager(
+        objetos=objetos, resolution=_resolucao(outcome=outcome)
+    )
+    gate = GateEspiao()
+    resultado = _executar(manager, candidate_gate=gate)
+
+    assert resultado.execution_authorized is False
+    assert gate.vistos == []
+    assert porta.chamadas == []
+    assert associacoes.chamadas == []
+
+
+def test_e463_gate_never_sees_candidates_outside_the_base_scope():
+    """Soft-deleted, inacessível e fora do domínio não chegam ao gate."""
+    dominio = uuid.uuid4()
+    dentro = _objetos(2)
+    fora_dominio = _objetos(1)[0]
+    apagado = dataclasses.replace(_objetos(1)[0], deleted_at=_BASE)
+    inacessivel = dataclasses.replace(_objetos(1)[0], accessibility="inaccessible")
+    todos = [dentro[0], apagado, fora_dominio, inacessivel, dentro[1]]
+
+    manager, _, _, _, _ = _manager(
+        objetos=todos,
+        memberships={dominio: [dentro[0].id, dentro[1].id, apagado.id, inacessivel.id]},
+    )
+    gate = GateEspiao()
+    resultado = _executar(manager, context=_contexto(dominio), candidate_gate=gate)
+
+    assert gate.vistos == [dentro[0].id, dentro[1].id]
+    assert [i.coid for i in resultado.items] == [dentro[0].id, dentro[1].id]
+
+
+# --- 14.9 e 14.10 O gate não pode esconder violação -------------------
+
+
+def test_e463_malformed_hit_fails_before_the_gate():
+    """PORT CONTRACT VIOLATION != EMPTY VIEW"""
+
+    @dataclasses.dataclass(frozen=True)
+    class SemCreatedAt:
+        id: uuid.UUID = dataclasses.field(default_factory=uuid.uuid4)
+        clid: uuid.UUID | None = None
+        accessibility: str = "active"
+        revision_status: str | None = None
+        deleted_at: datetime | None = None
+
+    manager, _, _, _, _ = _manager(objetos=[SemCreatedAt()])
+    gate = GateEspiao()
+    with pytest.raises(RetrievalContractViolationError):
+        _executar(manager, candidate_gate=gate)
+    assert gate.vistos == []
+
+
+def test_e463_duplicate_fails_before_the_gate_even_if_it_would_reject_it():
+    """A duplicata é violação da Search. Um gate que a rejeitasse
+    esconderia o defeito — por isso a checagem vem antes."""
+    objeto = _objetos(1)[0]
+    manager, _, _, _, _ = _manager(objetos=[objeto, objeto])
+    gate = _gate_que_rejeita(objeto.id)
+    with pytest.raises(RetrievalDuplicateCoidError):
+        _executar(manager, limit=5, candidate_gate=gate)
+    # o gate chegou a ver a PRIMEIRA ocorrência e a rejeitou; a segunda
+    # ainda assim explodiu como duplicata
+    assert gate.vistos == [objeto.id]
+
+
+# --- 14.11 e 14.12 Fail-closed ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "retorno",
+    [0, 1, None, "", "sim", [], [1], object(), 1.0],
+    ids=["zero", "um", "none", "str-vazia", "str", "lista-vazia", "lista", "objeto", "float"],
+)
+def test_e463_non_bool_gate_result_fails_typed(retorno):
+    """INVALID GATE RESULT != EXCLUSION
+    INVALID GATE RESULT != INCLUSION
+    """
+    manager, _, _, _, _ = _manager(objetos=_objetos(2))
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager, candidate_gate=GateEspiao(retorno=retorno))
+    assert "bool exato" in str(exc.value)
+
+
+@pytest.mark.parametrize("valor", [True, False])
+def test_e463_exact_bool_is_accepted(valor):
+    """Controle positivo do fail-closed: `bool` real passa."""
+    manager, _, _, _, _ = _manager(objetos=_objetos(2))
+    resultado = _executar(manager, candidate_gate=GateEspiao(retorno=valor))
+    assert len(resultado.items) == (2 if valor else 0)
+
+
+def test_e463_gate_exception_fails_typed_and_preserves_cause():
+    """COLLABORATOR FAILURE != EMPTY VIEW"""
+    original = RuntimeError("colaborador quebrou")
+    manager, _, _, _, _ = _manager(objetos=_objetos(2))
+    with pytest.raises(RetrievalContractViolationError) as exc:
+        _executar(manager, candidate_gate=GateEspiao(erro=original))
+    assert exc.value.__cause__ is original
+    assert "RuntimeError" in str(exc.value)
+
+
+def test_e463_gate_failure_is_not_converted_into_an_empty_view():
+    """Nem vista vazia, nem resultado parcial: erro tipado."""
+    manager, _, _, _, _ = _manager(objetos=_objetos(4))
+    with pytest.raises(RetrievalContractViolationError):
+        _executar(manager, limit=2, candidate_gate=GateEspiao(erro=ValueError("x")))
+
+
+# --- 14.13 Sem estado compartilhado entre chamadas --------------------
+
+
+def test_e463_successive_calls_with_different_gates_do_not_share_state():
+    objetos = _objetos(4)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+
+    primeiro = _gate_que_rejeita(objetos[0].id)
+    r1 = _executar(manager, limit=4, candidate_gate=primeiro)
+
+    segundo = _gate_que_rejeita(objetos[3].id)
+    r2 = _executar(manager, limit=4, candidate_gate=segundo)
+
+    sem_gate = _executar(manager, limit=4)
+
+    assert [i.coid for i in r1.items] == [objetos[1].id, objetos[2].id, objetos[3].id]
+    assert [i.coid for i in r2.items] == [objetos[0].id, objetos[1].id, objetos[2].id]
+    assert [i.coid for i in sem_gate.items] == [o.id for o in objetos]
+    assert primeiro.vistos and segundo.vistos
+
+
+def test_e463_rejection_is_transitory_and_writes_nothing():
+    """NOT RETURNED IN THIS RESPONSE != FORGOTTEN
+
+    O mesmo objeto reaparece na chamada seguinte sem gate, e o dublê da
+    Search continua devolvendo exatamente os mesmos objetos — nada foi
+    marcado, apagado ou transicionado.
+    """
+    objetos = _objetos(3)
+    manager, porta, _, _, _ = _manager(objetos=objetos)
+    _executar(manager, candidate_gate=GateEspiao(lambda c: False))
+    depois = _executar(manager)
+    assert [i.coid for i in depois.items] == [o.id for o in objetos]
+    assert porta.objetos == objetos
+
+
+# --- 14.14 O gate não acrescenta nem reordena -------------------------
+
+
+def test_e463_gate_cannot_add_or_reorder_because_of_the_signature():
+    """A garantia é a FORMA do contrato, não uma promessa em docstring:
+    o gate recebe um candidato e devolve um booleano. Não há por onde
+    devolver objeto, índice ou coleção."""
+    import inspect
+
+    assinatura = inspect.signature(RetrievalCandidateGatePort.allows)
+    assert list(assinatura.parameters) == ["self", "candidate"]
+    assert assinatura.return_annotation in (bool, "bool")
+
+
+def test_e463_result_is_always_a_subsequence_of_the_ungated_result():
+    """Propriedade observável: com gate, o resultado é sempre uma
+    SUBSEQUÊNCIA do resultado sem gate — nunca um superconjunto, nunca
+    uma permutação."""
+    objetos = _objetos(8)
+    manager, _, _, _, _ = _manager(objetos=objetos)
+    completo = [i.coid for i in _executar(manager, limit=8).items]
+
+    for rejeitar in ([], [0], [0, 1], [1, 5], [0, 2, 4, 6], list(range(8))):
+        alvos = {objetos[i].id for i in rejeitar}
+        manager_n, _, _, _, _ = _manager(objetos=objetos)
+        gate = GateEspiao(lambda candidato, alvos=alvos: candidato.id not in alvos)
+        obtido = [i.coid for i in _executar(manager_n, limit=8, candidate_gate=gate).items]
+        assert obtido == [c for c in completo if c not in alvos]
+
+
+# --- 14.15 Sem regressão na contagem de chamadas à Search -------------
+
+
+def test_e463_search_call_count_is_unchanged_when_the_gate_approves_all():
+    objetos = _objetos(4)
+    manager, porta, _, _, _ = _manager(objetos=objetos)
+    _executar(manager, limit=2)
+    referencia = _janelas(porta)
+
+    manager2, porta2, _, _, _ = _manager(objetos=objetos)
+    _executar(manager2, limit=2, candidate_gate=GateEspiao())
+    assert _janelas(porta2) == referencia
+
+
+def test_e463_gate_does_not_duplicate_search_or_governance_calls():
+    objetos = _objetos(3)
+    manager, porta, governanca, contexto, associacoes = _manager(objetos=objetos)
+    _executar(manager, candidate_gate=GateEspiao())
+    assert len(governanca.chamadas) == 1
+    assert len(contexto.chamadas) == 1
+    assert len(porta.chamadas) == 1
+
+
+# --- 14.16 Conformidade estrutural do Protocol ------------------------
+
+
+def test_e463_real_gate_satisfies_the_protocol_at_runtime():
+    class GateReal:
+        def allows(self, candidate: CognitiveObjectView) -> bool:
+            return candidate.deleted_at is None
+
+    assert isinstance(GateReal(), RetrievalCandidateGatePort)
+
+
+def test_e463_object_without_allows_does_not_satisfy_the_protocol():
+    assert not isinstance(object(), RetrievalCandidateGatePort)
+
+
+def test_e463_port_is_exported_by_the_public_ports_package():
+    import app.memory.ports as ports
+
+    assert ports.RetrievalCandidateGatePort is RetrievalCandidateGatePort
+    assert "RetrievalCandidateGatePort" in ports.__all__
+
+
+def test_e463_gate_protocol_carries_no_retention_semantics():
+    """CANDIDATE GATE != RETENTION POLICY
+
+    O protocolo é neutro: nem o nome, nem os membros, nem o código
+    executável mencionam retenção, expiração, esquecimento ou
+    apagamento. As docstrings PODEM citá-los ao dizer o que o gate não
+    é — por isso a comparação é sobre a AST sem docstrings, mesma
+    disciplina do `gv16`.
+    """
+    import app.memory.ports.retrieval as ports_mod
+
+    arvore = ast.parse(pathlib.Path(ports_mod.__file__).read_text(encoding="utf-8"))
+    for no in ast.walk(arvore):
+        corpo = getattr(no, "body", None)
+        if isinstance(corpo, list):
+            no.body = [
+                filho
+                for filho in corpo
+                if not (
+                    isinstance(filho, ast.Expr)
+                    and isinstance(filho.value, ast.Constant)
+                    and isinstance(filho.value.value, str)
+                )
+            ] or [ast.Pass()]
+    executavel = ast.unparse(arvore)
+    for proibido in ("retention", "retencao", "expiry", "forget", "erasure", "delete"):
+        assert not re.search(rf"\b{proibido}\b", executavel, re.IGNORECASE), proibido
+
+
+def test_e463_manager_does_not_import_retention_or_erasure():
+    """A E4.6 continua sendo recuperação base, não *retention-aware*."""
+    import app.memory.services.retrieval_manager as mod
+
+    fonte = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+    arvore = ast.parse(fonte)
+    importados: list[str] = []
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.ImportFrom) and no.module:
+            importados.append(no.module)
+        elif isinstance(no, ast.Import):
+            importados.extend(alias.name for alias in no.names)
+    for modulo in importados:
+        assert "retention" not in modulo
+        assert "erasure" not in modulo

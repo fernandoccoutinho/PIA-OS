@@ -123,3 +123,72 @@ class CognitiveSearchPort(Protocol[CriteriaT_contra]):
     ) -> Sequence[CognitiveObjectView]:
         """Objetos que satisfazem os critérios, em ordem determinística."""
         ...  # pragma: no cover - corpo de stub de Protocol, nunca executado
+
+
+@runtime_checkable
+class RetrievalCandidateGatePort(Protocol):
+    """Filtro **estritamente redutor** por chamada, aplicado pela E4.6.3.
+
+    ## O que ele pode fazer, e só
+
+    Excluir, daquela resposta, um candidato que a E4.6 já admitiu. Nada
+    além disso:
+
+        GATE REDUCES A RESPONSE
+        GATE DOES NOT ADD, REORDER, TRANSFORM OR REVEAL
+
+    Um gate que devolvesse objetos acrescentaria patrimônio à vista; um
+    que devolvesse índices reordenaria; um que recebesse a página inteira
+    poderia reescrevê-la. Por isso a assinatura é a mais estreita
+    possível: **um candidato, um booleano**. A forma do contrato é a
+    garantia — não uma promessa na docstring.
+
+    ## O que ele não é
+
+    ```text
+    CANDIDATE GATE != GOVERNANCE
+    CANDIDATE GATE != DOMAIN SCOPE
+    CANDIDATE GATE != RETENTION POLICY
+    CANDIDATE GATE != FORGETTING
+    CANDIDATE GATE != DELETION
+    ```
+
+    Este protocolo é **neutro**: não conhece retenção, expiração,
+    esquecimento nem apagamento. A E4.6 continua sendo recuperação base,
+    e não passa a ser *retention-aware* por existir este ponto:
+
+        COMPOSITION POINT != RETENTION DECISION
+
+    Autoridade é anterior e independente. O gate só é consultado depois
+    de a Governança autorizar `READ`, de o escopo base admitir o
+    candidato e de a duplicata ter sido descartada. Ele nunca vê o que a
+    autoridade recusou, e recusar no gate não é recusar por autoridade.
+
+    ## `False` é transitório
+
+    ```text
+    NOT RETURNED IN THIS RESPONSE != FORGOTTEN
+    NOT RETURNED IN THIS RESPONSE != INACCESSIBLE
+    NOT RETURNED IN THIS RESPONSE != DELETED
+    NOT RETURNED IN THIS RESPONSE != NONEXISTENT
+    ```
+
+    Um `False` não escreve nada: não muda `deleted_at`, acessibilidade,
+    revisão, memberships, história ou o próprio candidato. Na chamada
+    seguinte, sem gate, o mesmo objeto reaparece.
+
+    ## Fail-closed
+
+    O retorno deve ser `bool` **exato**. `0`, `1`, `None`, string vazia e
+    objetos truthy/falsy são violação de contrato, não resposta — coagir
+    com `bool(...)` faria um colaborador defeituoso decidir sobre a vista
+    sem que ninguém percebesse.
+
+        INVALID GATE RESULT != EXCLUSION
+        INVALID GATE RESULT != INCLUSION
+        COLLABORATOR FAILURE != EMPTY VIEW
+    """
+
+    def allows(self, candidate: CognitiveObjectView) -> bool:
+        """`True` mantém o candidato nesta resposta; `False` o exclui dela."""
+        ...  # pragma: no cover - corpo de stub de Protocol, nunca executado

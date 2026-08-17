@@ -59,7 +59,11 @@ from app.memory.errors.exceptions import (
     RetrievalDuplicateCoidError,
 )
 from app.memory.models.governance_enums import CognitiveOperation
-from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
+from app.memory.ports.retrieval import (
+    CognitiveObjectView,
+    CognitiveSearchPort,
+    RetrievalCandidateGatePort,
+)
 from app.memory.repositories.memory_domain_membership_repository import (
     MemoryDomainMembershipRepository,
 )
@@ -147,6 +151,7 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         moment: datetime | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
+        candidate_gate: RetrievalCandidateGatePort | None = None,
     ) -> MemoryRetrievalResult:
         """Vista admissível do patrimônio para este contexto.
 
@@ -160,8 +165,9 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         5. escopo contextual de domínios
         6. Search em lotes determinísticos
         7. filtros de admissibilidade
-        8. paginação DEPOIS dos filtros
-        9. projeção em value objects
+        8. candidate_gate, quando fornecido (E4.6.3)
+        9. paginação DEPOIS dos filtros e do gate
+        10. projeção em value objects
         ```
 
         **Governança precede qualquer toque no patrimônio** — e também a
@@ -174,6 +180,15 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
             NOT_APPLICABLE != ADMISSIBLE
             INADMISSIBLE   != EMPTY SEARCH
             PROHIBITED     != LOCAL DENIAL
+
+        `candidate_gate` é **por chamada e nunca armazenado** (E4.6.3):
+        não vira atributo, singleton ou contexto implícito, então duas
+        chamadas consecutivas ao mesmo manager podem usar gates distintos
+        sem interferência. Com `None`, o comportamento é o da cadeia 67,
+        byte a byte.
+
+            GATE IS AN ARGUMENT, NOT STATE
+            COMPOSITION POINT != RETENTION DECISION
         """
         self._validar_paginacao(limit=limit, offset=offset)
         self._validar_descritor(descriptor)
@@ -223,7 +238,9 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
             )
 
         escopo = self._resolver_escopo(contexto)
-        itens, has_more = self._coletar(criteria, escopo, limit=limit, offset=offset)
+        itens, has_more = self._coletar(
+            criteria, escopo, limit=limit, offset=offset, candidate_gate=candidate_gate
+        )
 
         logger.info(
             "memory_retrieval_executed",
@@ -440,6 +457,7 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         *,
         limit: int,
         offset: int,
+        candidate_gate: RetrievalCandidateGatePort | None = None,
     ) -> tuple[tuple[RetrievedMemoryItem, ...], bool]:
         """Lê a Search em lotes e pagina **depois** dos filtros.
 
@@ -449,6 +467,15 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
         varrer todos os candidatos, e `has_more` basta nesta etapa.
 
         A ordem é a canônica da E3 e nada aqui reordena.
+
+        O `candidate_gate` (E4.6.3) entra **depois** da validação de
+        forma, da admissibilidade base e da duplicata, e **antes** do
+        `offset`. A posição não é arbitrária: o gate não pode esconder
+        violação de contrato nem duplicata da Search, e `offset`,
+        `limit` e `has_more` precisam contar apenas o que o gate
+        aprovou — senão a paginação descreveria uma página que não é a
+        devolvida. Como o laço continua enquanto faltam aprovados, uma
+        rejeição gera **backfill**, não buraco.
         """
         admissiveis: list[RetrievedMemoryItem] = []
         vistos: set[uuid.UUID] = set()
@@ -499,6 +526,17 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
                     raise RetrievalDuplicateCoidError(objeto.id)
                 vistos.add(objeto.id)
 
+                # O gate é consultado sobre um candidato que a autoridade
+                # já admitiu, e só pode retirá-lo DESTA resposta:
+                #
+                #     GATE REDUCES A RESPONSE
+                #     NOT RETURNED IN THIS RESPONSE != FORGOTTEN
+                #
+                # `continue` (e não `break`) porque o laço precisa seguir
+                # preenchendo a página: rejeitar não pode encurtá-la.
+                if candidate_gate is not None and not self._gate_aprova(candidate_gate, objeto):
+                    continue
+
                 if descartados < offset:
                     descartados += 1
                     continue
@@ -512,6 +550,52 @@ class MemoryRetrievalManager(Generic[CriteriaT]):
 
         has_more = len(admissiveis) > limit
         return tuple(admissiveis[:limit]), has_more
+
+    @staticmethod
+    def _gate_aprova(
+        candidate_gate: RetrievalCandidateGatePort, objeto: CognitiveObjectView
+    ) -> bool:
+        """Consulta o gate **fail-closed** (E4.6.3).
+
+        Duas falhas possíveis do colaborador, e nenhuma delas pode virar
+        decisão silenciosa sobre a vista:
+
+        ```text
+        INVALID GATE RESULT  != EXCLUSION
+        INVALID GATE RESULT  != INCLUSION
+        COLLABORATOR FAILURE != EMPTY VIEW
+        ```
+
+        **Tipo exato.** `type(...) is bool` e não `isinstance`, porque
+        `bool` é subclasse de `int` e `isinstance(1, int)` não separaria
+        `True` de `1`. Coagir com `bool(...)` seria pior ainda: um gate
+        que devolvesse `None` por engano excluiria tudo, e a vista
+        vazia pareceria legítima.
+
+        **Exceção.** Propagar a exceção crua faria uma falha do
+        colaborador atravessar a fronteira sem código PIA; engoli-la
+        faria o objeto entrar ou sair sem que ninguém decidisse. A causa
+        é preservada em `__cause__`.
+        """
+        try:
+            resultado = candidate_gate.allows(objeto)
+        except Exception as exc:
+            raise RetrievalContractViolationError(
+                (
+                    f"o candidate_gate levantou {type(exc).__name__} ao avaliar o "
+                    f"candidato {objeto.id} — falha de colaborador não é decisão "
+                    "sobre a vista",
+                )
+            ) from exc
+        if type(resultado) is not bool:
+            raise RetrievalContractViolationError(
+                (
+                    f"o candidate_gate devolveu {type(resultado).__name__} ao avaliar "
+                    f"o candidato {objeto.id}; o contrato exige bool exato — valor "
+                    "truthy/falsy não é resposta",
+                )
+            )
+        return resultado
 
     @staticmethod
     def _validar_hit(objeto: CognitiveObjectView) -> None:
@@ -643,4 +727,5 @@ __all__ = [
     "CognitiveOperation",
     "GovernanceResolution",
     "MemoryRetrievalManager",
+    "RetrievalCandidateGatePort",
 ]
