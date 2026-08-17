@@ -242,3 +242,155 @@ READY_FOR_E4_9 = FALSE
 ```
 
 O implementador não declara `PASS FINAL`. **E4.9 não foi iniciada.**
+
+---
+
+## 12. Corretivo E4.8.1 — Isolation Authority & Result Fidelity
+
+**Patch 62.** A auditoria confirmou que a arquitetura fecha o vazamento
+`intersection authorization + union retrieval`, mas encontrou quatro
+incoerências de **autoridade** ainda aceitas.
+
+### 12.1 Reprodução A–D contra a cadeia 61
+
+| # | Fato registrado |
+|---|---|
+| **A** | resultado com contexto `alice/research` e decisão emitida para `mallory/other` — **aceito** |
+| **B** | Retrieval autorizada por `policy-nao-solicitada` — aceita; e mesma `policy_key` com `version`/`id` diferentes — aceita |
+| **C** | Retrieval negada após todas as decisões admitirem → `ValueError`, `IS_PIA_8040 = FALSE` |
+| **D** | dois singletons com `policy_id` divergente — `ONE_POLICY_ID = FALSE` |
+
+### 12.2 Causa-raiz
+
+A E4.8 implementou duas relações e faltaram duas:
+
+```text
+verificadas:  REQUEST ↔ SINGLETON RESOLUTION
+              RETURNED COIDS ⊆ MEMBERSHIP SNAPSHOT
+ausentes:     ORIGINAL CONTEXT ↔ EVERY DOMAIN DECISION
+              DOMAIN DECISIONS ↔ RETRIEVAL GOVERNANCE RESOLUTION
+```
+
+O manager verificava cada singleton **no instante em que o resolvia**,
+mas nada reamarrava as decisões ao ator e ao propósito do contexto
+original, nem à autoridade que a Retrieval declarava.
+
+```text
+SCOPE NON-EXPANSION WITHOUT AUTHORITY FIDELITY = INCOMPLETE ISOLATION
+SAME DOMAIN != SAME CONTEXT
+DOMAIN BINDING ALONE != CONTEXT BINDING
+```
+
+### 12.3 Isolamento de escopo != fidelidade da autoridade
+
+São garantias diferentes, e a E4.8 só tinha a primeira:
+
+- **isolamento de escopo** — nenhum COID devolvido está fora da união
+  de memberships dos domínios autorizados;
+- **fidelidade da autoridade** — a cadeia inteira (contexto → decisões
+  → vista) foi fundamentada na **mesma** pergunta e na **mesma**
+  autoridade local.
+
+Sem a segunda, um resultado podia provar domínios e COIDs corretos
+enquanto compunha autoridade de ator, propósito ou versão de policy
+diferentes.
+
+### 12.4 Identidade local `(policy_key, policy_version, policy_id)`
+
+Definida como identidade **exata**. Os três campos são tudo-ou-nada
+pelos invariantes congelados da E4.3.2, então basta um para saber se há
+proveniência.
+
+`matched_rule_id` **não** entra: regras diferentes podem casar em
+domínios diferentes da **mesma** versão de policy, e usá-lo como
+identidade recusaria composição legítima. Há teste provando que
+`regra-a` em `D1` e `regra-b` em `D2` continuam válidas.
+
+```text
+SAME POLICY KEY != SAME POLICY VERSION
+MATCHED RULE != POLICY IDENTITY
+ONE REQUEST != MULTIPLE AUTHORITY PROVENANCES
+```
+
+### 12.5 Outcomes sem policy local não recebem proveniência fabricada
+
+`PROHIBITED` e `NOT_APPLICABLE` por ausência de versão vigente não
+carregam proveniência local, e o isolamento **não** a inventa: a E4.3
+deliberadamente não consultou policy nesses casos. Eles recusam
+atomicamente, sem Retrieval. `INADMISSIBLE` de origem local preserva a
+sua identidade.
+
+Um `PROHIBITED` sem proveniência ao lado de um `ADMISSIBLE` com ela
+**não** é incoerência — há teste cobrindo esse caso misto.
+
+### 12.6 Uma implementação, dois pontos de aplicação
+
+`verificar_coerencia_resultado_isolado()` é função pura no schema,
+usada por:
+
+1. `MemoryIsolationResult.__post_init__` → `ValueError` (construtor
+   direto não contorna a garantia);
+2. `MemoryIsolationManager` → `PIA-8040` **antes** de construir o value
+   object.
+
+```text
+COLLABORATOR DISAGREEMENT != INVALID REQUEST
+```
+
+O manager converte divergência de colaborador em `PIA-8040` porque o
+pedido já foi validado — o que resta é desacordo interno. O value object
+levanta `ValueError` porque ali o erro é de construção. Duas cópias da
+mesma regra divergiriam: E4.5.1, E4.6.1 e E4.7.2 já pagaram por isso.
+
+O modo `apenas_decisoes=True` permite recusar identidades divergentes
+**antes** de ler memberships — patrimônio não se toca sob autoridade
+incoerente.
+
+### 12.7 Correção do harness
+
+O helper unitário gerava `uuid.uuid4()` por chamada como `policy_id`,
+normalizando como aceitável uma combinação que o repositório real não
+produz. Passou a usar identidade estável por versão publicada, com nota.
+O dublê de Retrieval passou a **ecoar a `policy_key` recebida**, como a
+E4.6 real faz — antes ele devolvia sempre `gov-iso` e era ele próprio
+incoerente. Nenhum teste foi removido ou enfraquecido.
+
+### 12.8 Classificação contra a cadeia 61
+
+```text
+FAILS_ON_CHAIN_61_BY_BEHAVIOR ......... 18
+PASSES_ON_BOTH_SIDES_AS_GUARD ......... 10
+FAILS_ONLY_BY_NEW_SYMBOL_OR_IMPORT .... 0
+```
+
+Os testes dos defeitos A–D **coletam e falham por comportamento** na
+cadeia 61 — nenhum `ModuleNotFoundError` foi contado como prova.
+
+### 12.9 Resultados
+
+```text
+FULL_SUITE = 2279 passed / 1 skipped / 0 failed   (candidata: 2251)
+RAW_SUITE  = 1947 passed / 333 skipped / 0 failed
+E4.8 = 134 (era 107)   demais módulos delta 0
+
+GLOBAL_COVERAGE = 99,13%   (inalterado)
+APP_MEMORY = 100%   APP_COGNITIVE = 100%
+RUFF = PASS   BLACK = PASS (`black --check .`, black 24.10.0)
+MYPY_NEW_ERRORS = 0   ALEMBIC_SINGLE_HEAD = 7b2e4c9a15df
+NEW_ERROR_CODE = NO   NEW_MIGRATION = NO   NEW_TABLE = NO   NEW_COLUMN = NO
+E3_MODIFIED = NO   DATABASE_WRITES_DURING_ISOLATION = 0
+```
+
+Escopo: 4 arquivos (2 produção, 2 testes) e este documento.
+
+### 12.10 Limite honesto sobre o instante
+
+`GovernanceResolution` **não** carrega o instante em que foi avaliada.
+A prova de "uma autoridade por pedido" usa portanto a **identidade da
+versão de policy**, não um relógio inforjável: duas resoluções da mesma
+versão são indistinguíveis quanto ao momento.
+
+Repassar o mesmo `moment` continua necessário — e é o que impede a
+composição por versões diferentes na prática —, mas a garantia
+verificável é de identidade, não temporal. A garantia geral do módulo
+permanece **application-level, explicit-scope, read-path**.

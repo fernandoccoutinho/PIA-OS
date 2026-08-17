@@ -173,3 +173,29 @@ continua integralmente PIA-OS.
 
 Compatibilidade significa não criar contratos que impeçam o isolamento
 futuro entre trabalhos — não antecipar o produto.
+
+---
+
+## 12. Adendo E4.8.1 — fidelidade da autoridade
+
+A E4.8 original provava **escopo** (nenhum COID fora do snapshot) e não
+provava **autoridade** (a cadeia contexto → decisões → vista fundamentada
+na mesma pergunta e na mesma versão de policy).
+
+```text
+SCOPE NON-EXPANSION WITHOUT AUTHORITY FIDELITY = INCOMPLETE ISOLATION
+```
+
+O corretivo acrescenta duas relações verificadas — `ORIGINAL CONTEXT ↔
+EVERY DOMAIN DECISION` e `DOMAIN DECISIONS ↔ RETRIEVAL GOVERNANCE
+RESOLUTION` — numa função pura única, aplicada pelo manager
+(`PIA-8040`) e pelo value object (`ValueError`).
+
+Identidade local é `(policy_key, policy_version, policy_id)`;
+`matched_rule_id` fica de fora porque varia legitimamente por domínio.
+Outcomes que a E4.3 não fundamentou em policy local não recebem
+proveniência fabricada.
+
+Limite declarado: a resolução não carrega o instante avaliado, então a
+prova é de **identidade de versão**, não de relógio inforjável. Detalhes
+em `E4_8_MEMORY_ISOLATION.md` §12.

@@ -46,6 +46,18 @@ from app.memory.services.platform_safety_boundary import (
 )
 
 _GK = "gov-iso"
+_POLICY_ID = uuid.UUID("99999999-9999-9999-9999-999999999999")
+"""Identidade estável da versão publicada (corretivo E4.8.1).
+
+O helper anterior gerava `uuid.uuid4()` **por chamada**, o que
+normalizava como aceitável uma combinação que o repositório real não
+produz: duas decisões do mesmo pedido, sob a mesma `policy_key` e o
+mesmo `moment`, citando `policy_id` diferentes.
+
+    ONE REQUEST != MULTIPLE AUTHORITY PROVENANCES
+
+O harness codificava o defeito D. Corrigido, não preservado.
+"""
 _MOMENTO = datetime(2024, 6, 1, tzinfo=UTC)
 _D1 = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _D2 = uuid.UUID("22222222-2222-2222-2222-222222222222")
@@ -88,7 +100,7 @@ def _resolucao(
         campos |= {
             "policy_key": policy_key,
             "policy_version": 1,
-            "policy_id": uuid.uuid4(),
+            "policy_id": _POLICY_ID,
             "matched_rule_id": "r1",
         }
     return GovernanceResolution(**campos)
@@ -198,7 +210,11 @@ class RetrievalFalsa:
         )
         return MemoryRetrievalResult(
             context=context,
-            governance_resolution=_resolucao(contexto=context),
+            # Ecoa a policy solicitada, como a E4.6 real faz: desde o
+            # corretivo E4.8.1 a identidade local da Retrieval tem de
+            # coincidir com a das decisões, e um dublê que devolvesse
+            # sempre `_GK` seria ele próprio incoerente.
+            governance_resolution=_resolucao(contexto=context, policy_key=policy_key),
             items=itens,
             search_executed=True,
             limit=limit,
@@ -1140,3 +1156,432 @@ def test_mi72_decision_separates_type_from_value_errors():
 def test_mi73_result_refuses_a_non_context_object():
     with pytest.raises(TypeError, match="MemoryContext"):
         MemoryIsolationResult(context="nao-e-contexto", decisions=(), evaluated_at=_MOMENTO)
+
+
+# ======================================================================
+# E4.8.1 — Isolation Authority & Result Fidelity
+# ======================================================================
+#
+# A E4.8 provava escopo e não provava autoridade:
+#
+#     SCOPE NON-EXPANSION WITHOUT AUTHORITY FIDELITY = INCOMPLETE ISOLATION
+#     SAME DOMAIN != SAME CONTEXT
+#     DOMAIN BINDING ALONE != CONTEXT BINDING
+#     ONE REQUEST != MULTIPLE AUTHORITY PROVENANCES
+
+_PID_OUTRO = uuid.UUID("88888888-8888-8888-8888-888888888888")
+
+
+def _res_livre(
+    *,
+    domain_ids,
+    actor_ref="ana",
+    purpose="curadoria",
+    outcome=GovernanceOutcome.ADMISSIBLE,
+    policy_key=_GK,
+    policy_version=1,
+    policy_id=_POLICY_ID,
+    matched_rule_id="r1",
+):
+    """Resolução montada campo a campo, para exercitar divergências."""
+    campos: dict = {
+        "operation": CognitiveOperation.READ,
+        "outcome": outcome,
+        "context_domain_ids": domain_ids,
+        "context_actor_ref": actor_ref,
+        "context_purpose": purpose,
+        "safety_boundary_version": PLATFORM_SAFETY_BOUNDARY_VERSION,
+    }
+    if outcome is GovernanceOutcome.PROHIBITED:
+        campos |= {
+            "blocked_capabilities": (CriticalCapability.CATASTROPHIC_HARM_ENABLEMENT,),
+            "safety_rationale": "proibido pela fronteira",
+        }
+    elif outcome is not GovernanceOutcome.NOT_APPLICABLE:
+        campos |= {
+            "policy_key": policy_key,
+            "policy_version": policy_version,
+            "policy_id": policy_id,
+            "matched_rule_id": matched_rule_id,
+        }
+    return GovernanceResolution(**campos)
+
+
+def _vista(contexto, **kw):
+    """Vista construída a partir de uma resolução montada campo a campo.
+
+    `search_executed` acompanha o outcome: a E4.6 congelou que uma
+    resolução que não autoriza execução não pode ter chamado a Search.
+    """
+    resolucao = _res_livre(domain_ids=contexto.domain_ids, **kw)
+    executou = resolucao.execution_authorized
+    return MemoryRetrievalResult(
+        context=contexto,
+        governance_resolution=resolucao,
+        items=(),
+        search_executed=executou,
+        limit=50,
+        offset=0,
+        has_more=False if executou else None,
+    )
+
+
+# --- Defeito A: vínculo ao contexto original --------------------------
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor", "trecho"),
+    [
+        ("actor_ref", "mallory", "emitida para o ator"),
+        ("purpose", "other", "emitida para o propósito"),
+    ],
+)
+def test_e481_direct_constructor_refuses_a_decision_bound_to_another_context(campo, valor, trecho):
+    """Defeito A: `SAME DOMAIN != SAME CONTEXT`.
+
+    Na cadeia 61 uma decisão emitida para `mallory/other` era aceita num
+    resultado cujo contexto declarava `alice/research`.
+    """
+    contexto = _contexto(_D1, actor_ref="alice", purpose="research")
+    divergente = _res_livre(domain_ids=(_D1,), actor_ref="alice", purpose="research")
+    divergente = dataclasses.replace(divergente, **{f"context_{campo}": valor})
+    with pytest.raises(ValueError) as exc:
+        MemoryIsolationResult(
+            context=contexto,
+            decisions=(DomainIsolationDecision(domain_id=_D1, resolution=divergente),),
+            evaluated_at=_MOMENTO,
+            retrieval=_vista(contexto, actor_ref="alice", purpose="research"),
+        )
+    assert trecho in str(exc.value)
+    assert f"decisão do domínio {_D1}" in str(exc.value)
+
+
+def test_e481_manager_refuses_singleton_bound_to_another_actor_before_memberships():
+    """Preserva a garantia do manager: a recusa precede o patrimônio."""
+    governanca = GovernancaFalsa()
+    governanca.resolucao_fixa = _res_livre(domain_ids=(_D1,), actor_ref="mallory")
+    memberships = MembershipsFalsas({_D1: ()})
+    retrieval = RetrievalFalsa()
+    manager = MemoryIsolationManager(retrieval, governanca, ContextoFalso(), memberships)
+    with pytest.raises(IsolationContractViolationError) as exc:
+        _executar(manager, context=_contexto(_D1, actor_ref="ana"))
+    assert exc.value.code == "PIA-8040"
+    assert memberships.chamadas == []
+    assert retrieval.chamadas == []
+
+
+# --- Defeito B: identidade da autoridade da Retrieval -----------------
+
+
+@pytest.mark.parametrize(
+    ("divergencia", "descricao"),
+    [
+        ({"policy_key": "policy-nao-solicitada"}, "outra policy_key"),
+        ({"policy_version": 2}, "mesma key, outra versão"),
+        ({"policy_id": _PID_OUTRO}, "mesma key e versão, outro id"),
+    ],
+)
+def test_e481_direct_constructor_refuses_a_retrieval_under_another_authority(
+    divergencia, descricao
+):
+    """Defeito B: `SAME POLICY KEY != SAME POLICY VERSION`."""
+    contexto = _contexto(_D1)
+    with pytest.raises(ValueError, match="autorizada por"):
+        MemoryIsolationResult(
+            context=contexto,
+            decisions=(
+                DomainIsolationDecision(domain_id=_D1, resolution=_res_livre(domain_ids=(_D1,))),
+            ),
+            evaluated_at=_MOMENTO,
+            retrieval=_vista(contexto, **divergencia),
+        )
+
+
+@pytest.mark.parametrize(
+    "divergencia",
+    [
+        {"policy_key": "policy-nao-solicitada"},
+        {"policy_version": 2},
+        {"policy_id": _PID_OUTRO},
+    ],
+)
+def test_e481_manager_converts_authority_divergence_into_pia_8040(divergencia):
+    """`COLLABORATOR DISAGREEMENT != INVALID REQUEST`."""
+    contexto = _contexto(_D1)
+
+    class RetrievalDivergente:
+        def retrieve(self, *, context, **kw):
+            return MemoryRetrievalResult(
+                context=context,
+                governance_resolution=_res_livre(domain_ids=context.domain_ids, **divergencia),
+                items=(),
+                search_executed=True,
+                limit=kw.get("limit", 50),
+                offset=kw.get("offset", 0),
+                has_more=False,
+            )
+
+    manager = MemoryIsolationManager(
+        RetrievalDivergente(), GovernancaFalsa(), ContextoFalso(), MembershipsFalsas({_D1: ()})
+    )
+    with pytest.raises(IsolationContractViolationError) as exc:
+        _executar(manager, context=contexto)
+    assert exc.value.code == "PIA-8040"
+
+
+def test_e481_retrieval_without_local_provenance_is_refused():
+    contexto = _contexto(_D1)
+    # `NOT_APPLICABLE` não executa Search — a E4.6 congelou isso —, então
+    # a vista sem proveniência é necessariamente não executada. O
+    # resultado acumula os dois motivos.
+    sem_policy = MemoryRetrievalResult(
+        context=contexto,
+        governance_resolution=_res_livre(
+            domain_ids=(_D1,), outcome=GovernanceOutcome.NOT_APPLICABLE
+        ),
+        items=(),
+        search_executed=False,
+        limit=50,
+        offset=0,
+        has_more=None,
+    )
+    with pytest.raises(ValueError, match="não cita proveniência local"):
+        MemoryIsolationResult(
+            context=contexto,
+            decisions=(
+                DomainIsolationDecision(domain_id=_D1, resolution=_res_livre(domain_ids=(_D1,))),
+            ),
+            evaluated_at=_MOMENTO,
+            retrieval=sem_policy,
+        )
+
+
+# --- Defeito C: Retrieval negada vira PIA-8040 ------------------------
+
+
+def test_e481_denied_retrieval_after_full_authorization_raises_pia_8040():
+    """Defeito C: era `ValueError` cru escapando do caminho canônico."""
+    contexto = _contexto(_D1)
+
+    class RetrievalNegada:
+        def retrieve(self, *, context, **kw):
+            return MemoryRetrievalResult(
+                context=context,
+                governance_resolution=_res_livre(
+                    domain_ids=context.domain_ids,
+                    outcome=GovernanceOutcome.NOT_APPLICABLE,
+                ),
+                items=(),
+                search_executed=False,
+                limit=kw.get("limit", 50),
+                offset=kw.get("offset", 0),
+                has_more=None,
+            )
+
+    manager = MemoryIsolationManager(
+        RetrievalNegada(), GovernancaFalsa(), ContextoFalso(), MembershipsFalsas({_D1: ()})
+    )
+    with pytest.raises(IsolationContractViolationError) as exc:
+        _executar(manager, context=contexto)
+    assert exc.value.code == "PIA-8040"
+    assert not isinstance(exc.value, ValueError) or exc.value.code == "PIA-8040"
+    assert any("não autoriza execução" in m for m in exc.value.reasons)
+
+
+# --- Defeito D: identidade única entre decisões -----------------------
+
+
+def test_e481_singleton_decisions_with_divergent_policy_identity_are_refused():
+    """Defeito D: `ONE REQUEST != MULTIPLE AUTHORITY PROVENANCES`."""
+    contexto = _contexto(_D1, _D2)
+    decisoes = tuple(
+        sorted(
+            (
+                DomainIsolationDecision(domain_id=_D1, resolution=_res_livre(domain_ids=(_D1,))),
+                DomainIsolationDecision(
+                    domain_id=_D2,
+                    resolution=_res_livre(domain_ids=(_D2,), policy_id=_PID_OUTRO),
+                ),
+            ),
+            key=lambda d: d.domain_id,
+        )
+    )
+    with pytest.raises(ValueError, match="identidades de policy local diferentes"):
+        MemoryIsolationResult(
+            context=contexto,
+            decisions=decisoes,
+            evaluated_at=_MOMENTO,
+            retrieval=_vista(contexto),
+        )
+
+
+def test_e481_manager_refuses_divergent_identities_before_memberships():
+    contexto = _contexto(_D1, _D2)
+
+    class GovernancaDivergente:
+        def __init__(self):
+            self.n = 0
+
+        def resolve(self, *, descriptor, context, policy_key=None, moment=None):
+            self.n += 1
+            pid = _POLICY_ID if self.n == 1 else _PID_OUTRO
+            return _res_livre(domain_ids=context.domain_ids, policy_id=pid)
+
+    memberships = MembershipsFalsas({_D1: (), _D2: ()})
+    retrieval = RetrievalFalsa()
+    manager = MemoryIsolationManager(
+        retrieval, GovernancaDivergente(), ContextoFalso(), memberships
+    )
+    with pytest.raises(IsolationContractViolationError) as exc:
+        _executar(manager, context=contexto)
+    assert exc.value.code == "PIA-8040"
+    assert memberships.chamadas == []
+    assert retrieval.chamadas == []
+
+
+def test_e481_same_identity_with_different_matched_rules_stays_valid():
+    """`MATCHED RULE != POLICY IDENTITY`.
+
+    Regras diferentes podem casar em domínios diferentes da **mesma**
+    versão de policy; recusar isso rejeitaria composição legítima.
+    """
+    contexto = _contexto(_D1, _D2)
+    decisoes = tuple(
+        sorted(
+            (
+                DomainIsolationDecision(
+                    domain_id=_D1,
+                    resolution=_res_livre(domain_ids=(_D1,), matched_rule_id="regra-a"),
+                ),
+                DomainIsolationDecision(
+                    domain_id=_D2,
+                    resolution=_res_livre(domain_ids=(_D2,), matched_rule_id="regra-b"),
+                ),
+            ),
+            key=lambda d: d.domain_id,
+        )
+    )
+    resultado = MemoryIsolationResult(
+        context=contexto,
+        decisions=decisoes,
+        evaluated_at=_MOMENTO,
+        retrieval=_vista(contexto),
+    )
+    assert resultado.authorized is True
+
+
+# --- Outcomes sem proveniência local continuam legítimos --------------
+
+
+@pytest.mark.parametrize(
+    "outcome", [GovernanceOutcome.NOT_APPLICABLE, GovernanceOutcome.PROHIBITED]
+)
+def test_e481_refusals_without_local_provenance_remain_valid(outcome):
+    """A E4.3 deliberadamente não consulta policy nesses casos, e o
+    isolamento não fabrica proveniência onde ela não existe."""
+    contexto = _contexto(_D1)
+    resultado = MemoryIsolationResult(
+        context=contexto,
+        decisions=(
+            DomainIsolationDecision(
+                domain_id=_D1, resolution=_res_livre(domain_ids=(_D1,), outcome=outcome)
+            ),
+        ),
+        evaluated_at=_MOMENTO,
+    )
+    assert resultado.authorized is False
+    assert resultado.retrieval is None
+    assert resultado.refused_domain_ids == (_D1,)
+
+
+def test_e481_local_inadmissible_keeps_its_provenance_and_refuses_atomically():
+    contexto = _contexto(_D1)
+    decisao = DomainIsolationDecision(
+        domain_id=_D1,
+        resolution=_res_livre(domain_ids=(_D1,), outcome=GovernanceOutcome.INADMISSIBLE),
+    )
+    assert decisao.resolution.policy_id == _POLICY_ID
+    resultado = MemoryIsolationResult(context=contexto, decisions=(decisao,), evaluated_at=_MOMENTO)
+    assert resultado.authorized is False
+    assert resultado.retrieval is None
+
+
+def test_e481_mixed_provenance_between_refusal_and_authorization_is_allowed():
+    """Um `PROHIBITED` sem proveniência ao lado de um `ADMISSIBLE` com
+    ela não é incoerência — a fronteira simplesmente não consultou
+    policy."""
+    contexto = _contexto(_D1, _D2)
+    decisoes = tuple(
+        sorted(
+            (
+                DomainIsolationDecision(domain_id=_D1, resolution=_res_livre(domain_ids=(_D1,))),
+                DomainIsolationDecision(
+                    domain_id=_D2,
+                    resolution=_res_livre(domain_ids=(_D2,), outcome=GovernanceOutcome.PROHIBITED),
+                ),
+            ),
+            key=lambda d: d.domain_id,
+        )
+    )
+    resultado = MemoryIsolationResult(context=contexto, decisions=decisoes, evaluated_at=_MOMENTO)
+    assert resultado.authorized is False
+    assert resultado.refused_domain_ids == (_D2,)
+
+
+# --- Uma implementação, não duas --------------------------------------
+
+
+def test_e481_coherence_function_is_shared_between_schema_and_manager():
+    """Duas cópias da mesma regra divergem — E4.5.1, E4.6.1, E4.7.2."""
+    import app.memory.schemas.isolation as schema_mod
+    import app.memory.services.memory_isolation_manager as manager_mod
+
+    fonte_schema = pathlib.Path(schema_mod.__file__).read_text(encoding="utf-8")
+    fonte_manager = pathlib.Path(manager_mod.__file__).read_text(encoding="utf-8")
+    assert fonte_schema.count("def verificar_coerencia_resultado_isolado(") == 1
+    assert "def verificar_coerencia_resultado_isolado(" not in fonte_manager
+    assert "verificar_coerencia_resultado_isolado(" in fonte_manager
+    # e o manager não reimplementa a comparação de identidade local
+    assert "policy_version !=" not in fonte_manager
+    assert "policy_id !=" not in fonte_manager
+
+
+def test_e481_all_reasons_are_accumulated():
+    """`PIA-8040` acumula tudo o que é detectável sem reflexão."""
+    contexto = _contexto(_D1, actor_ref="alice", purpose="research")
+    divergente = dataclasses.replace(
+        _res_livre(domain_ids=(_D1,), actor_ref="alice", purpose="research"),
+        context_actor_ref="mallory",
+        context_purpose="other",
+    )
+    with pytest.raises(ValueError) as exc:
+        MemoryIsolationResult(
+            context=contexto,
+            decisions=(DomainIsolationDecision(domain_id=_D1, resolution=divergente),),
+            evaluated_at=_MOMENTO,
+            retrieval=_vista(
+                contexto,
+                actor_ref="alice",
+                purpose="research",
+                policy_key="outra",
+            ),
+        )
+    mensagem = str(exc.value)
+    assert "emitida para o ator" in mensagem
+    assert "emitida para o propósito" in mensagem
+    assert "autorizada por" in mensagem
+
+
+def test_e481_no_reason_becomes_silent_filtering_or_repair():
+    """`LEAK DETECTED != AUTHORIZATION TO SILENTLY FILTER`."""
+    executavel = _codigo_executavel()
+    for proibido in ("filtrar", "descartar", "reparar", "corrigir"):
+        assert proibido not in executavel.lower()
+
+
+def test_e481_helper_uses_a_stable_policy_id_per_published_version():
+    """O harness anterior gerava `uuid4()` por chamada e normalizava o
+    defeito D. Corrigido, não preservado."""
+    primeira = _resolucao(contexto=_contexto(_D1))
+    segunda = _resolucao(contexto=_contexto(_D2))
+    assert primeira.policy_id == segunda.policy_id == _POLICY_ID

@@ -85,7 +85,11 @@ from app.memory.ports.isolation import (
     MembershipView,
 )
 from app.memory.schemas.governance import GovernanceResolution, resolucao_vincula_contexto
-from app.memory.schemas.isolation import DomainIsolationDecision, MemoryIsolationResult
+from app.memory.schemas.isolation import (
+    DomainIsolationDecision,
+    MemoryIsolationResult,
+    verificar_coerencia_resultado_isolado,
+)
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.schemas.retrieval import DEFAULT_LIMIT, MemoryRetrievalResult
 from app.memory.services.platform_safety_boundary import CapabilityDescriptor
@@ -175,6 +179,14 @@ class MemoryIsolationManager(Generic[CriteriaT_contra]):
             )
             return MemoryIsolationResult(context=context, decisions=decisoes, evaluated_at=instante)
 
+        # Coerência entre as decisões ANTES do snapshot: identidades de
+        # policy divergentes já invalidam o pedido, e ler memberships
+        # depois disso seria tocar patrimônio sob autoridade incoerente
+        # (corretivo E4.8.1).
+        self._verificar_coerencia(
+            context=context, decisoes=decisoes, resultado=None, apenas_decisoes=True
+        )
+
         # Snapshot capturado SOMENTE depois da autoridade, e uma vez.
         # Garantia conservadora no instante observado: sem lock de
         # escrita, sem promessa de isolamento serializável.
@@ -196,6 +208,10 @@ class MemoryIsolationManager(Generic[CriteriaT_contra]):
             offset=offset,
             autorizado=autorizado,
         )
+        # Coerência de autoridade ANTES de construir o value object: um
+        # desacordo entre colaboradores é PIA-8040, não `ValueError` cru
+        # escapando do caminho canônico (corretivo E4.8.1).
+        self._verificar_coerencia(context=context, decisoes=decisoes, resultado=resultado)
 
         logger.info(
             "isolated_retrieval_executed",
@@ -210,6 +226,36 @@ class MemoryIsolationManager(Generic[CriteriaT_contra]):
             evaluated_at=instante,
             retrieval=resultado,
         )
+
+    @staticmethod
+    def _verificar_coerencia(
+        *,
+        context: MemoryContext,
+        decisoes: tuple[DomainIsolationDecision, ...],
+        resultado: MemoryRetrievalResult | None,
+        apenas_decisoes: bool = False,
+    ) -> None:
+        """Converte incoerência de autoridade em `PIA-8040`.
+
+        Usa a **mesma** função pura que `MemoryIsolationResult` aplica no
+        construtor direto. O manager verifica a fronteira; o value object
+        impede que o construtor público contorne a mesma garantia — e uma
+        segunda implementação divergiria com o tempo, como a E4.5.1
+        descobriu.
+
+        A distinção de categoria importa: o pedido já foi validado, então
+        o que resta é colaboradores discordando entre si.
+
+            COLLABORATOR DISAGREEMENT != INVALID REQUEST
+        """
+        motivos = verificar_coerencia_resultado_isolado(
+            context=context,
+            decisions=decisoes,
+            retrieval=resultado,
+            apenas_decisoes=apenas_decisoes,
+        )
+        if motivos:
+            raise IsolationContractViolationError(motivos)
 
     # --- Validação do pedido -------------------------------------------
 

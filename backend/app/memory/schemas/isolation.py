@@ -37,7 +37,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.memory.models.governance_enums import CognitiveOperation, GovernanceOutcome
-from app.memory.schemas.governance import GovernanceResolution
+from app.memory.schemas.governance import (
+    GovernanceResolution,
+    resolucao_vincula_contexto,
+)
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.schemas.retrieval import MemoryRetrievalResult
 
@@ -104,6 +107,155 @@ class DomainIsolationDecision:
     def outcome(self) -> GovernanceOutcome:
         """Desfecho da governança, sem reclassificação."""
         return self.resolution.outcome
+
+
+def _identidade_local(
+    resolution: GovernanceResolution,
+) -> tuple[str, int, uuid.UUID] | None:
+    """Identidade **exata** da policy local que fundamentou a resolução.
+
+        (policy_key, policy_version, policy_id)
+
+    `None` quando a policy local não foi consultada — `PROHIBITED` e
+    `NOT_APPLICABLE` por ausência de versão vigente. Os três campos são
+    tudo-ou-nada pelos invariantes congelados da E4.3.2, então basta
+    testar um para saber se há proveniência.
+
+    `matched_rule_id` **não** entra: regras diferentes podem casar em
+    domínios diferentes da mesma versão de policy, e usá-lo como
+    identidade recusaria composições legítimas.
+
+        SAME POLICY KEY != SAME POLICY VERSION
+        MATCHED RULE != POLICY IDENTITY
+    """
+    chave = resolution.policy_key
+    versao = resolution.policy_version
+    identificador = resolution.policy_id
+    if chave is None or versao is None or identificador is None:
+        return None
+    return (chave, versao, identificador)
+
+
+def verificar_coerencia_resultado_isolado(
+    *,
+    context: MemoryContext,
+    decisions: tuple["DomainIsolationDecision", ...],
+    retrieval: MemoryRetrievalResult | None,
+    apenas_decisoes: bool = False,
+) -> tuple[str, ...]:
+    """Motivos pelos quais o desfecho isolado **não** é coerente.
+
+    Tupla vazia significa coerência confirmada.
+
+    Implementação **única** (corretivo E4.8.1), usada por
+    `MemoryIsolationResult.__post_init__` — que a converte em
+    `ValueError` — e pelo `MemoryIsolationManager`, que a converte em
+    `PIA-8040` antes de construir o value object. Duas cópias da mesma
+    regra divergem com o tempo: E4.5.1, E4.6.1 e E4.7.2 já pagaram por
+    isso.
+
+    A E4.8 provava escopo e não provava autoridade:
+
+        SCOPE NON-EXPANSION WITHOUT AUTHORITY FIDELITY = INCOMPLETE ISOLATION
+        SAME DOMAIN != SAME CONTEXT
+        DOMAIN BINDING ALONE != CONTEXT BINDING
+        ONE REQUEST != MULTIPLE AUTHORITY PROVENANCES
+
+    `apenas_decisoes=True` verifica **só** o que depende das decisões,
+    para que o manager possa recusar identidades divergentes **antes**
+    de ler memberships — patrimônio não se toca sob autoridade
+    incoerente. Nesse modo a ausência de `retrieval` não é motivo,
+    porque a Retrieval ainda não foi executada.
+    """
+    motivos: list[str] = []
+
+    # 1. Cada decisão foi emitida para o singleton daquele domínio E
+    #    para o ator e o propósito do contexto ORIGINAL. A E4.3.4 tornou
+    #    isso verificável; aqui se usa a MESMA função, não uma cópia.
+    for decisao in decisions:
+        divergencias = resolucao_vincula_contexto(
+            decisao.resolution,
+            domain_ids=(decisao.domain_id,),
+            actor_ref=context.actor_ref,
+            purpose=context.purpose,
+        )
+        motivos.extend(
+            f"decisão do domínio {decisao.domain_id}: {motivo}" for motivo in divergencias
+        )
+
+    # 2. Um pedido, uma autoridade local. Decisoes que carregam
+    #    proveniência local têm de citar a MESMA identidade — mesmo
+    #    `policy_key` e mesmo `moment` não bastam se as versões diferem.
+    identidades = {
+        ident for ident in (_identidade_local(d.resolution) for d in decisions) if ident is not None
+    }
+    if len(identidades) > 1:
+        legiveis = sorted(f"{k}@v{v}/{i}" for k, v, i in identidades)
+        motivos.append(
+            "as decisões citam identidades de policy local diferentes "
+            f"({', '.join(legiveis)}); um pedido é avaliado sob uma autoridade"
+        )
+
+    if apenas_decisoes:
+        return tuple(motivos)
+
+    if not all(d.authorized for d in decisions):
+        # Recusa atômica: o pedido multidomínio não é executado
+        # parcialmente, e o contexto não é estreitado em silêncio.
+        #
+        #     PARTIAL AUTHORITY != AUTHORITY TO REWRITE REQUESTED SCOPE
+        if retrieval is not None:
+            motivos.append(
+                "algum domínio declarado não foi autorizado; executar a Retrieval "
+                "responderia a uma pergunta diferente da que foi feita"
+            )
+        return tuple(motivos)
+
+    if retrieval is None:
+        motivos.append(
+            "todos os domínios foram autorizados, então a Retrieval foi executada; "
+            "um resultado ausente aqui afirmaria autoridade sem efeito"
+        )
+        return tuple(motivos)
+
+    # 3. A vista é sobre o contexto ORIGINAL, executada e autorizada.
+    #
+    #     VALIDATION CONFIRMS
+    #     ISOLATION DOES NOT REWRITE USER CONTEXT
+    if retrieval.context != context:
+        motivos.append(
+            "o resultado da Retrieval cita um contexto diferente do solicitado; o "
+            "isolamento não reescreve a perspectiva do usuário"
+        )
+    if not retrieval.search_executed:
+        motivos.append(
+            "com todos os domínios autorizados a Retrieval executa; uma vista não "
+            "executada descreveria uma recusa que não houve"
+        )
+    if not retrieval.governance_resolution.execution_authorized:
+        motivos.append(
+            "a Retrieval devolveu uma resolução que não autoriza execução, embora "
+            "todas as decisões de domínio tenham autorizado"
+        )
+
+    # 4. A autoridade que a Retrieval declara é a MESMA das decisões.
+    identidade_retrieval = _identidade_local(retrieval.governance_resolution)
+    if identidades:
+        esperada = next(iter(identidades))
+        if identidade_retrieval is None:
+            motivos.append(
+                "a Retrieval não cita proveniência local, mas as decisões foram "
+                f"fundamentadas em {esperada[0]}@v{esperada[1]}"
+            )
+        elif identidade_retrieval != esperada:
+            motivos.append(
+                "a Retrieval foi autorizada por "
+                f"{identidade_retrieval[0]}@v{identidade_retrieval[1]}/"
+                f"{identidade_retrieval[2]}, e as decisões por "
+                f"{esperada[0]}@v{esperada[1]}/{esperada[2]}"
+            )
+
+    return tuple(motivos)
 
 
 @dataclass(frozen=True)
@@ -189,39 +341,11 @@ class MemoryIsolationResult:
                 f"{type(self.retrieval).__name__}"
             )
 
-        todos_autorizados = all(d.authorized for d in decisoes)
-        if not todos_autorizados:
-            # Recusa atômica: o pedido multidomínio não é executado
-            # parcialmente, e o contexto não é estreitado em silêncio.
-            #
-            #     PARTIAL AUTHORITY != AUTHORITY TO REWRITE REQUESTED SCOPE
-            if self.retrieval is not None:
-                raise ValueError(
-                    "algum domínio declarado não foi autorizado; executar a Retrieval "
-                    "responderia a uma pergunta diferente da que foi feita"
-                )
-            return
-
-        if self.retrieval is None:
-            raise ValueError(
-                "todos os domínios foram autorizados, então a Retrieval foi executada; "
-                "um resultado ausente aqui afirmaria autoridade sem efeito"
-            )
-        # A vista tem de ser sobre o contexto ORIGINAL, com a paginação
-        # solicitada — não sobre um contexto reescrito.
-        #
-        #     VALIDATION CONFIRMS
-        #     ISOLATION DOES NOT REWRITE USER CONTEXT
-        if self.retrieval.context != self.context:
-            raise ValueError(
-                "o resultado da Retrieval cita um contexto diferente do solicitado; o "
-                "isolamento não reescreve a perspectiva do usuário"
-            )
-        if not self.retrieval.search_executed:
-            raise ValueError(
-                "com todos os domínios autorizados a Retrieval executa; uma vista não "
-                "executada descreveria uma recusa que não houve"
-            )
+        motivos = verificar_coerencia_resultado_isolado(
+            context=self.context, decisions=decisoes, retrieval=self.retrieval
+        )
+        if motivos:
+            raise ValueError("; ".join(motivos))
 
     @property
     def authorized(self) -> bool:

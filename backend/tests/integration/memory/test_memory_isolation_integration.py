@@ -716,3 +716,207 @@ def test_ii17_no_new_table_was_introduced():
     tabelas = set(inspect(engine).get_table_names())
     for proibida in ("memory_isolations", "workspaces", "schedules", "isolation_scopes"):
         assert proibida not in tabelas
+
+
+# ======================================================================
+# E4.8.1 — fidelidade da autoridade, contra o banco real
+# ======================================================================
+
+
+class _RetrievalComOutraAutoridade:
+    """Chama a E4.6 real e troca **somente** a `governance_resolution`.
+
+    Itens, contexto, paginação e demais campos são preservados: a
+    adulteração é de autoridade, não de conteúdo. Uma resolução
+    inteiramente fabricada provaria outra coisa.
+    """
+
+    def __init__(self, real: MemoryRetrievalManager, **divergencia) -> None:
+        self._real = real
+        self._divergencia = divergencia
+        self.chamadas = 0
+
+    def retrieve(self, **kw):
+        self.chamadas += 1
+        resultado = self._real.retrieve(**kw)
+        return dataclasses.replace(
+            resultado,
+            governance_resolution=dataclasses.replace(
+                resultado.governance_resolution, **self._divergencia
+            ),
+        )
+
+
+def _isolar_com_retrieval(session, retrieval_port, contexto, chave, trace_id, **kw):
+    manager = MemoryIsolationManager(
+        retrieval_port,
+        GovernanceManager(GovernancePolicyRepository(session)),
+        ContextManager(MemoryDomainRepository(session)),
+        MemoryDomainMembershipRepository(session),
+    )
+    return manager.retrieve_isolated(
+        context=contexto,
+        descriptor=_descritor(),
+        criteria=SearchCriteria(trace_id=trace_id),
+        policy_key=chave,
+        moment=_MOMENTO,
+        **kw,
+    )
+
+
+@pytest.mark.parametrize(
+    ("divergencia", "descricao"),
+    [
+        ({"policy_key": "policy-nao-solicitada"}, "outra policy_key"),
+        ({"policy_version": 99}, "mesma key, outra versão"),
+        ({"policy_id": uuid.UUID(int=7)}, "mesma key e versão, outro id"),
+    ],
+)
+def test_ii18_retrieval_under_another_authority_is_refused(divergencia, descricao):
+    """Defeito B contra o banco real, com a E4.6 verdadeira."""
+    trace = _trace()
+    a = _criar_objeto(trace)
+    d1 = _criar_dominio()
+    _associar(d1, a)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar(chave)
+    try:
+        escritas: list[str] = []
+
+        def _contar(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "TRUNCATE")):
+                escritas.append(statement)
+
+        with UnitOfWork() as uow:
+            engine = uow.session.get_bind()
+            sa.event.listen(engine, "before_cursor_execute", _contar)
+            try:
+                real = MemoryRetrievalManager(
+                    SearchEngine(SearchRepository(uow.session)),
+                    GovernanceManager(GovernancePolicyRepository(uow.session)),
+                    ContextManager(MemoryDomainRepository(uow.session)),
+                    MemoryDomainMembershipRepository(uow.session),
+                )
+                porta = _RetrievalComOutraAutoridade(real, **divergencia)
+                with pytest.raises(IsolationContractViolationError) as exc:
+                    _isolar_com_retrieval(
+                        uow.session,
+                        porta,
+                        MemoryContext(domain_ids=(d1,)),
+                        chave,
+                        trace,
+                    )
+                assert not uow.session.dirty
+                uow.session.flush()
+            finally:
+                sa.event.remove(engine, "before_cursor_execute", _contar)
+
+        assert exc.value.code == "PIA-8040"
+        assert porta.chamadas == 1, "a E4.6 real foi chamada antes da adulteração"
+        assert escritas == []
+    finally:
+        _limpar([a], [d1], [chave])
+
+
+def test_ii19_refusal_returns_nothing_partial():
+    """A recusa não devolve página parcial."""
+    trace = _trace()
+    coids = [_criar_objeto(trace) for _ in range(3)]
+    d1 = _criar_dominio()
+    for coid in coids:
+        _associar(d1, coid)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar(chave)
+    try:
+        with UnitOfWork() as uow:
+            real = MemoryRetrievalManager(
+                SearchEngine(SearchRepository(uow.session)),
+                GovernanceManager(GovernancePolicyRepository(uow.session)),
+                ContextManager(MemoryDomainRepository(uow.session)),
+                MemoryDomainMembershipRepository(uow.session),
+            )
+            porta = _RetrievalComOutraAutoridade(real, policy_key="outra")
+            with pytest.raises(IsolationContractViolationError):
+                _isolar_com_retrieval(
+                    uow.session, porta, MemoryContext(domain_ids=(d1,)), chave, trace
+                )
+        # patrimônio e memberships intactos
+        with UnitOfWork() as uow:
+            assert (
+                uow.session.execute(
+                    sa.text(
+                        "SELECT count(*) FROM memory_domain_memberships " "WHERE domain_id = :d"
+                    ),
+                    {"d": str(d1)},
+                ).scalar_one()
+                == 3
+            )
+    finally:
+        _limpar(coids, [d1], [chave])
+
+
+def test_ii20_real_policy_produces_one_identity_across_singletons_and_retrieval():
+    """A policy publicada real produz a MESMA identidade local em todos
+    os singletons e na Retrieval — o caso legítimo que o corretivo
+    preserva."""
+    trace = _trace()
+    a, b = _criar_objeto(trace), _criar_objeto(trace)
+    d1, d2 = _criar_dominio(), _criar_dominio()
+    _associar(d1, a)
+    _associar(d2, b)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar(chave)
+    try:
+        with UnitOfWork() as uow:
+            resultado = _isolar(
+                uow.session,
+                MemoryContext(domain_ids=(d1, d2), actor_ref="ana", purpose="curadoria"),
+                chave,
+                trace_id=trace,
+            )
+        assert resultado.authorized is True
+        assert resultado.retrieval is not None
+        identidades = {
+            (
+                d.resolution.policy_key,
+                d.resolution.policy_version,
+                d.resolution.policy_id,
+            )
+            for d in resultado.decisions
+        }
+        assert len(identidades) == 1
+        vista = resultado.retrieval.governance_resolution
+        assert (vista.policy_key, vista.policy_version, vista.policy_id) == next(iter(identidades))
+        # e cada decisão cita o ator/propósito do contexto original
+        for decisao in resultado.decisions:
+            assert decisao.resolution.context_actor_ref == "ana"
+            assert decisao.resolution.context_purpose == "curadoria"
+    finally:
+        _limpar([a, b], [d1, d2], [chave])
+
+
+def test_ii21_faithful_wrapper_control_still_passes():
+    """Controle positivo: o wrapper em modo fiel não invalida nada."""
+    trace = _trace()
+    a = _criar_objeto(trace)
+    d1 = _criar_dominio()
+    _associar(d1, a)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar(chave)
+    try:
+        with UnitOfWork() as uow:
+            real = MemoryRetrievalManager(
+                SearchEngine(SearchRepository(uow.session)),
+                GovernanceManager(GovernancePolicyRepository(uow.session)),
+                ContextManager(MemoryDomainRepository(uow.session)),
+                MemoryDomainMembershipRepository(uow.session),
+            )
+            porta = _RetrievalComOutraAutoridade(real)  # sem divergência
+            resultado = _isolar_com_retrieval(
+                uow.session, porta, MemoryContext(domain_ids=(d1,)), chave, trace
+            )
+        assert resultado.authorized is True
+        assert resultado.retrieval is not None
+        assert set(resultado.retrieval.coids) == {a}
+    finally:
+        _limpar([a], [d1], [chave])
