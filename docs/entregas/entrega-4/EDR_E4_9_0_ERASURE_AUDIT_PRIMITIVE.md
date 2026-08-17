@@ -285,7 +285,7 @@ o registro, não alcança conteúdo nenhum e não autoriza executor algum.
 
 ---
 
-## 11. Divergência registrada — §11 do prompt não pôde ser cumprido por inteiro
+## 11. Divergência registrada na cadeia 65 — §11 do prompt não pôde ser cumprido por inteiro
 
 O §11 exige corrigir uma imprecisão documental da E4.3.5: a alegação de
 que "quem executa é a E4.9". A inspeção mostrou que essa frase existe em
@@ -327,6 +327,26 @@ NO MODULE HAS BEEN AUTHORIZED TO EXECUTE ERASURE
 
 Registrar a divergência em vez de escolher em silêncio segue a
 hierarquia de autoridade do projeto e o §0.2.6 do master.
+
+### Resolução posterior — E4.3.5.1
+
+A divergência acima descreve corretamente o estado da cadeia 65. Ela foi
+resolvida pelo corretivo E4.3.5.1, auditado como `PASS FINAL` na cadeia 66.
+
+```text
+RESOLVED_BY = E4.3.5.1
+RESOLVED_AT_PATCH_CHAIN = 66
+EXECUTABLE_CODE_DELTA = 0
+AUTHORIZED_EXECUTOR = NONE
+```
+
+A docstring agora usa a formulação normativa:
+
+> Autoriza representar a disposição. **Não** executa apagamento nem fabrica
+> recibo — nenhum executor foi autorizado ou implementado.
+
+Portanto, a exigência de corretivo mencionada no relato histórico está
+cumprida e não permanece pendente.
 
 ---
 

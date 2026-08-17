@@ -150,11 +150,11 @@ Duas das sete fechadas, cinco abertas. A E4.9 continua bloqueada.
 | 5 | nenhuma FK destrutiva prescrita | conferido |
 | 6 | `OPTION_C` permanece não autorizada | conferido |
 | 7 | as demais Stop Conditions continuam abertas | conferido |
-| 8 | imprecisão da E4.3.5 corrigida | **NÃO CUMPRIDO — ver §8** |
+| 8 | imprecisão da E4.3.5 corrigida | **não cumprido na cadeia 65 — resolvido pela E4.3.5.1 na cadeia 66, ver §8** |
 
 ---
 
-## 8. O item 8 do §11 não pôde ser cumprido
+## 8. O item 8 do §11 não pôde ser cumprido na cadeia 65
 
 A frase a corrigir — "quem executa é a E4.9" — existe em **um único
 lugar**, a docstring de `RETENTION_DISPOSITION` em
@@ -175,6 +175,26 @@ AUTHORIZED_EXECUTOR = NONE
 A substituição exige um corretivo próprio de uma linha — `E4.3.5.1`,
 docstring apenas — que o titular precisa autorizar, porque altera o tree
 de produção. É decisão de autoridade, não do implementador.
+
+### Resolução posterior — E4.3.5.1
+
+A divergência acima descreve corretamente o estado da cadeia 65. Ela foi
+resolvida pelo corretivo E4.3.5.1, auditado como `PASS FINAL` na cadeia 66.
+
+```text
+RESOLVED_BY = E4.3.5.1
+RESOLVED_AT_PATCH_CHAIN = 66
+EXECUTABLE_CODE_DELTA = 0
+AUTHORIZED_EXECUTOR = NONE
+```
+
+A docstring agora usa a formulação normativa:
+
+> Autoriza representar a disposição. **Não** executa apagamento nem fabrica
+> recibo — nenhum executor foi autorizado ou implementado.
+
+Portanto, a exigência de corretivo mencionada no relato histórico está
+cumprida e não permanece pendente.
 
 ---
 
