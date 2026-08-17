@@ -178,6 +178,53 @@ Autorizar a primitiva **não** cria executor, storage, credencial ou
 aprovação: `ERASURE_TARGET_OWNERSHIP_GAP` e
 `DESTRUCTIVE_EXECUTION_AUTHORITY_GAP` permanecem abertas.
 
+**Atualização da E4.9.1 (cadeia 70).** `ERASURE_TARGET_OWNERSHIP_GAP`
+passou a `CLOSED_CANDIDATE_BY_AUTHORIZATION` — ver §4.4.2. Isso **não**
+cria storage nem executor, e `DESTRUCTIVE_EXECUTION_AUTHORITY_GAP`
+continua aberta.
+
+### 4.4.2 `ErasureTargetDescriptor` (E4.9) — **transitório, autorizado, não implementado**
+
+Acrescentado pela **E4.9.1**, que fechou por autorização a lacuna
+`ERASURE_TARGET_OWNERSHIP_GAP` da Tensão B do preflight da E4.9. Decisão
+integral em `EDR_E4_9_1_ERASURE_TARGET_CUSTODY_CONTRACT.md`.
+
+```text
+IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED
+PERSISTENCE = TRANSIENT — NUNCA PERSISTIDO
+```
+
+**Não é primitiva persistente**, e por isso não entra na tabela do §10:
+é um value object transitório e imutável, produzido por uma futura porta
+de resolução autorizada e descartado depois do uso.
+
+```text
+DESCRIPTOR != PATRIMONY  != POLICY  != APPROVAL
+DESCRIPTOR != EFFECT     != RECEIPT
+```
+
+*Por que a E3 não representa isto?* A E3 guarda **referências opacas**
+(`payload_ref`, `source_ref`, `evidence_refs`, `input_refs`,
+`output_refs`) e nenhuma delas resolve, localiza ou prova custódia. Uma
+string sintaticamente válida não é capacidade:
+
+```text
+payload_ref != ErasureTargetDescriptor
+COID        != CONTENT LOCATOR
+```
+
+**Classificação fechada de alvos:** `PIA_MANAGED_ARTIFACT`,
+`AUTHORIZED_CONNECTOR_REFERENT`, `COGNITIVE_METADATA_RECORD`,
+`UNRESOLVED_OPAQUE_REFERENCE`. Só as duas primeiras podem representar
+conteúdo apagável; a terceira não é conteúdo e a quarta exige recusa
+tipada.
+
+**O localizador nunca é persistido** — nem em `ErasureRecord`, nem em
+log. É o que não pode sobreviver ao efeito.
+
+**Duas fronteiras futuras e distintas:** `ErasureTargetResolverPort`
+(observacional) e `ErasureEffectPort`. Resolver não apaga nada.
+
 ### 4.5 `ComplianceFinding` (E4.10) — **admitida como transitória**
 
 *Por que a E3 não representa isto?* Não representa, mas a E3 já

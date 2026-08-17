@@ -44,6 +44,8 @@ modificado.
 | `on_expiry_action` de retenção | E4.9 | tensão com `CausalHistory` não resolvida — o preflight da E4.9 devolveu `ON_EXPIRY_ACTION_UNRESOLVED`, que **permanece aberta** |
 | **conciliação legal erasure × `CausalHistory`** | **E4.9** | `LEGAL_ERASURE_VS_CAUSAL_HISTORY = DEFERRED_TO_E4_9` — ver §6. **Direção congelada em A + B pela E4.9.0**; C rejeitada para o fluxo normal. A tensão **não** está fechada |
 | primitiva de auditoria de apagamento (`ErasureRecord`) | **E4.9** | **AUTORIZADA prospectivamente pela E4.9.0** (`EDR_E4_9_0_ERASURE_AUDIT_PRIMITIVE.md`). `IMPLEMENTATION_STATUS = AUTHORIZED_NOT_IMPLEMENTED`; nenhuma tabela, migração ou código existe |
+| contrato de alvo e custódia para erasure (`ErasureTargetDescriptor`, portas de resolução e efeito) | **E4.9** | **AUTORIZADO prospectivamente pela E4.9.1** (`EDR_E4_9_1_ERASURE_TARGET_CUSTODY_CONTRACT.md`). `AUTHORIZED_NOT_IMPLEMENTED`; nenhum resolvedor, storage, conector, credencial ou executor existe |
+| Artifact Storage e conectores externos | **não atribuído** | `ARTIFACT_STORAGE = DEFERRED`; a E4.9.1 autorizou o CONTRATO de alvo, não o mecanismo. Sem eles, nenhuma classe de alvo é executável |
 | portabilidade de `MemoryDomain` | **E4.3+** | E4.1 manteve `MEMORY_DOMAIN_SYNC = DEFERRED`: o critério decisivo (*se carregar semântica de acesso, é LOCAL*) só é avaliável depois de Governance existir |
 | portabilidade de `ValidatedExperience` | E4.11 | análise registrada, decisão do módulo |
 | escopo exato do registro da E4.11 | E4.11 | limite proposto, a confirmar |
@@ -175,3 +177,36 @@ LEGAL_ERASURE_CAUSAL_HISTORY_GAP    = OPEN_CONDITIONAL
 
 Uma obrigação externa que atinja o próprio registro causal continua
 sendo Stop Condition e exige EDR excepcional próprio.
+
+**Atualização da E4.9.1 (cadeia 70).** A pergunta "o que o PIA-OS pode
+afirmar que apaga?" deixou de estar em aberto **como contrato**; o
+mecanismo continua não existindo. O que foi autorizado:
+
+```text
+ERASURE_TARGET_CUSTODY_CONTRACT = AUTHORIZED_NOT_IMPLEMENTED
+ERASURE_TARGET_OWNERSHIP_GAP    = CLOSED_CANDIDATE_BY_AUTHORIZATION
+```
+
+Classificação fechada de alvos — `PIA_MANAGED_ARTIFACT`,
+`AUTHORIZED_CONNECTOR_REFERENT`, `COGNITIVE_METADATA_RECORD`,
+`UNRESOLVED_OPAQUE_REFERENCE` —, descritor transitório que nunca
+persiste o localizador, e duas portas distintas em que **resolver é
+observacional**.
+
+```text
+TECHNICAL_CUSTODY  != LEGAL_OWNERSHIP
+REFERENCE          != RESOLVED TARGET
+TARGET RESOLUTION  != DELETION AUTHORITY
+DELETION AUTHORITY != EFFECT
+```
+
+**A tensão do §6 permanece aberta.** A E4.9.1 estabelece a entrada
+necessária para decidi-la — sem saber o que é um alvo, não há como
+decidir o que acontece quando uma obrigação alcança o registro causal —
+mas não a decide:
+
+```text
+LEGAL_ERASURE_CAUSAL_HISTORY_GAP    = OPEN_CONDITIONAL
+ON_EXPIRY_ACTION_UNRESOLVED         = OPEN
+DESTRUCTIVE_EXECUTION_AUTHORITY_GAP = OPEN
+```
