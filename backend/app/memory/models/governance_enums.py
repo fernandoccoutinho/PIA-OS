@@ -115,7 +115,7 @@ class CognitiveOperation(StrEnum):
         RETENTION EXPIRY    != AUTHORIZATION TO DELETE
 
     Autoriza representar a disposição. **Não** executa apagamento nem
-    fabrica recibo — quem executa é a E4.9, que não existe.
+    fabrica recibo — nenhum executor foi autorizado ou implementado.
     """
 
     LEGAL_ERASURE = "legal_erasure"
