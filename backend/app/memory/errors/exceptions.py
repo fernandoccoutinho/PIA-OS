@@ -29,6 +29,8 @@ from app.memory.errors.codes import (
     PIA_8036_ACCESSIBILITY_POLICY_IMMUTABLE,
     PIA_8037_ACCESSIBILITY_TRANSITION_CONTRACT_VIOLATION,
     PIA_8038_ACCESSIBILITY_SUBJECT_NOT_FOUND,
+    PIA_8039_ISOLATION_SCOPE_REQUIRED,
+    PIA_8040_ISOLATION_CONTRACT_VIOLATION,
 )
 
 
@@ -270,4 +272,38 @@ class AccessibilitySubjectNotFoundError(PIAOSException):
         super().__init__(
             message=f"nenhum CognitiveObject com COID {coid}",
             detail={"coid": str(coid)},
+        )
+
+
+class IsolationScopeRequiredError(PIAOSException):
+    """Pedido de recuperação isolada sem domínio explícito (E4.8)."""
+
+    error_code = PIA_8039_ISOLATION_SCOPE_REQUIRED
+
+    def __init__(self) -> None:
+        super().__init__(
+            message=(
+                "recuperação isolada exige escopo de domínio explícito — um contexto "
+                "sem domínio não é 'todos os domínios isolados', e tratá-lo assim "
+                "seria a expansão de escopo que o isolamento impede"
+            ),
+            detail={"required": "context.domain_ids"},
+        )
+
+
+class IsolationContractViolationError(PIAOSException):
+    """Fronteira do isolamento violada (E4.8).
+
+    Carrega **todos** os motivos detectados: uma composição incoerente
+    raramente diverge num só ponto, e reportar apenas o primeiro
+    obrigaria a auditoria a descobrir os demais uma execução por vez.
+    """
+
+    error_code = PIA_8040_ISOLATION_CONTRACT_VIOLATION
+
+    def __init__(self, reasons: tuple[str, ...]) -> None:
+        self.reasons = reasons
+        super().__init__(
+            message="contrato de isolamento violado: " + "; ".join(reasons),
+            detail={"reasons": list(reasons)},
         )

@@ -22,9 +22,21 @@ from app.memory.ports.consolidation import (
     MultiInputTransformationPort,
     MultiInputTransformationReceiptPort,
 )
+from app.memory.ports.isolation import (
+    ContextValidationPort,
+    DomainMembershipPort,
+    GovernanceResolutionPort,
+    IsolatedRetrievalPort,
+    MembershipView,
+)
 from app.memory.ports.retrieval import CognitiveObjectView, CognitiveSearchPort
 
 __all__ = [
+    "ContextValidationPort",
+    "DomainMembershipPort",
+    "GovernanceResolutionPort",
+    "IsolatedRetrievalPort",
+    "MembershipView",
     "AccessibilityTransitionPort",
     "CausalEventView",
     "CausalEvidencePort",

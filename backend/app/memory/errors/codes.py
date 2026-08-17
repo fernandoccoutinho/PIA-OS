@@ -315,3 +315,60 @@ A busca usa `include_deleted=True`. Um objeto com exclusão lógica
 
     SOFT_DELETED != NEVER EXISTED
     SOFT_DELETED != SUBJECT_NOT_FOUND"""
+
+
+PIA_8039_ISOLATION_SCOPE_REQUIRED = ErrorCode(
+    code="PIA-8039",
+    default_message="isolation_scope_required",
+    category=ErrorCategory.VALIDATION,
+    http_status=400,
+    severity=ErrorSeverity.ERROR,
+)
+"""Pedido de recuperação isolada sem domínio explícito (`E4.8`).
+
+```text
+EMPTY MEMORY CONTEXT IS VALID
+ZERO-DOMAIN OBJECT IS VALID
+EMPTY DOMAIN SCOPE IS NOT AN ISOLATION BOUNDARY
+```
+
+Contexto vazio continua válido na E4.2 e a E4.6 continua funcionando com
+ele. O que a E4.8 recusa é tratar "sem domínio" como "todos os domínios
+isolados" — silenciosamente, seria a expansão de escopo que este módulo
+existe para impedir.
+
+**Não** significa inexistência de patrimônio. Categoria `VALIDATION`: o
+pedido é que está incompleto, e o chamador o corrige declarando o
+escopo."""
+
+
+PIA_8040_ISOLATION_CONTRACT_VIOLATION = ErrorCode(
+    code="PIA-8040",
+    default_message="isolation_contract_violation",
+    category=ErrorCategory.SYSTEM,
+    http_status=500,
+    severity=ErrorSeverity.ERROR,
+)
+"""Desacordo entre pedido, contexto, resoluções, snapshot e vista (`E4.8`).
+
+Cobre as fronteiras que o caminho isolado verifica:
+
+```text
+REQUEST  ↔ VALIDATED CONTEXT      o validador confirmou, mas substituiu
+REQUEST  ↔ SINGLETON RESOLUTION   autorizou outro domínio, ator ou propósito
+REQUEST  ↔ RETRIEVAL RESULT       a vista cita outro contexto ou paginação
+SNAPSHOT ↔ RETURNED COIDS         vazamento fora do escopo autorizado
+```
+
+Mesma disciplina de `PIA-8032`, `PIA-8034` e `PIA-8037`: acumula **todos**
+os motivos detectáveis sem reflexão, nada é reparado, e a exceção sobe.
+
+```text
+LEAK DETECTED != AUTHORIZATION TO SILENTLY FILTER
+AUTO_DESTRUCTIVE_REPAIR = FORBIDDEN
+```
+
+Categoria `SYSTEM`, não `VALIDATION`: chegar aqui não significa pedido
+inválido — isso já foi recusado antes — e sim que colaboradores internos
+discordam entre si. Uma decisão `INADMISSIBLE`, `NOT_APPLICABLE` ou
+`PROHIBITED` é resultado válido de autoridade, **nunca** esta exceção."""
