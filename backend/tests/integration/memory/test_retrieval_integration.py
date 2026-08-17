@@ -14,6 +14,7 @@ contagem de escritas por listener de cursor só valem no banco de
 produção.
 """
 
+import dataclasses
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -38,7 +39,7 @@ from app.memory.repositories.memory_domain_membership_repository import (
     MemoryDomainMembershipRepository,
 )
 from app.memory.repositories.memory_domain_repository import MemoryDomainRepository
-from app.memory.schemas.governance import GovernanceRule
+from app.memory.schemas.governance import GovernanceResolution, GovernanceRule
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.services.context_manager import ContextManager
 from app.memory.services.governance_manager import GovernanceManager
@@ -49,6 +50,8 @@ from app.memory.services.platform_safety_boundary import (
 )
 from app.memory.services.retrieval_manager import MemoryRetrievalManager
 from app.repositories.unit_of_work import UnitOfWork
+
+_MOMENTO_E434 = datetime(2024, 6, 1, tzinfo=UTC)
 
 _BASE = datetime(2024, 1, 1, tzinfo=UTC)
 
@@ -1054,3 +1057,188 @@ def test_ri462_no_writes_during_a_violating_retrieval():
         assert escritas == []
     finally:
         _limpar(coids, [], [chave])
+
+
+# ======================================================================
+# E4.3.4.1 — prova de integração do vínculo de contexto (consumidor E4.6)
+# ======================================================================
+#
+# A E4.3.4 provou o vínculo com dublês unitários e com o
+# `GovernanceManager` real em `test_governance_integration.py`, mas
+# **não** provou a composição ponta a ponta neste consumidor. Este
+# arquivo fecha a evidência que faltava.
+#
+#     REQUESTED CONTEXT MUST EQUAL RESOLVED CONTEXT
+#
+# O wrapper abaixo NÃO fabrica resolução: ele chama o manager real e
+# adultera exatamente uma dimensão contextual do objeto devolvido, por
+# `dataclasses.replace()`. Uma resolução inteiramente inventada provaria
+# outra coisa — provaria que o consumidor recusa lixo, não que ele
+# detecta uma autorização legítima emitida sob outra pergunta.
+
+
+class _GovernancaAdulterada:
+    """Delega ao `GovernanceManager` real e troca uma dimensão do
+    contexto vinculado.
+
+    Registra a resolução original para que o teste possa afirmar que a
+    policy real **foi** consultada antes da adulteração.
+    """
+
+    def __init__(self, real: GovernanceManager, *, campo: str | None, valor: object) -> None:
+        self._real = real
+        self._campo = campo
+        self._valor = valor
+        self.chamadas = 0
+        self.original: GovernanceResolution | None = None
+
+    def resolve(self, *, descriptor, context, policy_key=None, moment=None):
+        self.chamadas += 1
+        resolucao = self._real.resolve(
+            descriptor=descriptor,
+            context=context,
+            policy_key=policy_key,
+            moment=moment,
+        )
+        self.original = resolucao
+        if self._campo is None:
+            return resolucao
+        return dataclasses.replace(resolucao, **{self._campo: self._valor})
+
+
+def _compor_com_governanca(session, governanca):
+    """Composição real da E4.6, trocando apenas o colaborador de
+    governança pelo wrapper."""
+    return MemoryRetrievalManager(
+        SearchEngine(SearchRepository(session)),
+        governanca,
+        ContextManager(MemoryDomainRepository(session)),
+        MemoryDomainMembershipRepository(session),
+    )
+
+
+@pytest.mark.parametrize(
+    ("descricao", "campo", "valor", "trecho"),
+    [
+        ("domínio", "context_domain_ids", (uuid.uuid4(),), "emitida para os domínios"),
+        ("ator", "context_actor_ref", "outro-ator", "emitida para o ator"),
+        ("propósito", "context_purpose", "outro-proposito", "emitida para o propósito"),
+    ],
+)
+def test_ri434_tampered_context_is_refused_before_search_and_memberships(
+    descricao, campo, valor, trecho, monkeypatch
+):
+    """Defeito B do §6 da E4.3.4, agora provado com a composição real.
+
+    A policy real é consultada; a adulteração acontece **depois**; e
+    nenhum patrimônio é lido em seguida.
+    """
+    from app.memory.errors.exceptions import RetrievalContractViolationError
+
+    trace = _trace()
+    coids = _criar_objetos(3, trace_id=trace)
+    dominio = _criar_dominio(f"d-{uuid.uuid4().hex[:8]}", coids)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    contexto = MemoryContext(domain_ids=(dominio,), actor_ref="ana", purpose="curadoria")
+    try:
+        buscas = {"n": 0}
+        memberships = {"n": 0}
+        original_search = SearchEngine.search
+        original_mem = MemoryDomainMembershipRepository.list_memberships_of_domain
+
+        def _contar_busca(self, *a, **kw):  # noqa: ANN001
+            buscas["n"] += 1
+            return original_search(self, *a, **kw)
+
+        def _contar_mem(self, *a, **kw):  # noqa: ANN001
+            memberships["n"] += 1
+            return original_mem(self, *a, **kw)
+
+        monkeypatch.setattr(SearchEngine, "search", _contar_busca)
+        monkeypatch.setattr(
+            MemoryDomainMembershipRepository, "list_memberships_of_domain", _contar_mem
+        )
+
+        escritas: list[str] = []
+
+        def _contar_escrita(
+            conn, cursor, statement, parameters, context_, executemany
+        ):  # noqa: ANN001
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "TRUNCATE")):
+                escritas.append(statement)
+
+        with UnitOfWork() as uow:
+            engine = uow.session.get_bind()
+            sa.event.listen(engine, "before_cursor_execute", _contar_escrita)
+            try:
+                governanca = _GovernancaAdulterada(
+                    GovernanceManager(GovernancePolicyRepository(uow.session)),
+                    campo=campo,
+                    valor=valor,
+                )
+                manager = _compor_com_governanca(uow.session, governanca)
+                with pytest.raises(RetrievalContractViolationError) as exc:
+                    manager.retrieve(
+                        context=contexto,
+                        descriptor=_descritor(),
+                        criteria=SearchCriteria(trace_id=trace),
+                        policy_key=chave,
+                        moment=_MOMENTO_E434,
+                    )
+                assert not uow.session.dirty
+                uow.session.flush()
+            finally:
+                sa.event.remove(engine, "before_cursor_execute", _contar_escrita)
+        monkeypatch.undo()
+
+        assert exc.value.code == "PIA-8034"
+        assert any(trecho in m for m in exc.value.reasons)
+
+        # a policy REAL foi consultada antes da adulteração
+        assert governanca.chamadas == 1
+        assert governanca.original is not None
+        assert governanca.original.outcome is GovernanceOutcome.ADMISSIBLE
+        assert governanca.original.policy_key == chave
+
+        # e nenhum patrimônio foi lido depois dela
+        assert buscas["n"] == 0, "Search executada após divergência de contexto"
+        assert memberships["n"] == 0, "memberships lidas após divergência de contexto"
+        assert escritas == []
+    finally:
+        _limpar(coids, [dominio], [chave])
+
+
+def test_ri434_faithful_wrapper_preserves_normal_behaviour():
+    """Controle positivo: o wrapper em modo fiel não invalida a
+    composição."""
+    trace = _trace()
+    coids = _criar_objetos(3, trace_id=trace)
+    dominio = _criar_dominio(f"d-{uuid.uuid4().hex[:8]}", coids)
+    chave = f"pol-{uuid.uuid4().hex[:8]}"
+    _publicar_policy(chave, effect=GovernanceEffect.ADMIT)
+    contexto = MemoryContext(domain_ids=(dominio,), actor_ref="ana", purpose="curadoria")
+    try:
+        with UnitOfWork() as uow:
+            governanca = _GovernancaAdulterada(
+                GovernanceManager(GovernancePolicyRepository(uow.session)),
+                campo=None,
+                valor=None,
+            )
+            resultado = _compor_com_governanca(uow.session, governanca).retrieve(
+                context=contexto,
+                descriptor=_descritor(),
+                criteria=SearchCriteria(trace_id=trace),
+                policy_key=chave,
+                moment=_MOMENTO_E434,
+            )
+        assert governanca.chamadas == 1
+        assert resultado.search_executed is True
+        assert set(resultado.coids) == set(coids)
+        # o contexto resolvido é exatamente o solicitado
+        resolucao = resultado.governance_resolution
+        assert resolucao.context_domain_ids == contexto.domain_ids
+        assert resolucao.context_actor_ref == contexto.actor_ref
+        assert resolucao.context_purpose == contexto.purpose
+    finally:
+        _limpar(coids, [dominio], [chave])

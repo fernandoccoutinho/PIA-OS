@@ -58,7 +58,7 @@ pura que os managers usam.
 | `test_governance_integration.py` | 21 | **27** | +6 |
 | **Total do corretivo** | — | — | **+40** |
 
-M�dulos: E4.3 passou de 151 para **177**; E4.6 de 183 para **194**;
+Módulos: E4.3 passou de 151 para **177**; E4.6 de 183 para **194**;
 E4.7 de 226 para **236**.
 
 ### Classificação obtida por execução contra a cadeia 58
@@ -145,4 +145,112 @@ E4_8_IMPLEMENTATION = NOT_STARTED
 E4_8_STATUS = BLOCKED_PENDING_E4_3_4_AUDIT
 READY_FOR_E4_8 = FALSE
 READY_FOR_E4_9 = FALSE
+```
+
+---
+
+## 7. Corretivo E4.3.4.1 — Consumer Integration Proof
+
+**Patch 60.** A auditoria independente aprovou o **código de produção**
+da E4.3.4, mas não fechou o gate: duas provas PostgreSQL exigidas pelo
+próprio prompt canônico não haviam sido implementadas.
+
+### O que faltava, e é falha minha
+
+O §15 do prompt da E4.3.4 exigia, com managers reais:
+
+```text
+8.  wrapper adultera somente o contexto da resolucao APOS a chamada real,
+    e a E4.6 recusa antes da Search
+10. o mesmo para a E4.7, antes de ler ou bloquear o sujeito
+```
+
+Reproduzido antes de alterar qualquer coisa:
+
+```text
+test_governance_integration.py     9 ocorrencias de prova E4.3.4
+test_retrieval_integration.py      0
+test_accessibility_integration.py  0
+```
+
+Provei o vinculo com dubles unitarios e com o `GovernanceManager` real
+**no modulo de governanca**, e tratei isso como suficiente. Nao era:
+duble de governanca nao prova que o consumidor real recusa antes de
+tocar patrimonio.
+
+### O que este patch acrescenta
+
+Um wrapper por consumidor que **chama o `GovernanceManager` real**,
+guarda a resolucao devolvida e troca exatamente uma dimensao contextual
+por `dataclasses.replace()`. Nada de outcome, policy, operacao ou versao
+fabricados — o cenario que importa e uma autorizacao legitima emitida
+sob outra pergunta.
+
+**E4.6** — tres casos parametrizados (`context_domain_ids`,
+`context_actor_ref`, `context_purpose`):
+
+```text
+exception = RetrievalContractViolationError   code = PIA-8034
+governanca real consultada = 1x, outcome ADMISSIBLE, policy_key correta
+Search calls = 0      membership reads = 0      database writes = 0
+```
+
+**E4.7** — os mesmos tres casos, com espioes em cinco pontos:
+
+```text
+exception = AccessibilityTransitionContractViolationError   code = PIA-8037
+get_by_id = 0   refresh_for_update = 0   get_state = 0
+AccessibilityPolicy.effective_version_at = 0   get_event = 0
+database writes = 0   estado e censo do sujeito inalterados
+```
+
+Cada arquivo ganhou tambem um **controle positivo**: o mesmo wrapper em
+modo fiel, provando que ele nao invalida a composicao por si so — a E4.6
+recupera normalmente e a E4.7 transiciona de fato.
+
+### Classificacao contra a cadeia 59
+
+```text
+PASSES_ON_BOTH_SIDES_AS_GUARD ......... 8
+FAILS_ON_CHAIN_59_BY_BEHAVIOR ......... 0
+```
+
+Os 8 passam nos dois lados, e isso e o resultado **esperado**: a
+producao da E4.3.4 ja estava correta. O objetivo era fechar evidencia
+faltante, nao fabricar um defeito.
+
+### Divergencia registrada — encoding corrompido na cadeia 59
+
+Ao editar este documento, descobri que a versao publicada no patch 59
+continha **um byte invalido em UTF-8**: `M\xb3dulos` onde deveria estar
+`Módulos`. A corrupcao entrou pelo heredoc com que escrevi o arquivo, e
+passou despercebida porque nenhum gate valida encoding de documentacao.
+
+Varri `docs/**/*.md` e `backend/**/*.py`: era o **unico** arquivo
+afetado. Corrigido neste patch, que e o caminho legitimo — o patch 59
+permanece imutavel.
+
+### Resultados
+
+```text
+FULL_SUITE = 2145 passed / 1 skipped / 0 failed   (candidata: 2137)
+RAW_SUITE  = 1839 passed / 307 skipped / 0 failed
+E4.6 = 198 (era 194)   E4.7 = 240 (era 236)   demais delta 0
+
+PRODUCTION_DIFF = 0
+GLOBAL_COVERAGE = 99,09%   (inalterado)
+APP_MEMORY = 100%   APP_COGNITIVE = 100%
+RUFF = PASS   BLACK = PASS (`black --check .`, black 24.10.0)
+MYPY_NEW_ERRORS = 0   ALEMBIC_SINGLE_HEAD = 7b2e4c9a15df
+NEW_ERROR_CODE = NO   NEW_MIGRATION = NO
+```
+
+Escopo: dois arquivos de teste e este documento. Nenhum arquivo de
+producao foi tocado — confirmado por `git status --porcelain
+backend/app/` vazio e por `app/memory` tree identico ao da cadeia 59.
+
+```text
+E4_3_4_PRODUCTION = UNCHANGED
+E4_3_4_1_INTEGRATION_PROOF = COMPLETE
+PATCH_CHAIN = 60
 ```

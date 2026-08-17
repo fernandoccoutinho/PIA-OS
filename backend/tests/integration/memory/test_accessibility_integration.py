@@ -13,6 +13,7 @@ Não substitui por SQLite: o SQLite compila `FOR UPDATE` como no-op, e a
 atomicidade da E4.7 depende de lock de linha real.
 """
 
+import dataclasses
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -53,7 +54,7 @@ from app.memory.schemas.accessibility import (
     AccessibilityRule,
     AccessibilityTransitionResult,
 )
-from app.memory.schemas.governance import GovernanceRule
+from app.memory.schemas.governance import GovernanceResolution, GovernanceRule
 from app.memory.schemas.memory_context import MemoryContext
 from app.memory.services.accessibility_policy_manager import AccessibilityPolicyManager
 from app.memory.services.context_manager import ContextManager
@@ -1105,3 +1106,193 @@ def test_ai473_self_loop_policy_cannot_be_published():
         assert total == 0
     finally:
         _limpar([], [gk, ak])
+
+
+# ======================================================================
+# E4.3.4.1 — prova de integração do vínculo de contexto (consumidor E4.7)
+# ======================================================================
+
+
+class _GovernancaAdulterada:
+    """Delega ao `GovernanceManager` real e troca uma dimensão do
+    contexto vinculado.
+
+    Não fabrica outcome, policy, operação ou versão: a resolução
+    devolvida é a real, com exatamente um campo contextual substituído
+    por `dataclasses.replace()`. É o cenário que importa — uma
+    autorização legítima, emitida sob outra pergunta.
+    """
+
+    def __init__(self, real: GovernanceManager, *, campo: str | None, valor: object) -> None:
+        self._real = real
+        self._campo = campo
+        self._valor = valor
+        self.chamadas = 0
+        self.original: GovernanceResolution | None = None
+
+    def resolve(self, *, descriptor, context, policy_key=None, moment=None):
+        self.chamadas += 1
+        resolucao = self._real.resolve(
+            descriptor=descriptor,
+            context=context,
+            policy_key=policy_key,
+            moment=moment,
+        )
+        self.original = resolucao
+        if self._campo is None:
+            return resolucao
+        return dataclasses.replace(resolucao, **{self._campo: self._valor})
+
+
+def _compor_com_governanca(session, governanca):
+    """Composição real da E4.7, trocando apenas a governança."""
+    objetos = ObjectRepository(session)
+    return AccessibilityPolicyManager(
+        objetos,
+        AccessibilityManager(objetos),
+        CausalHistoryRepository(session),
+        AccessibilityPolicyRepository(session),
+        governanca,
+        ContextManager(MemoryDomainRepository(session)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("descricao", "campo", "valor", "trecho"),
+    [
+        ("domínio", "context_domain_ids", (uuid.uuid4(),), "emitida para os domínios"),
+        ("ator", "context_actor_ref", "outro-ator", "emitida para o ator"),
+        ("propósito", "context_purpose", "outro-proposito", "emitida para o propósito"),
+    ],
+)
+def test_ai434_tampered_context_is_refused_before_touching_the_subject(
+    descricao, campo, valor, trecho, monkeypatch
+):
+    """Defeito C do §6 da E4.3.4, com a composição real.
+
+    Nenhum patrimônio cognitivo e nenhuma `AccessibilityPolicy` são
+    tocados depois de a divergência ser detectada.
+    """
+    from app.memory.errors.exceptions import (
+        AccessibilityTransitionContractViolationError,
+    )
+
+    gk, ak = _chaves()
+    _publicar(gk, ak)
+    coid = _criar_objeto()
+    contexto = MemoryContext(actor_ref="ana", purpose="curadoria")
+    try:
+        estado_antes = _estado(coid)
+        censo_antes = _censo(coid)
+
+        contadores = {"sujeito": 0, "lock": 0, "estado": 0, "policy": 0, "causal": 0}
+        originais = {
+            "sujeito": ObjectRepository.get_by_id,
+            "lock": ObjectRepository.refresh_for_update,
+            "estado": AccessibilityManager.get_state,
+            "policy": AccessibilityPolicyRepository.effective_version_at,
+            "causal": CausalHistoryRepository.get_event,
+        }
+
+        def _espiao(nome):
+            def _wrapper(self, *a, **kw):  # noqa: ANN001
+                contadores[nome] += 1
+                return originais[nome](self, *a, **kw)
+
+            return _wrapper
+
+        monkeypatch.setattr(ObjectRepository, "get_by_id", _espiao("sujeito"))
+        monkeypatch.setattr(ObjectRepository, "refresh_for_update", _espiao("lock"))
+        monkeypatch.setattr(AccessibilityManager, "get_state", _espiao("estado"))
+        monkeypatch.setattr(
+            AccessibilityPolicyRepository, "effective_version_at", _espiao("policy")
+        )
+        monkeypatch.setattr(CausalHistoryRepository, "get_event", _espiao("causal"))
+
+        escritas: list[str] = []
+
+        def _contar_escrita(
+            conn, cursor, statement, parameters, context_, executemany
+        ):  # noqa: ANN001
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "TRUNCATE")):
+                escritas.append(statement)
+
+        with UnitOfWork() as uow:
+            engine = uow.session.get_bind()
+            sa.event.listen(engine, "before_cursor_execute", _contar_escrita)
+            try:
+                governanca = _GovernancaAdulterada(
+                    GovernanceManager(GovernancePolicyRepository(uow.session)),
+                    campo=campo,
+                    valor=valor,
+                )
+                manager = _compor_com_governanca(uow.session, governanca)
+                with pytest.raises(AccessibilityTransitionContractViolationError) as exc:
+                    manager.transition(
+                        coid=coid,
+                        target_state=AccessibilityState.LATENT,
+                        context=contexto,
+                        descriptor=_descritor(),
+                        governance_policy_key=gk,
+                        accessibility_policy_key=ak,
+                        moment=_MOMENTO,
+                    )
+                assert not uow.session.dirty
+                uow.session.flush()
+            finally:
+                sa.event.remove(engine, "before_cursor_execute", _contar_escrita)
+        monkeypatch.undo()
+
+        assert exc.value.code == "PIA-8037"
+        assert any(trecho in m for m in exc.value.reasons)
+
+        # a governança real foi consultada e produziu resolução legítima
+        assert governanca.chamadas == 1
+        assert governanca.original is not None
+        assert governanca.original.outcome is GovernanceOutcome.ADMISSIBLE
+
+        # nada de patrimônio nem de policy de acessibilidade depois disso
+        assert contadores["sujeito"] == 0, "sujeito lido após divergência"
+        assert contadores["lock"] == 0, "linha bloqueada após divergência"
+        assert contadores["estado"] == 0, "estado lido após divergência"
+        assert contadores["policy"] == 0, "AccessibilityPolicy lida após divergência"
+        assert contadores["causal"] == 0, "evidência causal lida após divergência"
+        assert escritas == []
+        assert _estado(coid) == estado_antes
+        assert _censo(coid) == censo_antes
+    finally:
+        _limpar([coid], [gk, ak])
+
+
+def test_ai434_faithful_wrapper_preserves_the_normal_transition():
+    """Controle positivo: em modo fiel, a transição real acontece."""
+    gk, ak = _chaves()
+    _publicar(gk, ak)
+    coid = _criar_objeto()
+    contexto = MemoryContext(actor_ref="ana", purpose="curadoria")
+    try:
+        with UnitOfWork() as uow:
+            governanca = _GovernancaAdulterada(
+                GovernanceManager(GovernancePolicyRepository(uow.session)),
+                campo=None,
+                valor=None,
+            )
+            resultado = _compor_com_governanca(uow.session, governanca).transition(
+                coid=coid,
+                target_state=AccessibilityState.LATENT,
+                context=contexto,
+                descriptor=_descritor(),
+                governance_policy_key=gk,
+                accessibility_policy_key=ak,
+                moment=_MOMENTO,
+            )
+            uow.commit()
+        assert governanca.chamadas == 1
+        assert resultado.state_changed is True
+        assert _estado(coid) == "latent"
+        resolucao = resultado.governance_resolution
+        assert resolucao.context_domain_ids == contexto.domain_ids
+        assert resolucao.context_actor_ref == contexto.actor_ref
+        assert resolucao.context_purpose == contexto.purpose
+    finally:
+        _limpar([coid], [gk, ak])
