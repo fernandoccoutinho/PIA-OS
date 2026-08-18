@@ -488,7 +488,7 @@ class VerifiedDeletionCapability:
 
     operation: str = field(repr=False)
     scope: str = field(repr=False)
-    verified: bool = True
+    verified: bool
     """`operation` e `scope` são texto arbitrário e ficam redigidos.
 
     **E4.9.7.3.** `scope` **continua podendo representar conjunto** —
@@ -498,6 +498,27 @@ class VerifiedDeletionCapability:
 
     `verified` é `bool` e permanece visível: não é texto e não transporta
     conteúdo.
+
+    ```text
+    OMITTED_VERIFICATION != VERIFIED_TRUE
+    DEFAULT_TRUE = IMPLICIT_AUTHORITY
+    ```
+
+    **`verified` é obrigatório e não tem default — E4.9.7.4.** A cadeia
+    83 lhe atribuiu `= True` ao acrescentar `field(repr=False)` em
+    `operation` e `scope`. O default **não era necessário**: `field()`
+    sem `default` deixa o campo obrigatório, então os dois anteriores
+    nunca forçaram um valor aqui. Foi regressão acidental, dentro de um
+    corretivo de representação, e nenhum teste a pegou porque toda
+    chamada existente já passava `verified=True` explicitamente.
+
+    A consequência era de autoridade, não de estilo: omitir a evidência
+    produzia capacidade verificada e, com ela, um descritor de sucesso —
+    `OMITTED_VERIFICATION → VERIFIED_CAPABILITY → SUCCESS_DESCRIPTOR`.
+
+    Default `False` também estaria errado, por outra razão: esconderia a
+    omissão como observação negativa. **Ausência de afirmação não é
+    afirmação de ausência.** O chamador declara o que observou.
     """
 
     def __post_init__(self) -> None:

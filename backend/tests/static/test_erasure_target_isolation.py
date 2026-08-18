@@ -795,3 +795,48 @@ def test_s28_o_nome_do_validador_nao_promete_exatidao_material() -> None:
     assert "def validar_localizador_sem_expansao_literal(" in fonte
     assert "def validar_localizador_exato(" not in fonte
     assert "MATERIAL_EXACT_TARGET_PROOF = DEFERRED" in fonte
+
+
+def test_s29_verified_e_obrigatorio_na_ast() -> None:
+    """`DEFAULT_TRUE = IMPLICIT_AUTHORITY`, provado no código-fonte.
+
+    Prova na AST, e não só por reflexão, porque o defeito da cadeia 83
+    entrou como uma linha de anotação com valor — e é exatamente essa
+    linha que esta guarda inspeciona.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
+    )
+    (classe,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.ClassDef) and no.name == "VerifiedDeletionCapability"
+    ]
+    (anotacao,) = [
+        no
+        for no in classe.body
+        if isinstance(no, ast.AnnAssign)
+        and isinstance(no.target, ast.Name)
+        and no.target.id == "verified"
+    ]
+    assert anotacao.value is None, "verified não pode ter default de espécie alguma"
+    assert isinstance(anotacao.annotation, ast.Name)
+    assert anotacao.annotation.id == "bool"
+
+
+def test_s30_nenhuma_fabrica_de_producao_injeta_verificacao() -> None:
+    """Nenhum construtor auxiliar pode devolver a autoridade implícita.
+
+    Um `classmethod` ou função de módulo que montasse a capacidade com
+    `verified=True` embutido recriaria o defeito com outro nome.
+    """
+    fonte = (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
+    arvore = ast.parse(fonte)
+    chamadas = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Name)
+        and no.func.id == "VerifiedDeletionCapability"
+    ]
+    assert chamadas == [], "produção não constrói capacidade em lugar algum"

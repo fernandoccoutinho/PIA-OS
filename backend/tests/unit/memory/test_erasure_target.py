@@ -1370,3 +1370,146 @@ def test_u108_a_representacao_continua_util():
     r = referencia()
     assert str(S1) in repr(r)
     assert "payload_ref" in repr(r)
+
+
+# ======================================================================
+# E4.9.7.4 — verificação explícita da capacidade
+#
+# A6: a cadeia 83 deu `= True` a `verified` ao acrescentar
+# `field(repr=False)` em `operation` e `scope`. O default não era
+# necessário — `field()` sem `default` deixa o campo obrigatório — e
+# nenhum teste pegou, porque toda chamada existente já passava
+# `verified=True` explicitamente.
+#
+# OMITTED_VERIFICATION != VERIFIED_TRUE
+# DEFAULT_TRUE = IMPLICIT_AUTHORITY
+# ======================================================================
+
+
+def test_u109_verified_nao_tem_default_na_assinatura():
+    """`inspect.signature` como prova, não a docstring."""
+    import inspect
+
+    parametro = inspect.signature(VerifiedDeletionCapability).parameters["verified"]
+    assert parametro.default is inspect.Parameter.empty
+    assert parametro.annotation is bool
+
+
+def test_u110_verified_nao_tem_default_nem_factory_na_dataclass():
+    """`MISSING` nos dois — nem sentinel, nem factory escondida."""
+    import dataclasses
+
+    (campo,) = [c for c in dataclasses.fields(VerifiedDeletionCapability) if c.name == "verified"]
+    assert campo.default is dataclasses.MISSING
+    assert campo.default_factory is dataclasses.MISSING
+
+
+def test_u111_omissao_de_verified_nao_constroi_capacidade():
+    """Ausência de afirmação não é afirmação de ausência."""
+    with pytest.raises(TypeError):
+        _construir(VerifiedDeletionCapability, operation="delete_object", scope="w/1/*")
+    with pytest.raises(TypeError):
+        _chamar(VerifiedDeletionCapability, "__call__")
+
+
+def test_u112_omissao_nao_produz_descritor_de_sucesso():
+    """`OMITTED_VERIFICATION → VERIFIED_CAPABILITY → SUCCESS_DESCRIPTOR`.
+
+    A cadeia inteira que a cadeia 83 abriu, fechada na primeira etapa:
+    sem capacidade, não há descritor.
+    """
+    with pytest.raises(TypeError):
+        descritor(
+            capability=_construir(
+                VerifiedDeletionCapability, operation="delete_object", scope="w/1/*"
+            )
+        )
+
+
+def test_u113_true_e_false_explicitos_continuam_construiveis():
+    """`verified=False` é estado observado, não erro."""
+    assert capacidade(verified=True).verified is True
+    assert capacidade(verified=False).verified is False
+
+
+def test_u114_capacidade_nao_verificada_nao_entra_em_descritor_de_sucesso():
+    """Inalterado desde a E4.9.7 — reafirmado aqui como regressão."""
+    with pytest.raises(ValueError, match="VERIFICADA"):
+        descritor(capability=capacidade(verified=False))
+
+
+@pytest.mark.parametrize("valor", [1, 0, "sim", "", None, [], 1.0])
+def test_u115_verified_continua_exigindo_bool_estrito(valor):
+    with pytest.raises(TypeError, match="verified deve ser bool"):
+        capacidade(verified=valor)
+
+
+def test_u116_nenhuma_fabrica_de_teste_mascara_a_omissao():
+    """As fábricas deste módulo passam `verified` explicitamente.
+
+    Uma fábrica com default próprio devolveria a autoridade implícita
+    pela porta dos fundos — e esta guarda a derruba.
+    """
+    import inspect
+
+    fonte = inspect.getsource(capacidade)
+    assert '"verified": True' in fonte
+
+    # O helper permite sobrescrever, mas nunca omitir na chamada real.
+    import dataclasses
+
+    (campo,) = [c for c in dataclasses.fields(capacidade()) if c.name == "verified"]
+    assert campo.default is dataclasses.MISSING
+
+
+def test_u117_nenhum_outro_campo_publico_ganhou_default():
+    """Guarda contra a mesma regressão em qualquer contrato da fatia.
+
+    A cadeia 83 mudou uma assinatura pública sem intenção, dentro de um
+    corretivo de representação. Esta guarda fixa exatamente quais campos
+    têm default — um default novo em qualquer outro derruba o teste.
+    """
+    import dataclasses
+
+    from app.memory.schemas.erasure_target import (
+        ControlScope,
+        CustodyNamespace,
+        ErasureTargetDescriptor,
+        ErasureTargetReference,
+        ReferenceProvenance,
+        TargetResolutionRefusal,
+    )
+
+    com_default: dict[str, set[str]] = {}
+    for classe in (
+        ControlScope,
+        CustodyNamespace,
+        VerifiedDeletionCapability,
+        ReferenceProvenance,
+        ErasureTargetReference,
+        ErasureTargetDescriptor,
+        TargetResolutionRefusal,
+    ):
+        com_default[classe.__name__] = {
+            c.name
+            for c in dataclasses.fields(classe)
+            if c.default is not dataclasses.MISSING or c.default_factory is not dataclasses.MISSING
+        }
+
+    assert com_default == {
+        "ControlScope": set(),
+        "CustodyNamespace": set(),
+        "VerifiedDeletionCapability": set(),
+        "ReferenceProvenance": {"position"},
+        "ErasureTargetReference": {"expected_namespace"},
+        "ErasureTargetDescriptor": {"version_etag"},
+        "TargetResolutionRefusal": {"classified_as", "observed_dimension"},
+    }
+
+
+def test_u118_a_redacao_da_cadeia_83_nao_regrediu():
+    """As 14 representações continuam sem vazamento."""
+    d = descritor(capability=capacidade(operation=MARCADOR, verified=True))
+    _sem_vazamento(d, "Descriptor→capability.operation")
+    _sem_vazamento(capacidade(scope=MARCADOR, verified=False), "capability.scope")
+    assert "verified=True" in repr(descritor())
