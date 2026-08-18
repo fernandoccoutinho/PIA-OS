@@ -4,6 +4,13 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
 
+# Import necessário para que os modelos registrem suas tabelas em
+# `Base.metadata` antes do autogenerate rodar — sem isso, `alembic
+# revision --autogenerate` não veria `CognitiveObject` (E3.1/LIB-01,
+# primeiro modelo de domínio real do projeto). Módulos futuros de
+# `app.cognitive` (E3.2+) e de outros domínios devem seguir o mesmo
+# padrão: importar aqui para participar do autogenerate.
+import app.cognitive.models  # noqa: F401,E402
 from alembic import context
 from app.config.settings import settings
 from app.database.base import Base
@@ -14,8 +21,7 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Metadata usado para autogenerate. Nenhum modelo é definido nesta
-# etapa, portanto o metadata está vazio de propósito.
+# Metadata usado para autogenerate.
 target_metadata = Base.metadata
 
 
