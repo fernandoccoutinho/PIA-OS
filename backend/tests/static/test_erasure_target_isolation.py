@@ -228,17 +228,50 @@ def test_s09_o_efeito_nao_foi_materializado() -> None:
 
 
 def test_s10_nenhum_consumidor_runtime_da_porta_apareceu() -> None:
-    """Contrato sem adaptador é o estado correto desta fatia."""
-    permitidos = set(CAMINHOS_NOVOS) | {
+    """Contrato sem adaptador é o estado correto desta fatia.
+
+    ATUALIZADA NA E4.9.8, e a atualização SEPARA duas coisas que a
+    versão anterior tratava como uma só:
+
+    ```text
+    CONSUMIR A PORTA        != CONSUMIR OS VALUE OBJECTS
+    ```
+
+    `ErasureTargetResolverPort` continua **sem nenhum** consumidor — é
+    o que prova que não há adaptador. Já `schemas.erasure_target` passou
+    a ter um consumidor autorizado: a proposta destrutiva da E4.9.8
+    reutiliza `ControlScope`, `CustodyNamespace`, `ReferenceProvenance`,
+    `CLASSES_DE_CONTEUDO` e `TEXTO_OCULTO`.
+
+    Colapsar os dois faria a guarda cair a cada fatia que reutilize um
+    value object, e o que ela existe para proteger — a ausência de
+    adaptador — deixaria de ser o que ela mede.
+    """
+    porta = {"app.memory.ports.erasure_target"}
+    permitidos_porta = {
+        APP / "memory" / "ports" / "erasure_target.py",
         APP / "memory" / "ports" / "__init__.py",
-        APP / "memory" / "models" / "__init__.py",
     }
-    infratores = [
+    consumidores_da_porta = [
         str(p.relative_to(APP))
         for p in _fontes()
-        if p not in permitidos and NOVOS_MODULOS & _modulos_importados(p)
+        if p not in permitidos_porta and porta & _modulos_importados(p)
     ]
-    assert infratores == []
+    assert consumidores_da_porta == []
+
+    permitidos_vo = set(CAMINHOS_NOVOS) | {
+        APP / "memory" / "ports" / "__init__.py",
+        APP / "memory" / "models" / "__init__.py",
+        APP / "memory" / "schemas" / "__init__.py",
+        # Consumidor AUTORIZADO pela E4.9.8.
+        APP / "memory" / "schemas" / "destructive_approval.py",
+    }
+    consumidores_dos_vo = [
+        str(p.relative_to(APP))
+        for p in _fontes()
+        if p not in permitidos_vo and NOVOS_MODULOS & _modulos_importados(p)
+    ]
+    assert consumidores_dos_vo == []
 
 
 def test_s11_o_localizador_nao_tem_caminho_de_saida() -> None:

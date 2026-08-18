@@ -52,6 +52,12 @@ PERMITIDOS = {
     # é conhecer a primitiva de recibo — `test_erasure_target_isolation`
     # prova que nada ali importa `ErasureRecord`, repositório ou writer.
     APP / "memory" / "schemas" / "erasure_target.py",
+    # E4.9.8: a proposta destrutiva reutiliza `ErasureTargetClass` para
+    # recusar classe não apagável no snapshot. Mesma razão da linha
+    # acima — conhecer o vocabulário de classificação NÃO é conhecer a
+    # primitiva de recibo, e `test_destructive_approval_isolation`
+    # prova que nada ali importa `ErasureRecord`, repositório ou writer.
+    APP / "memory" / "schemas" / "destructive_approval.py",
 }
 
 
@@ -175,9 +181,15 @@ def test_s08_target_resolver_effect_approval_e_retention_continuam_ausentes() ->
     # a E4.9.1 autorizou DUAS portas e exigiu que ficassem separadas, e a
     # fronteira de efeito continua sem existir. `test_s09` do isolamento
     # da E4.9.7 prova a mesma ausência do outro lado.
+    # Atualizado pela E4.9.8, pela mesma razão e com o mesmo efeito das
+    # atualizações anteriores: `DestructiveApprovalEnvelope` saiu porque
+    # a E4.9.8 o autorizou e materializou como contrato inerte.
+    # `ErasureEffectPort` e `ApprovalRecord` PERMANECEM — o efeito e a
+    # persistência de aprovação continuam sem existir, e
+    # `test_destructive_approval_isolation` prova as duas ausências pelo
+    # outro lado.
     ausentes = (
         "ErasureEffectPort",
-        "DestructiveApprovalEnvelope",
         "ApprovalRecord",
     )
     encontrados: list[str] = []

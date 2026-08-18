@@ -1,0 +1,490 @@
+"""
+Guardas de **isolamento** da aprovação destrutiva (`E4.9.8`).
+
+```text
+APPROVAL != EXECUTION != RECEIPT
+```
+
+Esta fatia materializa contratos e nada mais. As guardas provam o *nada
+mais* por AST, `tokenize` e reflexão — nunca por busca textual frágil,
+que acusaria as docstrings destes módulos, escritas justamente para
+nomear o que eles **não** fazem.
+
+`test_s99_*` no fim demonstra que cada mecanismo de guarda **consegue
+falhar**, conforme o §11.5 do prompt: guarda que só pode passar não
+protege nada.
+"""
+
+import ast
+import dataclasses
+import io
+import pathlib
+import tokenize
+
+import pytest
+
+APP = pathlib.Path(__file__).resolve().parents[2] / "app"
+
+CAMINHOS_NOVOS = (
+    APP / "memory" / "models" / "approval_enums.py",
+    APP / "memory" / "schemas" / "destructive_approval.py",
+)
+
+MODULOS_NOVOS = {
+    "app.memory.models.approval_enums",
+    "app.memory.schemas.destructive_approval",
+}
+
+
+def _executavel(arquivo: pathlib.Path) -> str:
+    """Código sem docstrings, via AST."""
+    arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
+    for no in ast.walk(arvore):
+        corpo = getattr(no, "body", None)
+        if isinstance(corpo, list):
+            novo = [
+                filho
+                for filho in corpo
+                if not (
+                    isinstance(filho, ast.Expr)
+                    and isinstance(filho.value, ast.Constant)
+                    and isinstance(filho.value.value, str)
+                )
+            ] or [ast.Pass()]
+            setattr(no, "body", novo)  # noqa: B010
+    return ast.unparse(arvore)
+
+
+def _modulos_importados(arquivo: pathlib.Path) -> set[str]:
+    arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
+    modulos: set[str] = set()
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Import):
+            modulos.update(alias.name for alias in no.names)
+        elif isinstance(no, ast.ImportFrom) and no.module:
+            modulos.add(no.module)
+    return modulos
+
+
+def _fontes() -> list[pathlib.Path]:
+    return [p for p in APP.rglob("*.py") if "__pycache__" not in p.parts]
+
+
+def _comentarios(arquivo: pathlib.Path) -> list[str]:
+    fonte = arquivo.read_text(encoding="utf-8")
+    return [
+        token.string
+        for token in tokenize.generate_tokens(io.StringIO(fonte).readline)
+        if token.type == tokenize.COMMENT
+    ]
+
+
+# ======================================================================
+# Escopo negativo
+# ======================================================================
+
+
+def test_s01_nenhuma_persistencia_orm_ou_repository() -> None:
+    """Contratos transitórios — sem tabela, sessão ou writer."""
+    proibidos = (
+        "BaseModel",
+        "mapped_column",
+        "Mapped",
+        "Session",
+        "UnitOfWork",
+        "Repository",
+        "sqlalchemy",
+        "alembic",
+        "__tablename__",
+        "commit",
+        "flush",
+    )
+    for caminho in CAMINHOS_NOVOS:
+        executavel = _executavel(caminho)
+        for termo in proibidos:
+            assert termo not in executavel, f"{caminho.name}: {termo}"
+
+
+def test_s02_nenhum_efeito_destrutivo_nem_writer_de_recibo() -> None:
+    """`APPROVAL_RECORD != ERASURE_RECORD`."""
+    proibidos = (
+        "ErasureRecord",
+        "ErasureRecordRepository",
+        "append_observed",
+        "ErasureEffectPort",
+        "execute_effect",
+        "purge",
+        "unlink",
+        "shutil",
+        "os.remove",
+    )
+    for caminho in CAMINHOS_NOVOS:
+        executavel = _executavel(caminho)
+        for termo in proibidos:
+            assert termo not in executavel, f"{caminho.name}: {termo}"
+
+
+def test_s03_nenhuma_rede_io_ou_cliente_externo() -> None:
+    proibidos = (
+        "requests",
+        "httpx",
+        "urllib.request",
+        "urlopen",
+        "boto3",
+        "aiohttp",
+        "socket",
+        "subprocess",
+        "open(",
+        "pathlib",
+    )
+    for caminho in CAMINHOS_NOVOS:
+        executavel = _executavel(caminho)
+        for termo in proibidos:
+            assert termo not in executavel, f"{caminho.name}: {termo}"
+
+
+def test_s04_nenhuma_autenticacao_idp_ou_step_up_implementado() -> None:
+    """`TYPED_ASSURANCE_CLAIM != AUTHENTICATION_PERFORMED`.
+
+    `AssuranceLevel` e `IdentityEvidence` **representam** evidência; não
+    há verificação, e estes nomes provam que nada foi construído.
+    """
+    proibidos = (
+        "jwt",
+        "oauth",
+        "OAuth",
+        "login",
+        "authenticate(",
+        "verify_password",
+        "hashlib",
+        "hmac",
+        "bcrypt",
+        "secrets",
+        "IdentityProvider",
+        "session_token",
+    )
+    for caminho in CAMINHOS_NOVOS:
+        executavel = _executavel(caminho)
+        for termo in proibidos:
+            assert termo not in executavel, f"{caminho.name}: {termo}"
+
+
+def test_s05_nenhum_parser_de_texto_ou_voz() -> None:
+    proibidos = ("parse_command", "transcribe", "ASR", "speech", "def parse", "intent")
+    for caminho in CAMINHOS_NOVOS:
+        executavel = _executavel(caminho)
+        for termo in proibidos:
+            assert termo not in executavel, f"{caminho.name}: {termo}"
+
+
+def test_s06_nenhum_relogio_implicito() -> None:
+    """`datetime.now()` escondido é proibido — instante vem por argumento."""
+    for caminho in CAMINHOS_NOVOS:
+        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+        atributos = {
+            no.func.attr
+            for no in ast.walk(arvore)
+            if isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute)
+        }
+        for termo in ("now", "utcnow", "today", "time", "monotonic"):
+            assert termo not in atributos, f"{caminho.name}: {termo}"
+
+
+def test_s07_nenhum_hash_ou_digest_de_escopo() -> None:
+    """`PROPOSAL_DIGEST = NOT_USED`.
+
+    O binding é estrutural. Um digest sobre dados de custódia poderia
+    virar chave de relocalização sem canonicalização provada.
+    """
+    for caminho in CAMINHOS_NOVOS:
+        executavel = _executavel(caminho)
+        for termo in ("sha256", "md5", "blake2", "digest", "hexdigest", "hash("):
+            assert termo not in executavel, f"{caminho.name}: {termo}"
+
+
+def test_s08_nenhum_serializer_logger_ou_dump() -> None:
+    for caminho in CAMINHOS_NOVOS:
+        executavel = _executavel(caminho)
+        for termo in ("to_dict", "model_dump", "json", "get_logger", "logging", "print("):
+            assert termo not in executavel, f"{caminho.name}: {termo}"
+
+
+def test_s09_nenhuma_supressao_de_tipo_nova() -> None:
+    """Supressão vive em COMENTÁRIO; `Any` e `cast` vivem em CÓDIGO."""
+    marcador = "type:" + " ignore"
+    for caminho in CAMINHOS_NOVOS:
+        assert not any(marcador in c for c in _comentarios(caminho)), caminho.name
+        executavel = _executavel(caminho)
+        assert "cast(" not in executavel, caminho.name
+        assert ": Any" not in executavel, caminho.name
+
+
+def test_s10_nenhum_import_de_app_cognitive() -> None:
+    for caminho in CAMINHOS_NOVOS:
+        importados = _modulos_importados(caminho)
+        assert not any(m.startswith("app.cognitive") for m in importados), caminho.name
+
+
+def test_s11_nenhuma_migration_nova() -> None:
+    versoes = APP.parent / "alembic" / "versions"
+    revisoes = {p.name.split("_")[0] for p in versoes.glob("*.py")}
+    assert "c8a3f5017e94" in revisoes
+    for arquivo in versoes.glob("*.py"):
+        if arquivo.name.startswith("c8a3f5017e94"):
+            continue
+        texto = arquivo.read_text(encoding="utf-8")
+        assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
+
+
+def test_s12_nenhum_consumidor_de_producao_fora_dos_exports() -> None:
+    """Contrato sem consumidor é o estado correto desta fatia."""
+    permitidos = set(CAMINHOS_NOVOS) | {
+        APP / "memory" / "models" / "__init__.py",
+        APP / "memory" / "schemas" / "__init__.py",
+    }
+    infratores = [
+        str(p.relative_to(APP))
+        for p in _fontes()
+        if p not in permitidos and MODULOS_NOVOS & _modulos_importados(p)
+    ]
+    assert infratores == []
+
+
+def test_s13_o_efeito_continua_sem_existir() -> None:
+    infratores = [
+        str(p.relative_to(APP)) for p in _fontes() if "ErasureEffectPort" in _executavel(p)
+    ]
+    assert infratores == []
+
+
+# ======================================================================
+# Contratos e assinaturas
+# ======================================================================
+
+
+def test_s14_todos_os_value_objects_sao_frozen() -> None:
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    )
+    classes = [no for no in ast.walk(arvore) if isinstance(no, ast.ClassDef)]
+    assert len(classes) == 7
+    for classe in classes:
+        congelada = any(
+            isinstance(dec, ast.Call)
+            and isinstance(dec.func, ast.Name)
+            and dec.func.id == "dataclass"
+            and any(
+                kw.arg == "frozen" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                for kw in dec.keywords
+            )
+            for dec in classe.decorator_list
+        )
+        assert congelada, classe.name
+
+
+def test_s15_os_sete_contratos_da_e4_9_7_nao_mudaram() -> None:
+    """Retrato congelado — o A6 entrou por uma assinatura alterada sem intenção.
+
+    Uma mudança de assinatura pública existente é Stop Condition mesmo
+    que a suíte passe. Esta guarda a torna visível.
+    """
+    import inspect
+
+    from app.memory.schemas import erasure_target as et
+
+    retrato = {
+        nome: (
+            str(inspect.signature(getattr(et, nome))),
+            tuple(
+                (
+                    c.name,
+                    c.default is dataclasses.MISSING,
+                    c.default_factory is dataclasses.MISSING,
+                    c.repr,
+                )
+                for c in dataclasses.fields(getattr(et, nome))
+            ),
+        )
+        for nome in (
+            "ControlScope",
+            "CustodyNamespace",
+            "VerifiedDeletionCapability",
+            "ReferenceProvenance",
+            "ErasureTargetReference",
+            "ErasureTargetDescriptor",
+            "TargetResolutionRefusal",
+        )
+    }
+
+    assert retrato["VerifiedDeletionCapability"][0] == (
+        "(operation: str, scope: str, verified: bool) -> None"
+    )
+    assert retrato["ControlScope"][0] == (
+        "(workspace_id: uuid.UUID, tenant_id: uuid.UUID, control_principal_ref: str) -> None"
+    )
+    assert retrato["CustodyNamespace"][0] == "(provider: str, namespace: str) -> None"
+
+    # Campos sem default, por contrato — o inventário do A6.
+    sem_default = {
+        nome: tuple(campo for campo, sem, _, _ in campos if sem)
+        for nome, (_, campos) in retrato.items()
+    }
+    assert sem_default["VerifiedDeletionCapability"] == ("operation", "scope", "verified")
+    assert sem_default["ReferenceProvenance"] == ("origin",)
+    assert sem_default["ErasureTargetDescriptor"] == (
+        "target_class",
+        "subject_coid",
+        "control_scope",
+        "custody_namespace",
+        "capability",
+        "resolved_at",
+        "origin",
+        "transient_locator",
+    )
+
+    # Campos redigidos continuam redigidos.
+    redigidos = {
+        nome: {campo for campo, _, _, r in campos if r is False}
+        for nome, (_, campos) in retrato.items()
+    }
+    assert redigidos["ControlScope"] == {"control_principal_ref"}
+    assert redigidos["CustodyNamespace"] == {"provider", "namespace"}
+    assert redigidos["VerifiedDeletionCapability"] == {"operation", "scope"}
+    assert redigidos["ErasureTargetReference"] == {"opaque_reference"}
+    assert redigidos["ErasureTargetDescriptor"] == {"transient_locator", "version_etag"}
+
+
+def test_s16_a_resolucao_de_governanca_nao_e_delegada_no_repr() -> None:
+    """O caso descoberto no preflight, fixado na AST.
+
+    `GovernanceResolution` é da E4.3 e expõe onze campos `str` livres.
+    Se alguém trocar `RESOLUCAO_OCULTA` por `{self.governance_resolution!r}`,
+    os onze voltam a vazar pela composição.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    )
+    (classe,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.ClassDef) and no.name == "DestructiveApprovalProposal"
+    ]
+    (repr_,) = [
+        no for no in classe.body if isinstance(no, ast.FunctionDef) and no.name == "__repr__"
+    ]
+    corpo = ast.unparse(repr_)
+    assert "RESOLUCAO_OCULTA" in corpo
+    assert "governance_resolution!r" not in corpo
+    assert "self.governance_resolution." not in corpo
+
+
+def test_s17_o_snapshot_nao_reutiliza_o_descritor() -> None:
+    """`SNAPSHOT != ErasureTargetDescriptor` — o descritor tem localizador."""
+    executavel = _executavel(APP / "memory" / "schemas" / "destructive_approval.py")
+    assert "ErasureTargetDescriptor" not in executavel
+    assert "transient_locator" not in executavel
+
+
+def test_s18_enums_novos_nao_duplicam_fonte_da_verdade() -> None:
+    executavel = _executavel(APP / "memory" / "models" / "approval_enums.py")
+    for proibido in (
+        "class ErasureTargetClass",
+        "class ErasureOutcome",
+        "class RetentionExpiryAction",
+        "class RefusalDimension",
+        "pia_managed_artifact",
+        "assess_and_inform",
+    ):
+        assert proibido not in executavel, proibido
+
+
+# ======================================================================
+# §11.5 — cada mecanismo de guarda consegue falhar
+# ======================================================================
+
+
+def test_s99_1_a_busca_por_ast_acusa_termo_realmente_presente() -> None:
+    """Mutante local: um módulo com o termo proibido derruba a guarda.
+
+    Sem esta demonstração, `test_s01`–`s08` poderiam estar passando por
+    olharem no lugar errado, e ninguém saberia.
+    """
+    mutante = pathlib.Path("/tmp/_e498_mutante.py")
+    mutante.write_text('"""ErasureEffectPort só aqui."""\nx = "ErasureEffectPort"\n')
+    try:
+        assert "ErasureEffectPort" in _executavel(mutante)
+        limpo = pathlib.Path("/tmp/_e498_limpo.py")
+        limpo.write_text('"""ErasureEffectPort só na docstring."""\nx = 1\n')
+        assert "ErasureEffectPort" not in _executavel(limpo)
+        limpo.unlink()
+    finally:
+        mutante.unlink(missing_ok=True)
+
+
+def test_s99_2_a_busca_por_tokenize_acusa_supressao_real() -> None:
+    """E ignora a docstring que apenas a menciona."""
+    marcador = "type:" + " ignore"
+    mutante = pathlib.Path("/tmp/_e498_supressao.py")
+    mutante.write_text(f'"""fala de {marcador} na docstring."""\nx = 1  # {marcador}[arg-type]\n')
+    try:
+        assert any(marcador in c for c in _comentarios(mutante))
+    finally:
+        mutante.unlink(missing_ok=True)
+
+    so_docstring = pathlib.Path("/tmp/_e498_docstring.py")
+    so_docstring.write_text(f'"""menciona {marcador} e nada mais."""\nx = 1\n')
+    try:
+        assert not any(marcador in c for c in _comentarios(so_docstring))
+    finally:
+        so_docstring.unlink(missing_ok=True)
+
+
+def test_s99_3_o_retrato_de_assinatura_detecta_default_novo() -> None:
+    """Prova que `s15` cairia se um default fosse acrescentado."""
+
+    @dataclasses.dataclass(frozen=True)
+    class _Antes:
+        obrigatorio: bool
+
+    @dataclasses.dataclass(frozen=True)
+    class _Depois:
+        obrigatorio: bool = True
+
+    def sem_default(classe: type) -> tuple[str, ...]:
+        return tuple(
+            c.name
+            for c in dataclasses.fields(classe)
+            if c.default is dataclasses.MISSING and c.default_factory is dataclasses.MISSING
+        )
+
+    assert sem_default(_Antes) == ("obrigatorio",)
+    assert sem_default(_Depois) == ()
+
+
+def test_s99_4_a_prova_de_confidencialidade_detecta_vazamento_real() -> None:
+    """Um objeto que delega `!r` a um campo livre vaza — e é detectado."""
+    marcador = "https://user:password@example.invalid/o?token=S99"
+
+    @dataclasses.dataclass(frozen=True)
+    class _Vazando:
+        campo: str
+
+    @dataclasses.dataclass(frozen=True)
+    class _Redigido:
+        campo: str = dataclasses.field(repr=False)
+
+        def __repr__(self) -> str:
+            return "_Redigido(campo=<text:redacted>)"
+
+    assert marcador in repr(_Vazando(marcador))
+    assert marcador not in repr(_Redigido(marcador))
+
+
+def test_s99_5_os_quatro_scripts_externos_continuam_intocados() -> None:
+    """Nenhum arquivo de caracterização vive no repositório.
+
+    Os scripts são externos por desenho: se algum fosse copiado para
+    dentro, poderia ser editado junto com o código que ele mede.
+    """
+    with pytest.raises(StopIteration):
+        next(iter(sorted((APP.parent).rglob("reproduce_e49*.py"))))
