@@ -66,8 +66,10 @@ FIELD_NAME    != ENFORCED_DOMAIN
 """
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 
 from app.memory.models.approval_enums import (
     ApprovalBlockerKind,
@@ -105,12 +107,40 @@ assinatura pública existente — Stop Condition. Resta redigir aqui.
 """
 
 
-OPERACAO_DE_GOVERNANCA: dict[DestructiveOperation, CognitiveOperation] = {
-    DestructiveOperation.MOVE_TO_TRASH: CognitiveOperation.RETENTION_DISPOSITION,
-    DestructiveOperation.PERMANENT_ERASURE: CognitiveOperation.LEGAL_ERASURE,
-}
+OPERACAO_DE_GOVERNANCA: Mapping[DestructiveOperation, CognitiveOperation] = MappingProxyType(
+    {
+        DestructiveOperation.MOVE_TO_TRASH: (CognitiveOperation.RETENTION_DISPOSITION),
+        DestructiveOperation.PERMANENT_ERASURE: CognitiveOperation.LEGAL_ERASURE,
+    }
+)
 """Correspondência **positiva** entre operação destrutiva e a pergunta
 que a governança precisa ter respondido (`E4.9.8.1`).
+
+```text
+MUTABLE_AUTHORITY_MATRIX = NONE
+```
+
+**Somente leitura desde a E4.9.8.2, e a mudança não é estilística.** A
+cadeia 86 publicou esta tabela como `dict`, e a auditoria mediu a
+consequência: uma atribuição pública trocava `PERMANENT_ERASURE` por
+`READ` e uma resolução de leitura passava a autorizar apagamento
+permanente — reabrindo exatamente o binding que a E4.9.8.1 existia para
+fechar.
+
+`frozen=True` nos value objects **não** protege uma dependência global
+mutável. A guarda que eu escrevi (`s19`) contava um único `AnnAssign` e
+as ocorrências no texto executável: provava unicidade **textual**, nunca
+tentou mutar, e por isso não podia falhar.
+
+O `MappingProxyType` recusa `__setitem__` e não expõe `update`, `pop`,
+`clear`, `setdefault`, `popitem` nem `__delitem__`. O dicionário
+subjacente é um **literal sem nome**: nenhum símbolo de módulo o
+referencia, então não há atributo por onde alcançá-lo e mutá-lo.
+
+Limite declarado, e não escondido: isto protege contra mutação
+**acidental e idiomática**, não contra introspecção deliberada de runtime
+(por exemplo `gc.get_referents`). É a mesma posição das redações de
+representação das fatias anteriores.
 
 ```text
 GOVERNANCE_RESOLUTION_PRESENT != GOVERNANCE_AUTHORITY_FOR_THIS_ACTION

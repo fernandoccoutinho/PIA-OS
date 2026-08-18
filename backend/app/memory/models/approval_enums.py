@@ -83,7 +83,7 @@ class AssuranceLevel(StrEnum):
     """Reautenticação específica para a ação. Exigida por
     `PERMANENT_ERASURE`."""
 
-    def satisfies(self, operacao: object) -> bool:
+    def satisfies(self, operacao: DestructiveOperation) -> bool:
         """A operação é admissível neste nível de assurance?
 
         ```text
@@ -107,9 +107,20 @@ class AssuranceLevel(StrEnum):
         vigia.
 
         ```text
-        ANNOTATION != ENFORCED_TYPE
-        STRING_EQUIVALENT != ENUM_MEMBER
+        STATIC_TYPE_CONTRACT != RUNTIME_TYPE_ENFORCEMENT
+        BOTH_REQUIRED = TRUE
         ```
+
+        **A anotação foi restaurada na E4.9.8.2.** A cadeia 86 endureceu
+        o runtime e, no mesmo movimento, ampliou a anotação para
+        `object` — e eu relatei isso como se fosse detalhe benigno, "amplia
+        o tipo estático e restringe o runtime". Descrevia o mecanismo e
+        omitia o que importava: era regressão de contrato público, feita
+        num corretivo cujo plano declarava não prever assinatura nova.
+
+        Os dois são necessários e nenhum substitui o outro: a anotação diz
+        ao type checker o que é aceitável escrever; o `isinstance` recusa
+        o que chega apesar dela.
         """
         if not isinstance(operacao, DestructiveOperation):
             raise TypeError(
@@ -177,7 +188,7 @@ class VoiceReviewState(StrEnum):
     REVIEWED_AND_CONFIRMED = "reviewed_and_confirmed"
     """Único estado de voz que permite formar proposta."""
 
-    def permite_proposta(self, canal: object) -> bool:
+    def permite_proposta(self, canal: InputChannel) -> bool:
         """O par canal/revisão pode formar proposta destrutiva?
 
         Exige coerência nos dois sentidos: `TEXT` **tem** de declarar
@@ -191,8 +202,12 @@ class VoiceReviewState(StrEnum):
         caindo no ramo de voz por não casar com o membro.
 
         ```text
-        ANNOTATION != ENFORCED_TYPE
+        STATIC_TYPE_CONTRACT != RUNTIME_TYPE_ENFORCEMENT
+        BOTH_REQUIRED = TRUE
         ```
+
+        **Anotação restaurada na E4.9.8.2**, pela mesma razão de
+        `AssuranceLevel.satisfies`.
         """
         if not isinstance(canal, InputChannel):
             raise TypeError(

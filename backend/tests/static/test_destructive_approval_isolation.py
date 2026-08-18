@@ -665,26 +665,59 @@ def test_s99_6_a_guarda_de_binding_detecta_remocao_real() -> None:
     assert not tem_binding(sem)
 
 
-def test_s99_7_a_guarda_de_helper_estrito_detecta_anotacao_sozinha() -> None:
-    """Anotação sem `isinstance` não fecha nada — e a guarda percebe."""
-    so_anotacao = ast.parse(
-        "def satisfies(self, operacao: DestructiveOperation) -> bool:\n    return True\n"
+def test_s99_7_a_guarda_de_helper_exige_anotacao_E_runtime() -> None:
+    """§11.5 — e CORRIGIDA na E4.9.8.2.
+
+    A versão da cadeia 86 apresentava `operacao: object` como a versão
+    **correta**, desde que houvesse `isinstance`. Minha própria
+    demonstração sancionava a ampliação estática que a auditoria depois
+    classificou como regressão de contrato público.
+
+    ```text
+    STATIC_TYPE_CONTRACT != RUNTIME_TYPE_ENFORCEMENT
+    BOTH_REQUIRED = TRUE
+    ```
+
+    Os três mutantes cobrem as três combinações erradas.
+    """
+    so_anotacao = (
+        "def satisfies(self, operacao: DestructiveOperation) -> bool:\n" "    return True\n"
     )
-    com_isinstance = ast.parse(
+    so_runtime = (
         "def satisfies(self, operacao: object) -> bool:\n"
         "    if not isinstance(operacao, DestructiveOperation):\n"
         "        raise TypeError('x')\n"
         "    return True\n"
     )
+    nenhum = "def satisfies(self, operacao: object) -> bool:\n    return True\n"
+    correto = (
+        "def satisfies(self, operacao: DestructiveOperation) -> bool:\n"
+        "    if not isinstance(operacao, DestructiveOperation):\n"
+        "        raise TypeError('x')\n"
+        "    return True\n"
+    )
 
-    def estrito(arvore: ast.Module) -> bool:
-        corpo = ast.unparse(arvore)
-        return "isinstance(operacao, DestructiveOperation)" in corpo and (
-            "raise TypeError" in corpo
+    def conforme(fonte: str) -> bool:
+        (metodo,) = [
+            no
+            for no in ast.walk(ast.parse(fonte))
+            if isinstance(no, ast.FunctionDef) and no.name == "satisfies"
+        ]
+        (argumento,) = [a for a in metodo.args.args if a.arg == "operacao"]
+        anotacao_exata = (
+            isinstance(argumento.annotation, ast.Name)
+            and argumento.annotation.id == "DestructiveOperation"
         )
+        corpo = ast.unparse(metodo)
+        runtime = (
+            "isinstance(operacao, DestructiveOperation)" in corpo and "raise TypeError" in corpo
+        )
+        return anotacao_exata and runtime
 
-    assert not estrito(so_anotacao)
-    assert estrito(com_isinstance)
+    assert not conforme(so_anotacao), "anotação sem runtime não fecha"
+    assert not conforme(so_runtime), "runtime com anotação ampliada não fecha"
+    assert not conforme(nenhum)
+    assert conforme(correto)
 
 
 def test_s99_8_a_guarda_de_delegacao_distingue_identificador_de_substring() -> None:

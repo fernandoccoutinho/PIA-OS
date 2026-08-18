@@ -1503,3 +1503,176 @@ def test_u91_texto_e_voz_falham_nos_mesmos_bindings(canal, revisao, quebra, trec
             provenance=prov,
             governance_resolution=variantes[quebra["governance_resolution"]],
         )
+
+
+# ======================================================================
+# E4.9.8.2 — matriz de autoridade imutável e contrato estático restaurado
+#
+# A18: `frozen=True` nos value objects não protege dependência global
+#      mutável. A matriz era `dict` público, e trocar um item reabria o
+#      binding de operação que a E4.9.8.1 existia para fechar.
+# A19/A20: o runtime ficou estrito e a ANOTAÇÃO foi ampliada para
+#      `object` — regressão de contrato público que eu relatei como
+#      detalhe benigno.
+#
+# MUTABLE_AUTHORITY_MATRIX = NONE
+# STATIC_TYPE_CONTRACT != RUNTIME_TYPE_ENFORCEMENT ; BOTH_REQUIRED = TRUE
+# ======================================================================
+
+
+def _mutar(alvo: object, chave: object, valor: object) -> None:
+    """Mutação por índice sem anotar o alvo como mutável.
+
+    O `Mapping` publicado não expõe `__setitem__`; escrever
+    `OPERACAO_DE_GOVERNANCA[x] = y` diretamente no teste seria erro de
+    tipo estático. `operator.setitem` mede o **runtime** sem enfraquecer a
+    assinatura e sem `type: ignore`, `Any` ou `cast`.
+
+    Detalhe que importa: `type(alvo).__setitem__` daria `AttributeError`,
+    não `TypeError` — o proxy simplesmente **não tem** o método. A prova
+    tem de exercitar a operação, não procurar o atributo.
+    """
+    import operator
+
+    operator.setitem(alvo, chave, valor)
+
+
+# --- A18: a matriz não aceita escrita ------------------------------------
+
+
+def test_u92_a_matriz_e_um_mapping_somente_leitura():
+    from collections.abc import Mapping
+    from types import MappingProxyType
+
+    assert isinstance(OPERACAO_DE_GOVERNANCA, Mapping)
+    assert isinstance(OPERACAO_DE_GOVERNANCA, MappingProxyType)
+    assert not isinstance(OPERACAO_DE_GOVERNANCA, dict)
+
+
+@pytest.mark.parametrize("metodo", ["update", "pop", "clear", "setdefault", "popitem"])
+def test_u93_a_matriz_nao_expoe_metodos_mutadores(metodo):
+    assert not hasattr(OPERACAO_DE_GOVERNANCA, metodo)
+
+
+def test_u94_setitem_na_matriz_e_recusado():
+    """A reprodução exata da auditoria."""
+    with pytest.raises(TypeError):
+        _mutar(
+            OPERACAO_DE_GOVERNANCA,
+            DestructiveOperation.PERMANENT_ERASURE,
+            CognitiveOperation.READ,
+        )
+
+
+def test_u95_apos_a_tentativa_a_matriz_continua_intacta():
+    with pytest.raises(TypeError):
+        _mutar(
+            OPERACAO_DE_GOVERNANCA,
+            DestructiveOperation.PERMANENT_ERASURE,
+            CognitiveOperation.READ,
+        )
+    assert OPERACAO_DE_GOVERNANCA[DestructiveOperation.PERMANENT_ERASURE] is (
+        CognitiveOperation.LEGAL_ERASURE
+    )
+    assert OPERACAO_DE_GOVERNANCA[DestructiveOperation.MOVE_TO_TRASH] is (
+        CognitiveOperation.RETENTION_DISPOSITION
+    )
+
+
+def test_u96_read_continua_recusada_depois_da_tentativa_de_mutacao():
+    """O que a auditoria mediu como reproduzido, agora fechado."""
+    with pytest.raises(TypeError):
+        _mutar(
+            OPERACAO_DE_GOVERNANCA,
+            DestructiveOperation.PERMANENT_ERASURE,
+            CognitiveOperation.READ,
+        )
+    with pytest.raises(ValueError, match="exige resolução de legal_erasure"):
+        proposta(
+            operation=DestructiveOperation.PERMANENT_ERASURE,
+            governance_resolution=resolucao(operation=CognitiveOperation.READ),
+        )
+
+
+def test_u97_copy_devolve_estrutura_independente():
+    """`copy()` é cópia, não o backing — mutá-la não afeta a fonte."""
+    copia = dict(OPERACAO_DE_GOVERNANCA)
+    copia[DestructiveOperation.PERMANENT_ERASURE] = CognitiveOperation.READ
+    assert OPERACAO_DE_GOVERNANCA[DestructiveOperation.PERMANENT_ERASURE] is (
+        CognitiveOperation.LEGAL_ERASURE
+    )
+
+
+def test_u98_nenhum_backing_mutavel_alcancavel_no_modulo():
+    """O literal subjacente não tem nome — não há atributo por onde chegar.
+
+    Um `_OPERACAO_DE_GOVERNANCA = {...}` privado satisfaria o
+    `MappingProxyType` e deixaria a matriz alcançável como atributo de
+    módulo, o que não seria `MUTABLE_AUTHORITY_MATRIX = NONE`.
+    """
+    from collections.abc import Mapping
+
+    from app.memory.schemas import destructive_approval as modulo
+
+    for nome in dir(modulo):
+        valor = getattr(modulo, nome)
+        if (
+            isinstance(valor, dict)
+            and valor
+            and all(isinstance(chave, DestructiveOperation) for chave in valor)
+        ):
+            raise AssertionError(f"backing mutável alcançável em {nome}")
+    assert isinstance(modulo.OPERACAO_DE_GOVERNANCA, Mapping)
+
+
+def test_u99_a_matriz_continua_total_e_sem_fallback():
+    """Membro novo sem entrada derruba isto antes de virar autorização."""
+    assert set(OPERACAO_DE_GOVERNANCA) == set(DestructiveOperation)
+    assert dict(OPERACAO_DE_GOVERNANCA) == {
+        DestructiveOperation.MOVE_TO_TRASH: CognitiveOperation.RETENTION_DISPOSITION,
+        DestructiveOperation.PERMANENT_ERASURE: CognitiveOperation.LEGAL_ERASURE,
+    }
+
+
+# --- A19/A20: contrato estático exato ------------------------------------
+
+
+def test_u100_a_anotacao_de_satisfies_e_o_enum_exato():
+    """`STATIC_TYPE_CONTRACT != RUNTIME_TYPE_ENFORCEMENT`."""
+    import typing
+
+    assert typing.get_type_hints(AssuranceLevel.satisfies)["operacao"] is (DestructiveOperation)
+    assert typing.get_type_hints(AssuranceLevel.satisfies)["return"] is bool
+
+
+def test_u101_a_anotacao_de_permite_proposta_e_o_enum_exato():
+    import typing
+
+    assert typing.get_type_hints(VoiceReviewState.permite_proposta)["canal"] is (InputChannel)
+    assert typing.get_type_hints(VoiceReviewState.permite_proposta)["return"] is bool
+
+
+def test_u102_nenhuma_anotacao_dos_helpers_e_object():
+    """A regressão exata da cadeia 86, fechada nominalmente."""
+    import typing
+
+    for funcao, parametro in (
+        (AssuranceLevel.satisfies, "operacao"),
+        (VoiceReviewState.permite_proposta, "canal"),
+    ):
+        assert typing.get_type_hints(funcao)[parametro] is not object
+
+
+@pytest.mark.parametrize("valor", ["permanent_erasure", "move_to_trash", None, True, 0, object()])
+def test_u103_satisfies_continua_estrito_em_runtime(valor):
+    """Invocação dinâmica: mede o runtime sem enfraquecer a assinatura."""
+    chamar = AssuranceLevel.AUTHENTICATED.satisfies
+    with pytest.raises(TypeError, match="DestructiveOperation"):
+        chamar(valor)
+
+
+@pytest.mark.parametrize("valor", ["text", "voice", None, False, 1, object()])
+def test_u104_permite_proposta_continua_estrito_em_runtime(valor):
+    chamar = VoiceReviewState.REVIEWED_AND_CONFIRMED.permite_proposta
+    with pytest.raises(TypeError, match="InputChannel"):
+        chamar(valor)
