@@ -352,13 +352,19 @@ def test_i20_limite_declarado_o_banco_nao_verifica_a_forma_das_regras():
     não mais só quando alguém pedisse `typed_rules`. A linha inválida
     deixou de ser observável como objeto — que é mais estrito, não
     menos.
+
+    Atualizado pela E4.9.6.2: a recusa continua na carga, mas o erro
+    passou de `KeyError` — incidental, vindo do acesso à chave — para
+    `ValueError` do contrato, que diz **quais** chaves faltam. A
+    auditoria da cadeia 77 exigiu erro controlado em toda fronteira, e
+    `KeyError` não é nem `TypeError` nem `ValueError`.
     """
     import json
 
     with engine.begin() as conn:
         _insert_raw(conn, policy_key="ret.bruta", rules=json.dumps([{"lixo": True}]))
 
-    with pytest.raises(KeyError), UnitOfWork() as uow:
+    with pytest.raises(ValueError, match="chaves obrigatórias"), UnitOfWork() as uow:
         RetentionPolicyRepository(uow.session).get_version("ret.bruta", 1)
 
 
@@ -577,3 +583,179 @@ def test_i30_trigger_e_colisao_de_versao_seguem_valendo():
     with pytest.raises(sa.exc.DatabaseError) as info, engine.begin() as conn:
         conn.execute(sa.text("UPDATE retention_policies SET version = 99"))
     assert "append-only" in str(info.value)
+
+
+# ======================================================================
+# E4.9.6.2 — completude de fronteira contra PostgreSQL real
+# ======================================================================
+
+
+def test_i31_publicar_commitar_e_reler_devolve_a_forma_tipada():
+    """Fronteira 5: o repositório, ponta a ponta."""
+    _publicar(policy_key="ret.tipada")
+
+    with UnitOfWork() as uow:
+        lida = RetentionPolicyRepository(uow.session).get_version("ret.tipada", 1)
+        assert lida is not None
+        assert isinstance(lida.rules, tuple)
+        assert isinstance(lida.rules[0], RetentionRule)
+        assert isinstance(lida.rules[0].domain_ids, frozenset)
+        assert lida.typed_rules is lida.rules
+
+
+def test_i32_os_sete_metodos_herdados_devolvem_a_forma_tipada():
+    """Nenhum escape herdado de `BaseRepository` devolve JSON cru."""
+    pid = _publicar(policy_key="ret.herdados")
+
+    with UnitOfWork() as uow:
+        repo = RetentionPolicyRepository(uow.session)
+        observados = [
+            repo.get_by_id(pid),
+            repo.get_by_id_or_raise(pid),
+            *repo.list(),
+            *repo.paginate(page=1, page_size=10).items,
+            *repo.list_versions("ret.herdados"),
+            repo.effective_version_at("ret.herdados", AGORA),
+        ]
+        for entidade in observados:
+            assert entidade is not None
+            assert isinstance(entidade.rules, tuple), type(entidade.rules)
+            assert all(isinstance(r, RetentionRule) for r in entidade.rules)
+
+
+def test_i33_nova_sessao_observa_os_bytes_originais_apos_tentativa_de_mutacao():
+    """A tentativa é recusada em memória e nada muda no disco."""
+    _publicar(policy_key="ret.imutavel")
+
+    with UnitOfWork() as uow:
+        lida = RetentionPolicyRepository(uow.session).get_version("ret.imutavel", 1)
+        assert lida is not None
+        antes = lida.rules
+        with pytest.raises(TypeError):
+            lida.rules = [{"rule_id": "r1"}]
+        assert lida.rules is antes
+
+    with engine.connect() as conn:
+        bruto = conn.execute(
+            sa.text("SELECT rules FROM retention_policies WHERE policy_key = 'ret.imutavel'")
+        ).scalar_one()
+    assert bruto == RetentionPolicy.serialize_rules((regra(),))
+
+    with UnitOfWork() as uow:
+        relida = RetentionPolicyRepository(uow.session).get_version("ret.imutavel", 1)
+        assert relida is not None
+        assert relida.rules[0].minimum_age_days == 30
+
+
+def test_i34_duas_leituras_na_mesma_sessao_nao_divergem():
+    _publicar(policy_key="ret.coerente")
+
+    with UnitOfWork() as uow:
+        repo = RetentionPolicyRepository(uow.session)
+        primeira = repo.get_version("ret.coerente", 1)
+        assert primeira is not None
+        with pytest.raises((TypeError, ValueError)):
+            primeira.rules = ()
+        segunda = repo.get_version("ret.coerente", 1)
+        assert segunda is not None
+        assert primeira.rules == segunda.rules
+
+
+def test_i35_publicacao_com_representacao_nao_tipada_e_recusada_antes_do_banco():
+    """Nada chega ao INSERT — a recusa é de contrato, não da constraint."""
+    with pytest.raises(TypeError), UnitOfWork() as uow:
+        RetentionPolicyRepository(uow.session).add_policy(
+            policy_key="ret.naotipada",
+            version=1,
+            governance_policy_key="gov.default",
+            rules=[{"rule_id": "r1"}],  # type: ignore[arg-type]
+        )
+
+    with engine.connect() as conn:
+        total = conn.execute(
+            sa.text("SELECT count(*) FROM retention_policies WHERE policy_key = 'ret.naotipada'")
+        ).scalar_one()
+    assert total == 0
+
+
+@pytest.mark.parametrize("invisivel", ["\u0085", "\u200b", "\u2028", "\u2029", "\u202e"])
+def test_i36_invisiveis_unicode_nao_chegam_ao_banco(invisivel):
+    chave = f"ret{invisivel}oculta"
+    with pytest.raises(ValueError), UnitOfWork() as uow:
+        RetentionPolicyRepository(uow.session).add_policy(
+            policy_key=chave,
+            version=1,
+            governance_policy_key="gov.default",
+            rules=(regra(),),
+        )
+
+    with engine.connect() as conn:
+        total = conn.execute(sa.text("SELECT count(*) FROM retention_policies")).scalar_one()
+    assert total == 0
+
+
+def test_i37_chave_acentuada_persiste_byte_a_byte():
+    """`VALIDATED OPAQUE KEY != NORMALIZED KEY` — provado no disco."""
+    chave = "retenção.produção.São_Paulo"
+    _publicar(policy_key=chave)
+
+    with engine.connect() as conn:
+        persistida = conn.execute(sa.text("SELECT policy_key FROM retention_policies")).scalar_one()
+    assert persistida == chave
+    assert persistida.encode("utf-8") == chave.encode("utf-8")
+
+
+def test_i38_trigger_e_colisao_de_versao_continuam_valendo():
+    """Nada do que a E4.9.6 garantiu foi relaxado pelo corretivo."""
+    _publicar(policy_key="ret.guardas")
+
+    with pytest.raises(RetentionPolicyVersionExistsError):
+        _publicar(policy_key="ret.guardas")
+
+    with pytest.raises(sa.exc.DatabaseError) as capturado, engine.begin() as conn:
+        conn.execute(
+            sa.text("UPDATE retention_policies SET version = 9 WHERE policy_key = 'ret.guardas'")
+        )
+    assert "append-only" in str(capturado.value)
+
+    with pytest.raises(sa.exc.DatabaseError) as removido, engine.begin() as conn:
+        conn.execute(sa.text("DELETE FROM retention_policies WHERE policy_key = 'ret.guardas'"))
+    assert "append-only" in str(removido.value)
+
+
+def test_i39_schema_e_migration_head_identicos_a_cadeia_77():
+    """`MIGRATION_DELTA = 0` e `DATABASE_SCHEMA_DELTA = 0`."""
+    with engine.connect() as conn:
+        head = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one()
+        assert head == "c8a3f5017e94"
+
+        tipo = conn.execute(
+            sa.text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'retention_policies' AND column_name = 'rules'"
+            )
+        ).scalar_one()
+        assert tipo == "jsonb"
+
+        checks = conn.execute(
+            sa.text(
+                "SELECT count(*) FROM information_schema.table_constraints "
+                "WHERE table_name = 'retention_policies' AND constraint_type = 'CHECK' "
+                "AND constraint_name LIKE 'ck_%'"
+            )
+        ).scalar_one()
+        assert checks == 4
+
+        gatilho = conn.execute(
+            sa.text(
+                "SELECT count(*) FROM information_schema.triggers "
+                "WHERE event_object_table = 'retention_policies' "
+                "AND trigger_name = 'trg_retention_policies_append_only'"
+            )
+        ).scalar_one()
+        assert gatilho >= 1
+
+
+def test_i40_erasure_records_permanece_intacta():
+    with engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT to_regclass('erasure_records')")).scalar() is not None

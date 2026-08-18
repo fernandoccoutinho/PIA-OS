@@ -39,10 +39,10 @@ from typing import Any
 from sqlalchemy import CheckConstraint, DateTime, Integer, String, UniqueConstraint, event
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine.interfaces import Dialect
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 from sqlalchemy.types import JSON, TypeDecorator, TypeEngine
 
-from app.memory.schemas.retention import RetentionRule
+from app.memory.schemas.retention import RetentionRule, validar_regras_retencao
 from app.models.base_model import BaseModel
 
 
@@ -66,12 +66,24 @@ class RetentionRulesType(TypeDecorator[tuple["RetentionRule", ...]]):
     objeto na identity map passou a mostrar algo que o banco não tem, e
     duas leituras na mesma sessão podiam divergir.
 
-    Este `TypeDecorator` fecha o buraco no lugar certo: o atributo
-    `rules` **é** `tuple[RetentionRule, ...]` em memória, e vira JSON
-    apenas ao ir para o disco. Não há `list[dict]` pública em momento
-    algum, e todo método herdado de `BaseRepository` — `get_by_id`,
-    `list`, `paginate`, `refresh` — passa a devolver a estrutura já
-    congelada, sem que nenhuma assinatura precise mudar.
+    Este `TypeDecorator` faz o objeto **carregado** e o objeto **gravado**
+    usarem a representação tipada, e todo método herdado de
+    `BaseRepository` — `get_by_id`, `list`, `paginate`, `refresh` — passa
+    a devolver a estrutura já congelada, sem que nenhuma assinatura
+    precise mudar.
+
+    ```text
+    TYPE DECORATOR BOUNDARY != ORM ASSIGNMENT BOUNDARY
+    ```
+
+    **Correção da E4.9.6.2:** a E4.9.6.1 afirmava aqui que "não há
+    `list[dict]` pública em momento algum, nem na escrita". Era falso, e
+    a auditoria da cadeia 77 reproduziu: estas duas funções só correm no
+    bind e no result, então `RetentionPolicy(rules=[{...}])` nunca
+    passava por nenhuma delas. A fronteira de **atribuição** é o
+    `@validates` de `RetentionPolicy`; este decorador cobre disco.
+    As duas chamam `validar_regras_retencao`, para que não voltem a
+    divergir.
 
     A alternativa considerada era uma `RetentionPolicyView` com
     confinamento total do ORM, e ela foi rejeitada: exigiria
@@ -104,10 +116,21 @@ class RetentionRulesType(TypeDecorator[tuple["RetentionRule", ...]]):
     def process_bind_param(
         self, value: "tuple[RetentionRule, ...] | None", dialect: Dialect
     ) -> list[dict[str, Any]] | None:
-        """Regras tipadas → JSON canônico, na ida para o disco."""
+        """Regras tipadas → JSON canônico, na ida para o disco.
+
+        `None` atravessa como `NULL` SQL, que a coluna `NOT NULL`
+        recusa no banco — a recusa de `None` como *valor de atributo*
+        acontece antes, no `@validates`.
+
+        Qualquer outra entrada passa pelo contrato compartilhado, que
+        levanta `TypeError`/`ValueError`. Antes da E4.9.6.2 um
+        `list[dict]` chegava aqui e morria com `AttributeError: 'dict'
+        object has no attribute 'rule_id'` — erro incidental, vindo do
+        acesso a atributo dentro da serialização, não do contrato.
+        """
         if value is None:
             return None
-        return RetentionPolicy.serialize_rules(tuple(value))
+        return RetentionPolicy.serialize_rules(validar_regras_retencao("rules", value))
 
     def process_result_value(
         self, value: object, dialect: Dialect
@@ -227,23 +250,16 @@ class RetentionPolicy(BaseModel):
     def serialize_rules(rules: "tuple[RetentionRule, ...]") -> list[dict[str, Any]]:
         """Converte regras tipadas em JSON canônico.
 
-        Recusa conjunto vazio e `rule_id` duplicado. Duplicata tornaria
-        o fundamento de uma avaliação ambíguo — mesma disciplina de
-        `GovernancePolicy.serialize_rules`.
-        """
-        if not rules:
-            raise ValueError(
-                "uma versão de RetentionPolicy exige ao menos uma regra — "
-                "policy sem regra não expressa retenção alguma"
-            )
+        Recusa conjunto vazio, item de tipo errado e `rule_id`
+        duplicado. Duplicata tornaria o fundamento de uma avaliação
+        ambíguo — mesma disciplina de `GovernancePolicy.serialize_rules`.
 
-        ids = [regra.rule_id for regra in rules]
-        duplicados = sorted({rid for rid in ids if ids.count(rid) > 1})
-        if duplicados:
-            raise ValueError(
-                f"rule_id duplicado na mesma versão: {', '.join(duplicados)} — "
-                "duplicata torna o fundamento da avaliação ambíguo"
-            )
+        Desde a E4.9.6.2 esses invariantes vêm de
+        `validar_regras_retencao`, e não de uma cópia local: manter duas
+        listas de checagens é como as fronteiras divergem, que é
+        exatamente o defeito que este corretivo fecha.
+        """
+        rules = validar_regras_retencao("rules", rules)
 
         return [
             {
@@ -277,6 +293,29 @@ class RetentionPolicy(BaseModel):
         if not payload:
             raise ValueError("payload de regras vazio — versão inválida")
 
+        # Erro CONTROLADO para linha malformada. Até a E4.9.6.1 um item
+        # sem as chaves esperadas morria em `KeyError`, e um item que não
+        # fosse dicionário morria no próprio `[]` — erros incidentais,
+        # vindos do acesso, não do contrato.
+        obrigatorias = (
+            "rule_id",
+            "scope_kind",
+            "domain_ids",
+            "anchor",
+            "minimum_age_days",
+            "on_expiry_action",
+        )
+        for indice, item in enumerate(payload):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"regra[{indice}] deve ser um objeto JSON, recebido " f"{type(item).__name__}"
+                )
+            faltando = [chave for chave in obrigatorias if chave not in item]
+            if faltando:
+                raise ValueError(
+                    f"regra[{indice}] não tem as chaves obrigatórias: " f"{', '.join(faltando)}"
+                )
+
         vistos: set[str] = set()
         for item in payload:
             if item["rule_id"] in vistos:
@@ -298,16 +337,47 @@ class RetentionPolicy(BaseModel):
             for item in payload
         )
 
+    @validates("rules")
+    def _validar_rules(self, key: str, value: object) -> "tuple[RetentionRule, ...]":
+        """A fronteira de **atribuição** — construtor e `setattr` (`E4.9.6.2`).
+
+        ```text
+        TYPE DECORATOR BOUNDARY != ORM ASSIGNMENT BOUNDARY
+        ```
+
+        O `TypeDecorator` cobre disco; este validador cobre memória. O
+        construtor declarativo do SQLAlchemy atribui cada `kwarg` por
+        `setattr`, então esta função corre tanto em
+        `RetentionPolicy(rules=...)` quanto em `policy.rules = ...`.
+
+        **Não** corre no carregamento: o `loading` popula o `__dict__`
+        por caminho próprio, sem evento de atributo — e é correto que
+        seja assim, porque quem valida o que vem do banco é o
+        `process_result_value`, que reconstrói pelo construtor tipado.
+
+        Como levanta antes de escrever, uma atribuição inválida deixa o
+        valor anterior intacto: recusar não é o mesmo que corromper.
+        """
+        return validar_regras_retencao(key, value)
+
     @property
     def typed_rules(self) -> "tuple[RetentionRule, ...]":
-        """Regras desta versão, já tipadas.
+        """Regras desta versão, já tipadas — com verificação em runtime.
 
-        Desde a E4.9.6.1 é a **mesma** estrutura de `rules`: o
-        congelamento passou para a fronteira do ORM, e não há mais uma
-        representação mutável da qual esta divergiria. Mantido porque
-        nomeia a intenção no ponto de leitura.
+        ```text
+        ANNOTATED TYPE != RUNTIME TYPE PROOF
+        ```
+
+        Na E4.9.6.1 esta propriedade era `return self.rules` puro, e a
+        anotação `tuple[RetentionRule, ...]` era uma promessa que o
+        runtime não cumpria: com a representação antiga no atributo, ela
+        devolvia `dict`. Agora reafirma o contrato compartilhado, de
+        modo que a anotação e o valor devolvido não podem divergir.
+
+        Quando o valor é válido, devolve a **mesma** tupla — `is` com
+        `rules` continua verdadeiro, e nenhuma cópia é fabricada.
         """
-        return self.rules
+        return validar_regras_retencao("rules", self.rules)
 
 
 @event.listens_for(RetentionPolicy, "before_update")

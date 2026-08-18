@@ -271,8 +271,25 @@ def test_s15_validador_opaco_e_compartilhado_e_nao_normaliza() -> None:
     executavel = _executavel(APP / "memory" / "schemas" / "retention.py")
     corpo = executavel[executavel.index("def validar_identificador_opaco") :]
     corpo = corpo[: corpo.index("\n@dataclass")]
-    for proibido in ("casefold", "normalize", "unicodedata", "lower()", "upper()"):
+    # ATUALIZADA NA E4.9.6.2, deliberadamente. A versão da E4.9.6.1
+    # proibia o módulo `unicodedata` inteiro, o que era grosso demais: o
+    # endurecimento autorizado pela auditoria exige `category`, que
+    # CLASSIFICA. O que nunca pode aparecer é o que TRANSFORMA.
+    for proibido in (
+        "casefold",
+        "normalize",
+        "lower()",
+        "upper()",
+        "NFC",
+        "NFD",
+        "NFKC",
+        "NFKD",
+        "translate",
+        "encode",
+    ):
         assert proibido not in corpo, proibido
+    assert "unicodedata.category" in corpo
+    assert "unicodedata.normalize" not in corpo
     # `strip()` só aparece na CHECAGEM de branco, nunca no valor devolvido.
     assert "return valor" in corpo
     assert "return valor.strip()" not in corpo
@@ -310,3 +327,109 @@ def test_s16_nenhum_avaliador_ou_escritor_apareceu_no_corretivo() -> None:
         executavel = _executavel(caminho)
         for termo in ("ErasureRecordRepository", "append_observed", "evaluate", "assess("):
             assert termo not in executavel, f"{modulo}: {termo}"
+
+
+# ======================================================================
+# E4.9.6.2 — guardas de completude de fronteira
+# ======================================================================
+
+
+def test_s17_a_fronteira_de_atribuicao_do_orm_existe() -> None:
+    """`TYPE DECORATOR BOUNDARY != ORM ASSIGNMENT BOUNDARY`.
+
+    A E4.9.6.1 confiou só no `TypeDecorator`, que corre no bind e no
+    result. Objeto construído em Python e nunca gravado não atravessa
+    nenhum dos dois. Esta guarda prova, na AST, que existe um
+    `@validates("rules")` — se alguém removê-lo confiando no decorador,
+    o defeito A3b volta e este teste cai.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "models" / "retention_policy.py").read_text(encoding="utf-8")
+    )
+    decorados = {
+        no.args[0].value
+        for funcao in ast.walk(arvore)
+        if isinstance(funcao, ast.FunctionDef)
+        for no in funcao.decorator_list
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Name)
+        and no.func.id == "validates"
+        and no.args
+        and isinstance(no.args[0], ast.Constant)
+    }
+    assert "rules" in decorados
+
+
+def test_s18_o_contrato_de_regras_e_unico_e_compartilhado() -> None:
+    """Uma função, três fronteiras — não três listas de checagens.
+
+    O corretivo existe porque duas fronteiras divergiram. Manter cópias
+    locais dos invariantes é como voltariam a divergir, então o
+    validador compartilhado precisa ser chamado pelo `@validates`, pelo
+    bind e pela leitura defensiva.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "models" / "retention_policy.py").read_text(encoding="utf-8")
+    )
+    chamadas = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Name)
+        and no.func.id == "validar_regras_retencao"
+    ]
+    assert len(chamadas) >= 3, "atribuição, bind e leitura defensiva"
+
+    # Nenhuma cópia local do invariante de não vacuidade sobrou no modelo.
+    executavel = _executavel(APP / "memory" / "models" / "retention_policy.py")
+    assert "ao menos uma regra" not in executavel
+
+
+def test_s19_typed_rules_nao_e_passthrough_puro() -> None:
+    """`ANNOTATED TYPE != RUNTIME TYPE PROOF`.
+
+    Na cadeia 77 esta propriedade era `return self.rules` e a anotação
+    mentia em runtime. Ela precisa reafirmar o contrato.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "models" / "retention_policy.py").read_text(encoding="utf-8")
+    )
+    (propriedade,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "typed_rules"
+    ]
+    corpo = [linha for linha in propriedade.body if not isinstance(linha, ast.Expr)]
+    assert corpo, "typed_rules não pode ter corpo só de docstring"
+    (retorno,) = corpo
+    assert isinstance(retorno, ast.Return)
+    assert isinstance(retorno.value, ast.Call), "retorno cru volta a mentir o tipo"
+
+
+def test_s20_o_corretivo_nao_trouxe_avaliador_nem_efeito() -> None:
+    """Reafirmação após a E4.9.6.2 — o escopo continua fechado."""
+    for modulo in NOVOS_MODULOS:
+        caminho = APP.parent / (modulo.replace(".", "/") + ".py")
+        executavel = _executavel(caminho)
+        for termo in (
+            "ErasureRecordRepository",
+            "append_observed",
+            "evaluate",
+            "assess(",
+            "trash",
+            "purge",
+            "scheduler",
+        ):
+            assert termo not in executavel, f"{modulo}: {termo}"
+
+
+def test_s21_categorias_proibidas_sao_exatamente_as_autorizadas() -> None:
+    """`Cc`, `Cf`, `Zl`, `Zp` — nem mais, nem menos.
+
+    Menos deixaria passar invisível; mais recusaria letra, número,
+    marca, pontuação ou o espaço comum (`Zs`), que a auditoria mandou
+    preservar explicitamente.
+    """
+    from app.memory.schemas.retention import CATEGORIAS_UNICODE_PROIBIDAS
+
+    assert set(CATEGORIAS_UNICODE_PROIBIDAS) == {"Cc", "Cf", "Zl", "Zp"}

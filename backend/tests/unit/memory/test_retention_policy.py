@@ -634,3 +634,302 @@ def test_u50_type_decorator_usa_jsonb_no_postgres_e_json_nos_demais():
     tipo = RetentionRulesType()
     assert isinstance(tipo.load_dialect_impl(postgresql.dialect()), JSONB)
     assert isinstance(tipo.load_dialect_impl(sqlite.dialect()), JSON)
+
+
+# ======================================================================
+# E4.9.6.2 — completude de fronteira
+#
+# A3B: todos os casos de construtor/atribuição abaixo FALHAM na cadeia
+# 77, onde o congelamento vivia só no `TypeDecorator` e o construtor ORM
+# guardava `list[dict]` mutável.
+# A3A: a matriz Unicode é endurecimento novo, autorizado pela auditoria
+# da cadeia 77 — não descumprimento retroativo da E4.9.6.1, que fechou
+# exatamente C0+DEL como seu contrato mandava.
+# ======================================================================
+
+
+def _policy(**overrides: object) -> RetentionPolicy:
+    base: dict[str, object] = {
+        "policy_key": "ret.default",
+        "version": 1,
+        "governance_policy_key": "gov.default",
+        "rules": (regra(),),
+    }
+    base.update(overrides)
+    return RetentionPolicy(**base)  # type: ignore[arg-type]
+
+
+# --- Fronteira 1: construtor ORM direto ----------------------------------
+
+
+def test_u51_construtor_direto_aceita_a_tupla_tipada():
+    p = _policy()
+    assert isinstance(p.rules, tuple)
+    assert isinstance(p.rules[0], RetentionRule)
+    assert p.typed_rules is p.rules
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        [
+            {
+                "rule_id": "r1",
+                "scope_kind": "all_local_patrimony",
+                "domain_ids": [],
+                "anchor": "created_at",
+                "minimum_age_days": 30,
+                "on_expiry_action": "assess_and_inform",
+            }
+        ],
+        {"rule_id": "r1"},
+        "texto",
+        42,
+        None,
+        [regra()],
+    ],
+)
+def test_u52_construtor_direto_recusa_representacao_nao_tipada(valor):
+    """Reprodução do achado A3b — a lista de dicionários do auditor."""
+    with pytest.raises(TypeError):
+        _policy(rules=valor)
+
+
+def test_u53_construtor_direto_recusa_tupla_vazia():
+    with pytest.raises(ValueError, match="ao menos uma regra"):
+        _policy(rules=())
+
+
+def test_u54_construtor_direto_recusa_item_de_tipo_errado():
+    with pytest.raises(TypeError, match="RetentionRule"):
+        _policy(rules=({"rule_id": "r1"},))
+
+
+def test_u55_construtor_direto_recusa_duplicata_antes_do_bind():
+    with pytest.raises(ValueError, match="duplicado"):
+        _policy(rules=(regra(rule_id="a"), regra(rule_id="a")))
+
+
+# --- Fronteira 2: atribuição posterior ------------------------------------
+
+
+@pytest.mark.parametrize("valor", [[{"rule_id": "r1"}], "texto", 42, None, ()])
+def test_u56_atribuicao_invalida_preserva_o_valor_anterior(valor):
+    """Recusar não é o mesmo que corromper."""
+    p = _policy()
+    antes = p.rules
+    with pytest.raises((TypeError, ValueError)):
+        p.rules = valor
+    assert p.rules is antes
+    assert isinstance(p.rules[0], RetentionRule)
+
+
+def test_u57_atribuicao_valida_substitui():
+    p = _policy()
+    nova = (regra(rule_id="outra"),)
+    p.rules = nova
+    assert p.rules is nova
+
+
+def test_u58_mutacao_aninhada_impossivel_pelo_construtor_direto():
+    """O caminho exato da reprodução da auditoria da cadeia 77."""
+    p = _policy()
+    with pytest.raises(TypeError):
+        p.rules[0]["minimum_age_days"] = 0  # type: ignore[index]
+    with pytest.raises(FrozenInstanceError):
+        p.rules[0].minimum_age_days = 0  # type: ignore[misc]
+    assert p.rules[0].minimum_age_days == 30
+
+
+# --- typed_rules defensivo ------------------------------------------------
+
+
+def test_u59_typed_rules_verifica_em_runtime_e_nao_mente_o_tipo():
+    """`ANNOTATED TYPE != RUNTIME TYPE PROOF`.
+
+    O `__dict__` é forçado de propósito, contornando o `@validates`,
+    para provar que a propriedade não é passthrough: a anotação diz
+    `tuple[RetentionRule, ...]` e o runtime a sustenta.
+    """
+    p = _policy()
+    p.__dict__["rules"] = [{"rule_id": "r1"}]
+    with pytest.raises(TypeError):
+        _ = p.typed_rules
+
+    p.__dict__["rules"] = ()
+    with pytest.raises(ValueError):
+        _ = p.typed_rules
+
+
+def test_u60_typed_rules_nao_fabrica_copia():
+    p = _policy()
+    assert p.typed_rules is p.rules
+
+
+# --- Fronteira 3: bind ----------------------------------------------------
+
+
+def _tipo_e_dialeto():
+    from sqlalchemy.dialects import postgresql
+
+    from app.memory.models.retention_policy import RetentionRulesType
+
+    return RetentionRulesType(), postgresql.dialect()
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        [{"rule_id": "r1", "minimum_age_days": 30}],
+        "texto",
+        42,
+        [regra()],
+        (regra(), "x"),
+    ],
+)
+def test_u61_bind_produz_erro_de_contrato_nunca_incidental(valor):
+    """Na cadeia 77 isto morria em `AttributeError: 'dict' object ...`."""
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises((TypeError, ValueError)) as capturado:
+        tipo.process_bind_param(valor, dialeto)
+    assert not isinstance(capturado.value, AttributeError)
+
+
+def test_u62_bind_recusa_tupla_vazia_e_duplicata():
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(ValueError, match="ao menos uma regra"):
+        tipo.process_bind_param((), dialeto)
+    with pytest.raises(ValueError, match="duplicado"):
+        tipo.process_bind_param((regra(rule_id="a"), regra(rule_id="a")), dialeto)
+
+
+def test_u63_bind_valido_serializa_canonicamente():
+    tipo, dialeto = _tipo_e_dialeto()
+    persistido = tipo.process_bind_param((regra(rule_id="b"), regra(rule_id="a")), dialeto)
+    assert [linha["rule_id"] for linha in persistido] == ["a", "b"]
+
+
+# --- Fronteira 4: result --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [{"lixo": True}],
+        ["nao e objeto"],
+        [42],
+        [None],
+        [{"rule_id": "r1", "scope_kind": "all_local_patrimony"}],
+    ],
+)
+def test_u64_result_recusa_payload_malformado_de_forma_controlada(payload):
+    """Antes da E4.9.6.2 chave ausente virava `KeyError` incidental."""
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises((TypeError, ValueError)):
+        tipo.process_result_value(payload, dialeto)
+
+
+def test_u65_round_trip_tipado_e_deterministico():
+    tipo, dialeto = _tipo_e_dialeto()
+    originais = (regra(rule_id="b"), regra(rule_id="a"))
+    ida = tipo.process_bind_param(originais, dialeto)
+    volta = tipo.process_result_value(ida, dialeto)
+    assert isinstance(volta, tuple)
+    assert all(isinstance(r, RetentionRule) for r in volta)
+    assert tipo.process_bind_param(volta, dialeto) == ida
+
+
+# --- A3a: matriz Unicode --------------------------------------------------
+
+
+INVISIVEIS = [
+    "\u0000",  # Cc NUL
+    "\u000a",  # Cc LINE FEED
+    "\u007f",  # Cc DELETE
+    "\u0085",  # Cc NEXT LINE
+    "\u009f",  # Cc APPLICATION PROGRAM COMMAND
+    "\u200b",  # Cf ZERO WIDTH SPACE
+    "\u202e",  # Cf RIGHT-TO-LEFT OVERRIDE
+    "\ufeff",  # Cf BYTE ORDER MARK
+    "\u2028",  # Zl LINE SEPARATOR
+    "\u2029",  # Zp PARAGRAPH SEPARATOR
+]
+
+
+@pytest.mark.parametrize("invisivel", INVISIVEIS)
+@pytest.mark.parametrize("campo", ["policy_key", "governance_policy_key"])
+def test_u66_invisiveis_unicode_recusados_nos_dois_campos(campo, invisivel):
+    base: dict[str, object] = {
+        "policy_key": "ret.default",
+        "version": 1,
+        "governance_policy_key": "gov.default",
+        "rules": (regra(),),
+    }
+    base[campo] = f"x{invisivel}y"
+    with pytest.raises(ValueError, match="caracteres de controle"):
+        _repo().add_policy(**base)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("invisivel", INVISIVEIS)
+def test_u67_invisiveis_unicode_recusados_tambem_no_rule_id(invisivel):
+    with pytest.raises(ValueError):
+        regra(rule_id=f"x{invisivel}y")
+
+
+@pytest.mark.parametrize(
+    "valido",
+    ["ret.default", "ação", "produção", "São_Paulo", "chave com espaço", "ret-001_v2"],
+)
+def test_u68_identificador_valido_devolvido_byte_a_byte(valido):
+    """`VALIDATED OPAQUE KEY != NORMALIZED KEY`."""
+    from app.memory.schemas.retention import validar_identificador_opaco
+
+    devolvido = validar_identificador_opaco("policy_key", valido, 256)
+    assert devolvido is valido
+    assert devolvido.encode("utf-8") == valido.encode("utf-8")
+
+
+def test_u69_sequencias_unicode_distintas_nao_sao_fundidas():
+    """`ação` pré-composta e decomposta continuam sendo duas chaves."""
+    from app.memory.schemas.retention import validar_identificador_opaco
+
+    precomposta = "a\u00e7\u00e3o"
+    decomposta = "ac\u0327a\u0303o"
+    assert precomposta != decomposta
+    assert validar_identificador_opaco("policy_key", precomposta, 256) == precomposta
+    assert validar_identificador_opaco("policy_key", decomposta, 256) == decomposta
+
+
+def test_u70_espaco_comum_nao_e_invisivel_proibido():
+    """`Zs` não está na lista — só `Zl` e `Zp` estão."""
+    import unicodedata
+
+    from app.memory.schemas.retention import validar_identificador_opaco
+
+    assert unicodedata.category(" ") == "Zs"
+    assert validar_identificador_opaco("policy_key", "com espaço", 256) == "com espaço"
+
+
+# --- Contrato compartilhado ----------------------------------------------
+
+
+def test_u71_validador_de_regras_devolve_a_mesma_tupla_sem_reordenar():
+    from app.memory.schemas.retention import validar_regras_retencao
+
+    original = (regra(rule_id="b"), regra(rule_id="a"))
+    devolvida = validar_regras_retencao("rules", original)
+    assert devolvida is original
+    assert [r.rule_id for r in devolvida] == ["b", "a"]
+
+
+def test_u72_serialize_rules_delegou_ao_contrato_compartilhado():
+    """Uma lista deixou de ser aceita — o contrato exige tupla."""
+    with pytest.raises(TypeError):
+        RetentionPolicy.serialize_rules([regra()])  # type: ignore[arg-type]
+
+
+def test_u73_codigos_de_erro_permanecem_inalterados():
+    assert PIA_8042_RETENTION_POLICY_VERSION_EXISTS.code == "PIA-8042"
+    assert PIA_8043_RETENTION_POLICY_IMMUTABLE.code == "PIA-8043"
+    assert RetentionPolicyVersionExistsError("k", 1).error_code.code == "PIA-8042"
+    assert RetentionPolicyImmutableError(None, operation="update").error_code.code == "PIA-8043"
