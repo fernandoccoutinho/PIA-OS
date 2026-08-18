@@ -83,7 +83,7 @@ class AssuranceLevel(StrEnum):
     """Reautenticação específica para a ação. Exigida por
     `PERMANENT_ERASURE`."""
 
-    def satisfies(self, operacao: DestructiveOperation) -> bool:
+    def satisfies(self, operacao: object) -> bool:
         """A operação é admissível neste nível de assurance?
 
         ```text
@@ -96,7 +96,26 @@ class AssuranceLevel(StrEnum):
         lixeira treinaria o usuário a reautenticar por reflexo, e um
         reflexo é exatamente o que não se quer no dia do apagamento
         definitivo. Mas nenhuma operação aceita ausência de evidência.
+
+        **Tipo estrito desde a E4.9.8.1.** A cadeia 85 confiava só na
+        anotação, e a auditoria mediu o custo: `satisfies("permanent_
+        erasure")` devolvia `True` em `AUTHENTICATED`, porque a
+        comparação `is` contra o membro falhava em silêncio e caía no
+        `return True` final. Não havia exploit pelo caminho interno,
+        mas o contrato **público** era mais permissivo que o EDR — e um
+        helper que aceita string equivalente é uma porta que ninguém
+        vigia.
+
+        ```text
+        ANNOTATION != ENFORCED_TYPE
+        STRING_EQUIVALENT != ENUM_MEMBER
+        ```
         """
+        if not isinstance(operacao, DestructiveOperation):
+            raise TypeError(
+                f"operacao deve ser um DestructiveOperation, recebido "
+                f"{type(operacao).__name__} — string equivalente não é membro"
+            )
         if self is AssuranceLevel.UNAUTHENTICATED:
             return False
         if operacao is DestructiveOperation.PERMANENT_ERASURE:
@@ -158,14 +177,28 @@ class VoiceReviewState(StrEnum):
     REVIEWED_AND_CONFIRMED = "reviewed_and_confirmed"
     """Único estado de voz que permite formar proposta."""
 
-    def permite_proposta(self, canal: InputChannel) -> bool:
+    def permite_proposta(self, canal: object) -> bool:
         """O par canal/revisão pode formar proposta destrutiva?
 
         Exige coerência nos dois sentidos: `TEXT` **tem** de declarar
         `NOT_APPLICABLE`, e `VOICE` **não pode** declará-lo. Aceitar
         `NOT_APPLICABLE` numa entrada de voz deixaria a revisão sumir sem
         que ninguém a negasse.
+
+        **Tipo estrito desde a E4.9.8.1**, pela mesma razão de
+        `AssuranceLevel.satisfies`: na cadeia 85,
+        `permite_proposta("text")` devolvia `True` para uma string,
+        caindo no ramo de voz por não casar com o membro.
+
+        ```text
+        ANNOTATION != ENFORCED_TYPE
+        ```
         """
+        if not isinstance(canal, InputChannel):
+            raise TypeError(
+                f"canal deve ser um InputChannel, recebido {type(canal).__name__} "
+                "— string equivalente não é membro"
+            )
         if canal is InputChannel.TEXT:
             return self is VoiceReviewState.NOT_APPLICABLE
         return self is VoiceReviewState.REVIEWED_AND_CONFIRMED

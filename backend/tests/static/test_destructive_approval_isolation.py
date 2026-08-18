@@ -488,3 +488,223 @@ def test_s99_5_os_quatro_scripts_externos_continuam_intocados() -> None:
     """
     with pytest.raises(StopIteration):
         next(iter(sorted((APP.parent).rglob("reproduce_e49*.py"))))
+
+
+# ======================================================================
+# E4.9.8.1 — guardas do binding
+# ======================================================================
+
+
+def test_s19_a_matriz_de_operacao_e_fonte_unica() -> None:
+    """`WRONG_OPERATION != APPROVABLE`, com uma só fonte.
+
+    Se alguém escrever a correspondência em linha dentro do
+    `__post_init__`, passa a haver duas verdades sobre qual pergunta a
+    governança precisa ter respondido.
+    """
+    fonte = (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    arvore = ast.parse(fonte)
+    definicoes = [
+        no
+        for no in arvore.body
+        if isinstance(no, ast.AnnAssign)
+        and isinstance(no.target, ast.Name)
+        and no.target.id == "OPERACAO_DE_GOVERNANCA"
+    ]
+    assert len(definicoes) == 1
+
+    executavel = _executavel(APP / "memory" / "schemas" / "destructive_approval.py")
+    assert executavel.count("CognitiveOperation.LEGAL_ERASURE") == 1
+    assert executavel.count("CognitiveOperation.RETENTION_DISPOSITION") == 1
+
+
+def test_s20_o_binding_de_governanca_vive_no_construtor() -> None:
+    """As quatro verificações da proposta, provadas na AST.
+
+    A cadeia 85 tinha apenas `isinstance`. Se alguém remover qualquer uma
+    destas, o EDR volta a afirmar um binding que o runtime não faz.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    )
+    (classe,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.ClassDef) and no.name == "DestructiveApprovalProposal"
+    ]
+    (post_init,) = [
+        no for no in classe.body if isinstance(no, ast.FunctionDef) and no.name == "__post_init__"
+    ]
+    corpo = ast.unparse(post_init)
+    for exigido in (
+        "GovernanceOutcome.ADMISSIBLE",
+        "execution_authorized",
+        "OPERACAO_DE_GOVERNANCA",
+        "context_domain_ids",
+        "context_purpose",
+    ):
+        assert exigido in corpo, exigido
+
+
+def test_s21_o_binding_de_identidade_vive_no_envelope() -> None:
+    """Ator, principal de controle e frescor temporal."""
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    )
+    (classe,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.ClassDef) and no.name == "DestructiveApprovalEnvelope"
+    ]
+    (post_init,) = [
+        no for no in classe.body if isinstance(no, ast.FunctionDef) and no.name == "__post_init__"
+    ]
+    corpo = ast.unparse(post_init)
+    for exigido in ("context_actor_ref", "control_principal_ref", "authenticated_at"):
+        assert exigido in corpo, exigido
+
+
+def test_s22_nenhuma_delegacao_foi_inventada() -> None:
+    """Limite declarado: só o caso direto é representado.
+
+    A busca é por IDENTIFICADOR, não por substring. A primeira versão
+    desta guarda procurava `"role"` e `"acl"` no texto e acusava
+    "cont**role**" e "dat**acl**ass" — o mesmo falso positivo de
+    substring que já custou correções nas fatias anteriores. Nomes de
+    variável, atributo, campo e função são o lugar onde delegação
+    apareceria de fato.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    )
+    identificadores: set[str] = set()
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Name):
+            identificadores.add(no.id)
+        elif isinstance(no, ast.Attribute):
+            identificadores.add(no.attr)
+        elif isinstance(no, ast.FunctionDef | ast.ClassDef):
+            identificadores.add(no.name)
+        elif isinstance(no, ast.arg):
+            identificadores.add(no.arg)
+
+    proibidos = {
+        "delegate",
+        "delegation",
+        "delegated_by",
+        "on_behalf_of",
+        "impersonate",
+        "admin_override",
+        "role",
+        "role_id",
+        "group",
+        "group_id",
+        "acl",
+        "proxy",
+        "power_of_attorney",
+    }
+    assert identificadores.isdisjoint(proibidos), identificadores & proibidos
+
+
+def test_s23_os_helpers_publicos_sao_estritos() -> None:
+    """`ANNOTATION != ENFORCED_TYPE`.
+
+    A anotação sozinha não recusa nada em runtime — foi exatamente assim
+    que A15/A16 passaram. A guarda exige o `isinstance` explícito.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "models" / "approval_enums.py").read_text(encoding="utf-8")
+    )
+    for nome, tipo in (
+        ("satisfies", "DestructiveOperation"),
+        ("permite_proposta", "InputChannel"),
+    ):
+        (metodo,) = [
+            no for no in ast.walk(arvore) if isinstance(no, ast.FunctionDef) and no.name == nome
+        ]
+        corpo = ast.unparse(metodo)
+        assert f"isinstance(operacao, {tipo})" in corpo or f"isinstance(canal, {tipo})" in corpo
+        assert "raise TypeError" in corpo
+
+
+def test_s24_nenhum_relogio_entrou_com_o_frescor() -> None:
+    """O frescor usa instantes RECEBIDOS, não um relógio interno."""
+    for caminho in CAMINHOS_NOVOS:
+        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+        atributos = {
+            no.func.attr
+            for no in ast.walk(arvore)
+            if isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute)
+        }
+        for termo in ("now", "utcnow", "today"):
+            assert termo not in atributos, f"{caminho.name}: {termo}"
+
+
+def test_s99_6_a_guarda_de_binding_detecta_remocao_real() -> None:
+    """§11.5 — o mecanismo de `s20`/`s21` consegue falhar.
+
+    Um `__post_init__` sem a verificação é detectado; um com ela, não.
+    """
+    com = ast.parse(
+        "class X:\n"
+        "    def __post_init__(self):\n"
+        "        if r.outcome is not GovernanceOutcome.ADMISSIBLE:\n"
+        "            raise ValueError('x')\n"
+    )
+    sem = ast.parse("class X:\n    def __post_init__(self):\n        pass\n")
+
+    def tem_binding(arvore: ast.Module) -> bool:
+        (metodo,) = [
+            no
+            for no in ast.walk(arvore)
+            if isinstance(no, ast.FunctionDef) and no.name == "__post_init__"
+        ]
+        return "GovernanceOutcome.ADMISSIBLE" in ast.unparse(metodo)
+
+    assert tem_binding(com)
+    assert not tem_binding(sem)
+
+
+def test_s99_7_a_guarda_de_helper_estrito_detecta_anotacao_sozinha() -> None:
+    """Anotação sem `isinstance` não fecha nada — e a guarda percebe."""
+    so_anotacao = ast.parse(
+        "def satisfies(self, operacao: DestructiveOperation) -> bool:\n    return True\n"
+    )
+    com_isinstance = ast.parse(
+        "def satisfies(self, operacao: object) -> bool:\n"
+        "    if not isinstance(operacao, DestructiveOperation):\n"
+        "        raise TypeError('x')\n"
+        "    return True\n"
+    )
+
+    def estrito(arvore: ast.Module) -> bool:
+        corpo = ast.unparse(arvore)
+        return "isinstance(operacao, DestructiveOperation)" in corpo and (
+            "raise TypeError" in corpo
+        )
+
+    assert not estrito(so_anotacao)
+    assert estrito(com_isinstance)
+
+
+def test_s99_8_a_guarda_de_delegacao_distingue_identificador_de_substring() -> None:
+    """§11.5 — e prova que o falso positivo de substring foi eliminado.
+
+    `controle` contém `role` e `dataclass` contém `acl`. A guarda por
+    identificador não os acusa; a busca por substring acusaria os dois.
+    """
+    inocente = ast.parse("from dataclasses import dataclass\ncontrole = 1\n")
+    culpado = ast.parse("def resolver(role_id):\n    return role_id\n")
+
+    def identificadores(arvore: ast.Module) -> set[str]:
+        vistos: set[str] = set()
+        for no in ast.walk(arvore):
+            if isinstance(no, ast.Name):
+                vistos.add(no.id)
+            elif isinstance(no, ast.arg):
+                vistos.add(no.arg)
+        return vistos
+
+    assert "role" not in identificadores(inocente)
+    assert "acl" not in identificadores(inocente)
+    assert "role_id" in identificadores(culpado)

@@ -27,9 +27,14 @@ from app.memory.models.approval_enums import (
     VoiceReviewState,
 )
 from app.memory.models.erasure_enums import ErasureTargetClass
-from app.memory.models.governance_enums import CognitiveOperation, GovernanceOutcome
+from app.memory.models.governance_enums import (
+    CognitiveOperation,
+    CriticalCapability,
+    GovernanceOutcome,
+)
 from app.memory.models.target_resolution_enums import ReferenceOrigin
 from app.memory.schemas.destructive_approval import (
+    OPERACAO_DE_GOVERNANCA,
     RESOLUCAO_OCULTA,
     ApprovalContext,
     DestructiveApprovalEnvelope,
@@ -54,6 +59,7 @@ SUJEITO = uuid.UUID("00000000-0000-0000-0000-0000000000b1")
 SUJEITO_2 = uuid.UUID("00000000-0000-0000-0000-0000000000b2")
 
 MARCADOR = "https://user:password@example.invalid/object?token=E498_SECRET"
+PRINCIPAL = "principal:humano-1"
 
 MATERIALIZADO = datetime(2026, 8, 18, 10, 0, tzinfo=UTC)
 EMITIDO = datetime(2026, 8, 18, 11, 0, tzinfo=UTC)
@@ -79,7 +85,7 @@ def escopo(**over: object) -> ControlScope:
     base: dict[str, object] = {
         "workspace_id": WORKSPACE,
         "tenant_id": TENANT,
-        "control_principal_ref": "principal:controle-1",
+        "control_principal_ref": PRINCIPAL,
     }
     base.update(over)
     feito = _construir(ControlScope, **base)
@@ -96,18 +102,49 @@ def custodia(**over: object) -> CustodyNamespace:
 
 
 def resolucao(**over: object) -> GovernanceResolution:
+    """Resolução COERENTE com o outcome pedido.
+
+    A própria `GovernanceResolution` (E4.3.2) impõe coerência interna:
+    `NOT_APPLICABLE` não cita regra local — se nenhuma se aplicou, não há
+    o que citar — e `PROHIBITED` exige ao menos uma capacidade bloqueada,
+    porque uma recusa que não diz o que bloqueou é irrecorrível.
+
+    A fábrica respeita isso em vez de contorná-lo: assim os testes de
+    outcome exercitam objetos que a E4.3 realmente produziria.
+    """
+    outcome = over.get("outcome", GovernanceOutcome.ADMISSIBLE)
     base: dict[str, object] = {
         "outcome": GovernanceOutcome.ADMISSIBLE,
         "operation": CognitiveOperation.LEGAL_ERASURE,
         "context_domain_ids": (DOMINIO,),
-        "context_actor_ref": "actor:1",
-        "context_purpose": "titular pediu remoção",
+        "context_actor_ref": PRINCIPAL,
+        "context_purpose": "purpose:remocao-titular",
         "safety_boundary_version": 1,
         "policy_key": "ret.default",
         "policy_version": 1,
         "policy_id": uuid.UUID("00000000-0000-0000-0000-0000000000c1"),
         "matched_rule_id": "rule-1",
     }
+    if outcome is GovernanceOutcome.NOT_APPLICABLE:
+        base.update(
+            {
+                "policy_key": None,
+                "policy_version": None,
+                "policy_id": None,
+                "matched_rule_id": None,
+            }
+        )
+    elif outcome is GovernanceOutcome.PROHIBITED:
+        base.update(
+            {
+                "policy_key": None,
+                "policy_version": None,
+                "policy_id": None,
+                "matched_rule_id": None,
+                "blocked_capabilities": (CriticalCapability.CATASTROPHIC_HARM_ENABLEMENT,),
+                "safety_rationale": "capacidade crítica bloqueada pela plataforma",
+            }
+        )
     base.update(over)
     feito = _construir(GovernanceResolution, **base)
     assert isinstance(feito, GovernanceResolution)
@@ -154,7 +191,7 @@ def proveniencia(**over: object) -> SafeVoiceProvenance:
 
 def identidade(**over: object) -> IdentityEvidence:
     base: dict[str, object] = {
-        "principal_ref": "principal:humano-1",
+        "principal_ref": PRINCIPAL,
         "assurance_level": AssuranceLevel.STEP_UP_VERIFIED,
         "authenticated_at": MATERIALIZADO,
     }
@@ -165,12 +202,33 @@ def identidade(**over: object) -> IdentityEvidence:
 
 
 def proposta(**over: object) -> DestructiveApprovalProposal:
+    """Fábrica COERENTE por construção (`E4.9.8.1`).
+
+    A resolução default acompanha a operação, o domínio, a finalidade e o
+    principal da proposta — porque, desde este corretivo, uma resolução
+    que responda a outra pergunta não forma proposta. Qualquer campo
+    continua sobrescritível para exercitar a divergência.
+    """
+    # A fábrica NÃO assume tipos válidos: `u60` injeta lixo de propósito e
+    # precisa alcançar o construtor. O default coerente só é montado
+    # quando os valores realmente são os tipos esperados.
+    operacao = over.get("operation", DestructiveOperation.PERMANENT_ERASURE)
+    ctx = over.get("context") or contexto()
+    coerente = isinstance(operacao, DestructiveOperation) and isinstance(ctx, ApprovalContext)
     base: dict[str, object] = {
-        "operation": DestructiveOperation.PERMANENT_ERASURE,
+        "operation": operacao,
         "targets": (snapshot(),),
         "impact": PresentedImpact(1, ImpactVolumeKind.KNOWN, 4096),
-        "governance_resolution": resolucao(),
-        "context": contexto(),
+        "governance_resolution": (
+            resolucao(
+                operation=OPERACAO_DE_GOVERNANCA[operacao],
+                context_domain_ids=(ctx.domain_id,),
+                context_purpose=ctx.purpose_ref,
+            )
+            if coerente
+            else resolucao()
+        ),
+        "context": ctx,
         "provenance": proveniencia(),
         "blockers": (),
         "materialized_at": MATERIALIZADO,
@@ -745,13 +803,37 @@ def _objetos_com_marcador() -> dict[str, object]:
     snap_m = snapshot(version_etag=MARCADOR)
     ctx_m = contexto(purpose_ref=MARCADOR)
     ident_m = identidade(principal_ref=MARCADOR)
-    res_m = resolucao(context_actor_ref=MARCADOR, context_purpose=MARCADOR)
+    # A finalidade e o ator do marcador precisam ser COERENTES com a
+    # proposta, senão o binding da E4.9.8.1 recusa antes de a prova de
+    # confidencialidade acontecer — e a guarda passaria sem medir nada.
+    # Por isso cada proposta abaixo monta a sua própria resolução.
 
-    p_scope = proposta(targets=(snapshot(control_scope=escopo_m),))
+    # `escopo_m` põe o marcador no principal de CONTROLE. Desde a
+    # E4.9.8.1 isso obriga identidade e ator avaliado a serem o mesmo
+    # principal — o binding torna impossível variar um canal isolado, que
+    # é precisamente o que "binding" significa.
+    p_scope = proposta(
+        targets=(snapshot(control_scope=escopo_m),),
+        governance_resolution=resolucao(context_actor_ref=MARCADOR),
+    )
     p_custodia = proposta(targets=(snapshot(custody_namespace=custodia_m),))
     p_versao = proposta(targets=(snap_m,))
-    p_ctx = proposta(context=ctx_m)
-    p_res = proposta(governance_resolution=res_m)
+    escopo_marcado = escopo(control_principal_ref=MARCADOR)
+    p_ctx = proposta(
+        context=ctx_m,
+        targets=(snapshot(control_scope=escopo_marcado),),
+        governance_resolution=resolucao(context_purpose=MARCADOR, context_actor_ref=MARCADOR),
+    )
+    p_res = proposta(
+        context=ctx_m,
+        targets=(snapshot(control_scope=escopo_marcado),),
+        governance_resolution=resolucao(
+            operation=CognitiveOperation.LEGAL_ERASURE,
+            context_domain_ids=(DOMINIO,),
+            context_purpose=MARCADOR,
+            context_actor_ref=MARCADOR,
+        ),
+    )
 
     return {
         "ControlScope.control_principal_ref": escopo_m,
@@ -765,10 +847,18 @@ def _objetos_com_marcador() -> dict[str, object]:
         "Proposal→version_etag": p_versao,
         "Proposal→context.purpose_ref": p_ctx,
         "Proposal→governance_resolution": p_res,
-        "Envelope→proposal.control_scope": envelope(proposal=p_scope),
-        "Envelope→proposal.governance_resolution": envelope(proposal=p_res),
-        "Envelope→identity.principal_ref": envelope(identity=ident_m),
-        "Envelope→context.purpose_ref": envelope(proposal=p_ctx, context=p_ctx.context),
+        # Chaves ÚNICAS de propósito: uma repetida sobrescreveria a
+        # anterior em silêncio e um canal deixaria de ser medido.
+        "Envelope→proposal.control_scope": envelope(proposal=p_scope, identity=ident_m),
+        "Envelope→proposal.governance_resolution": envelope(
+            proposal=p_res, identity=ident_m, context=p_res.context
+        ),
+        "Envelope→identity.principal_ref": envelope(
+            proposal=p_ctx, identity=ident_m, context=p_ctx.context
+        ),
+        "Envelope→context.purpose_ref": envelope(
+            proposal=p_ctx, identity=ident_m, context=p_ctx.context
+        ),
     }
 
 
@@ -787,12 +877,25 @@ def test_u51_a_resolucao_de_governanca_e_redigida_na_composicao():
     visíveis no `repr` dela, e **não pode** ser alterada — seria mudança
     de assinatura pública existente. A proposta redige a composição.
     """
-    res_m = resolucao(context_actor_ref=MARCADOR, context_purpose=MARCADOR)
+    ctx_m = contexto(purpose_ref=MARCADOR)
+    res_m = resolucao(
+        operation=CognitiveOperation.LEGAL_ERASURE,
+        context_domain_ids=(DOMINIO,),
+        context_purpose=MARCADOR,
+        context_actor_ref=MARCADOR,
+    )
     assert MARCADOR in repr(res_m), "a fonte da E4.3 realmente expõe — por isso redigimos"
 
-    p = proposta(governance_resolution=res_m)
+    p = proposta(
+        context=ctx_m,
+        governance_resolution=res_m,
+        targets=(snapshot(control_scope=escopo(control_principal_ref=MARCADOR)),),
+    )
     _sem_marcador(p, "Proposal→governance_resolution")
-    _sem_marcador(envelope(proposal=p), "Envelope→proposal.governance_resolution")
+    _sem_marcador(
+        envelope(proposal=p, identity=identidade(principal_ref=MARCADOR)),
+        "Envelope→proposal.governance_resolution",
+    )
     assert RESOLUCAO_OCULTA in repr(p)
     assert p.governance_resolution is res_m
 
@@ -977,4 +1080,426 @@ def test_u63_envelope_exige_proposta_real(valor):
             issued_at=EMITIDO,
             confirmed_at=CONFIRMADO,
             expires_at=EXPIRA,
+        )
+
+
+def test_u50_1_o_inventario_de_canais_nao_tem_chave_repetida():
+    """Uma chave repetida sobrescreveria e o canal sumiria da medição.
+
+    Guarda sobre a própria guarda: `_objetos_com_marcador` é escrita à
+    mão, e um `dict` com chave duplicada não avisa. Este teste conta as
+    entradas do literal na AST e compara com o dicionário resultante.
+    """
+    import ast
+    import inspect
+
+    (funcao,) = [
+        no
+        for no in ast.walk(ast.parse(inspect.getsource(_objetos_com_marcador)))
+        if isinstance(no, ast.FunctionDef)
+    ]
+    (retorno,) = [no for no in ast.walk(funcao) if isinstance(no, ast.Return)]
+    assert isinstance(retorno.value, ast.Dict)
+    chaves = [no.value for no in retorno.value.keys if isinstance(no, ast.Constant)]
+    assert len(chaves) == len(set(chaves)), "chave duplicada no inventário de canais"
+    assert len(chaves) == len(_objetos_com_marcador())
+
+
+# ======================================================================
+# E4.9.8.1 — binding entre governança, identidade, alvo e tempo
+#
+# As onze reproduções do reprodutor externo viram regressão aqui, pelo
+# CONSTRUTOR DIRETO. A cadeia 85 verificava apenas `isinstance` da
+# resolução, enquanto o EDR §5 afirmava que ação, policy, identidade,
+# domínio e finalidade estavam vinculados.
+#
+# GOVERNANCE_RESOLUTION_PRESENT != GOVERNANCE_AUTHORITY_FOR_THIS_ACTION
+# HUMAN_CONFIRMATION CANNOT CREATE MISSING AUTHORITY
+# ======================================================================
+
+
+# --- A7/A8 + PROHIBITED: outcome admissível ------------------------------
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        GovernanceOutcome.INADMISSIBLE,
+        GovernanceOutcome.NOT_APPLICABLE,
+        GovernanceOutcome.PROHIBITED,
+    ],
+)
+def test_u64_outcome_nao_admissivel_nao_forma_proposta(outcome):
+    """`INADMISSIBLE`, `NOT_APPLICABLE` e `PROHIBITED` recusados.
+
+    `PROHIBITED` é provado **nominalmente**, e não por consequência da
+    regra geral: se alguém trocar a checagem por uma lista de outcomes
+    aceitáveis mal escrita, ou se `GovernanceOutcome` ganhar membro novo,
+    a recusa poderia sumir sem nenhum teste cair.
+    """
+    with pytest.raises(ValueError, match="exige ADMISSIBLE"):
+        proposta(governance_resolution=resolucao(outcome=outcome))
+
+
+@pytest.mark.parametrize("outcome", list(GovernanceOutcome))
+def test_u65_os_quatro_outcomes_um_por_um(outcome):
+    """Parametrização DERIVADA do enum.
+
+    Membro novo em `GovernanceOutcome` derruba o teste até haver decisão
+    explícita — a alternativa seria descobrir o membro novo em produção.
+    """
+    if outcome is GovernanceOutcome.ADMISSIBLE:
+        assert proposta(governance_resolution=resolucao(outcome=outcome)).is_approvable
+        return
+    with pytest.raises(ValueError, match="exige ADMISSIBLE"):
+        proposta(governance_resolution=resolucao(outcome=outcome))
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        GovernanceOutcome.INADMISSIBLE,
+        GovernanceOutcome.NOT_APPLICABLE,
+        GovernanceOutcome.PROHIBITED,
+    ],
+)
+def test_u66_outcome_nao_admissivel_tambem_nao_forma_envelope(outcome):
+    """Nem por caminho indireto: sem proposta, não há envelope."""
+    with pytest.raises(ValueError, match="exige ADMISSIBLE"):
+        envelope(proposal=proposta(governance_resolution=resolucao(outcome=outcome)))
+
+
+def test_u67_execution_authorized_e_condicao_independente():
+    """Duas condições, verificadas separadamente.
+
+    Hoje `execution_authorized` é derivada do outcome na E4.3, então este
+    estado é **impossível** pela construção normal. O dublê existe
+    exatamente por isso: sem ele, a segunda condição estaria coberta por
+    coincidência com a primeira, e ninguém saberia se ela é verificada.
+
+    Se a E4.3 passar a derivar a propriedade de outra coisa, esta prova
+    continua valendo.
+    """
+
+    class _ResolucaoSemExecucao(GovernanceResolution):
+        """Dublê controlado: admissível, mas execução não autorizada."""
+
+        @property
+        def execution_authorized(self) -> bool:
+            return False
+
+    base = resolucao()
+    dubl = _ResolucaoSemExecucao(
+        outcome=base.outcome,
+        operation=base.operation,
+        context_domain_ids=base.context_domain_ids,
+        context_actor_ref=base.context_actor_ref,
+        context_purpose=base.context_purpose,
+        safety_boundary_version=base.safety_boundary_version,
+        policy_key=base.policy_key,
+        policy_version=base.policy_version,
+        policy_id=base.policy_id,
+        matched_rule_id=base.matched_rule_id,
+    )
+    assert dubl.outcome is GovernanceOutcome.ADMISSIBLE
+    assert dubl.execution_authorized is False
+
+    with pytest.raises(ValueError, match="não autoriza execução"):
+        proposta(governance_resolution=dubl)
+
+
+# --- A9: operação exata --------------------------------------------------
+
+
+def test_u68_a_matriz_de_operacao_e_fonte_unica_e_total():
+    """Um membro novo em `DestructiveOperation` sem entrada derruba isto."""
+    assert set(OPERACAO_DE_GOVERNANCA) == set(DestructiveOperation)
+    assert OPERACAO_DE_GOVERNANCA == {
+        DestructiveOperation.MOVE_TO_TRASH: CognitiveOperation.RETENTION_DISPOSITION,
+        DestructiveOperation.PERMANENT_ERASURE: CognitiveOperation.LEGAL_ERASURE,
+    }
+
+
+@pytest.mark.parametrize(
+    "errada",
+    [
+        CognitiveOperation.READ,
+        CognitiveOperation.RETENTION_ASSESSMENT,
+        CognitiveOperation.ACCESSIBILITY_TRANSITION,
+        CognitiveOperation.RETENTION_DISPOSITION,
+    ],
+)
+def test_u69_operacao_de_governanca_divergente_recusada_no_erasure(errada):
+    """`READ` não autoriza apagamento, e disposição de retenção tampouco."""
+    with pytest.raises(ValueError, match="exige resolução de legal_erasure"):
+        proposta(
+            operation=DestructiveOperation.PERMANENT_ERASURE,
+            governance_resolution=resolucao(operation=errada),
+        )
+
+
+@pytest.mark.parametrize("errada", [CognitiveOperation.LEGAL_ERASURE, CognitiveOperation.READ])
+def test_u70_operacao_de_governanca_divergente_recusada_na_lixeira(errada):
+    with pytest.raises(ValueError, match="exige resolução de retention_disposition"):
+        proposta(
+            operation=DestructiveOperation.MOVE_TO_TRASH,
+            governance_resolution=resolucao(operation=errada),
+        )
+
+
+# --- A10/A11: domínio e finalidade ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "dominios",
+    [
+        (),
+        (uuid.uuid4(),),
+        (DOMINIO, uuid.uuid4()),
+        (uuid.uuid4(), DOMINIO),
+    ],
+)
+def test_u71_dominio_divergente_recusado(dominios):
+    """Subconjunto, interseção e conjunto mais amplo não são a mesma pergunta."""
+    with pytest.raises(ValueError, match="domínio avaliado"):
+        proposta(governance_resolution=resolucao(context_domain_ids=dominios))
+
+
+@pytest.mark.parametrize(
+    "finalidade",
+    [
+        "purpose:outra",
+        "purpose:remocao-titular ",
+        "Purpose:remocao-titular",
+        None,
+    ],
+)
+def test_u72_finalidade_divergente_recusada(finalidade):
+    """Sem normalização: espaço e caixa alteram a finalidade."""
+    with pytest.raises(ValueError, match="finalidade avaliada"):
+        proposta(governance_resolution=resolucao(context_purpose=finalidade))
+
+
+# --- A12: ator avaliado ↔ identidade externa ------------------------------
+
+
+@pytest.mark.parametrize("ator", ["principal:outro", "PRINCIPAL:humano-1", None])
+def test_u73_ator_avaliado_divergente_recusado(ator):
+    with pytest.raises(ValueError, match="ator avaliado"):
+        envelope(proposal=proposta(governance_resolution=resolucao(context_actor_ref=ator)))
+
+
+def test_u74_igualdade_de_ator_nao_promove_actor_ref_a_autenticador():
+    """`STRING_EQUALITY != AUTHENTICATION`.
+
+    A igualdade impede que governança, identidade e alvo descrevam
+    pessoas diferentes. Não afirma que alguém foi autenticado — a
+    evidência externa continua sendo `IdentityEvidence`, e sua verificação
+    continua `DEFERRED`.
+    """
+    e = envelope()
+    assert e.proposal.governance_resolution.context_actor_ref == e.identity.principal_ref
+    assert e.identity.assurance_level is AssuranceLevel.STEP_UP_VERIFIED
+    # Nada no envelope afirma verificação externa realizada.
+    for proibido in ("authenticate", "verify", "is_authenticated", "prove"):
+        assert not hasattr(e, proibido)
+        assert not hasattr(e.identity, proibido)
+
+
+# --- A17: principal ↔ controle do alvo -----------------------------------
+
+
+def test_u75_principal_divergente_do_controle_do_alvo_recusado():
+    with pytest.raises(ValueError, match="controlado por outro principal"):
+        envelope(
+            proposal=proposta(
+                targets=(snapshot(control_scope=escopo(control_principal_ref="p:outro")),)
+            )
+        )
+
+
+def test_u76_qualquer_alvo_divergente_no_lote_recusa():
+    """Não basta o primeiro: cada alvo é verificado, com índice."""
+    bom = snapshot(subject_coid=SUJEITO)
+    ruim = snapshot(subject_coid=SUJEITO_2, control_scope=escopo(control_principal_ref="p:outro"))
+    with pytest.raises(ValueError, match=r"alvo\[1\] é controlado"):
+        envelope(
+            proposal=proposta(
+                targets=(bom, ruim), impact=PresentedImpact(2, ImpactVolumeKind.UNKNOWN)
+            )
+        )
+
+
+def test_u77_delegacao_nao_e_modelada():
+    """Limite declarado, não capacidade escondida."""
+    import dataclasses
+
+    from app.memory.schemas import destructive_approval as modulo
+
+    for nome in dir(modulo):
+        obj = getattr(modulo, nome)
+        if not dataclasses.is_dataclass(obj) or not isinstance(obj, type):
+            continue
+        campos = {c.name for c in dataclasses.fields(obj)}
+        for proibido in ("delegate", "delegation", "role", "group", "on_behalf_of", "admin"):
+            assert proibido not in campos, f"{nome}.{proibido}"
+
+
+# --- A13: frescor mínimo da identidade -----------------------------------
+
+
+def test_u78_autenticacao_posterior_a_confirmacao_recusada():
+    """`AUTHENTICATION_AFTER_CONFIRMATION != PRESENT_AUTHENTICATED_USER`."""
+    for instante in (
+        CONFIRMADO + timedelta(seconds=1),
+        EXPIRA,
+        EXPIRA + timedelta(hours=1),
+    ):
+        with pytest.raises(ValueError, match="posterior à confirmação"):
+            envelope(identity=identidade(authenticated_at=instante))
+
+
+def test_u79_autenticacao_anterior_a_proposta_recusada():
+    """Sessão antiga não é step-up vinculado a esta ação."""
+    with pytest.raises(ValueError, match="anterior à materialização"):
+        envelope(identity=identidade(authenticated_at=MATERIALIZADO - timedelta(seconds=1)))
+
+
+@pytest.mark.parametrize("instante", [MATERIALIZADO, EMITIDO, CONFIRMADO])
+def test_u80_autenticacao_dentro_da_janela_aceita(instante):
+    """Os dois extremos inclusive — nenhuma duração canônica inventada."""
+    assert envelope(identity=identidade(authenticated_at=instante))
+
+
+def test_u81_a_ordem_temporal_anterior_continua_valendo():
+    """`materialized <= issued <= confirmed < expires` preservada."""
+    with pytest.raises(ValueError, match="issued_at não pode preceder"):
+        envelope(issued_at=MATERIALIZADO - timedelta(hours=1))
+    with pytest.raises(ValueError, match="expires_at deve ser posterior"):
+        envelope(expires_at=CONFIRMADO)
+
+
+# --- A14: blockers sem duplicata -----------------------------------------
+
+
+@pytest.mark.parametrize("bloqueio", list(ApprovalBlockerKind))
+def test_u82_blocker_duplicado_recusado(bloqueio):
+    with pytest.raises(ValueError, match="blocker duplicado"):
+        proposta(blockers=(bloqueio, bloqueio))
+
+
+def test_u83_blockers_distintos_preservam_ordem_e_impedem_envelope():
+    ordem = (
+        ApprovalBlockerKind.LEGAL_HOLD,
+        ApprovalBlockerKind.CAUSAL_HISTORY_DEPENDENCY,
+        ApprovalBlockerKind.CONTROL_SCOPE_CONFLICT,
+    )
+    p = proposta(blockers=ordem)
+    assert p.blockers == ordem
+    assert p.is_approvable is False
+    with pytest.raises(ValueError, match="bloqueio não forma envelope"):
+        envelope(proposal=p)
+
+
+def test_u84_duplicata_nao_e_absorvida_nem_reordenada():
+    """Nem `set`, nem `frozenset`, nem dedup silenciosa."""
+    import ast
+    import inspect
+    import textwrap
+
+    from app.memory.schemas.destructive_approval import DestructiveApprovalProposal
+
+    corpo = ast.unparse(
+        ast.parse(textwrap.dedent(inspect.getsource(DestructiveApprovalProposal.__post_init__)))
+    )
+    assert "blocker duplicado" in corpo
+    assert "sorted(" not in corpo
+    assert "frozenset(" not in corpo
+
+
+# --- A15/A16: helpers públicos estritos ----------------------------------
+
+
+@pytest.mark.parametrize("valor", ["permanent_erasure", "move_to_trash", None, True, 0, object()])
+def test_u85_satisfies_recusa_nao_membro(valor):
+    """`ANNOTATION != ENFORCED_TYPE`. String equivalente não é membro."""
+    with pytest.raises(TypeError, match="DestructiveOperation"):
+        AssuranceLevel.AUTHENTICATED.satisfies(valor)
+
+
+@pytest.mark.parametrize("valor", ["text", "voice", None, False, 1, object()])
+def test_u86_permite_proposta_recusa_nao_membro(valor):
+    with pytest.raises(TypeError, match="InputChannel"):
+        VoiceReviewState.REVIEWED_AND_CONFIRMED.permite_proposta(valor)
+
+
+def test_u87_os_helpers_continuam_corretos_com_membros_reais():
+    """O endurecimento não alterou a semântica positiva."""
+    assert AssuranceLevel.STEP_UP_VERIFIED.satisfies(DestructiveOperation.PERMANENT_ERASURE)
+    assert not AssuranceLevel.AUTHENTICATED.satisfies(DestructiveOperation.PERMANENT_ERASURE)
+    assert AssuranceLevel.AUTHENTICATED.satisfies(DestructiveOperation.MOVE_TO_TRASH)
+    assert not AssuranceLevel.UNAUTHENTICATED.satisfies(DestructiveOperation.MOVE_TO_TRASH)
+    assert VoiceReviewState.NOT_APPLICABLE.permite_proposta(InputChannel.TEXT)
+    assert not VoiceReviewState.NOT_APPLICABLE.permite_proposta(InputChannel.VOICE)
+
+
+# --- Positivos paralelos --------------------------------------------------
+
+
+def test_u88_erasure_completo_forma_envelope():
+    """Caminho positivo integral do apagamento definitivo."""
+    e = envelope()
+    assert e.proposal.operation is DestructiveOperation.PERMANENT_ERASURE
+    assert e.proposal.governance_resolution.operation is CognitiveOperation.LEGAL_ERASURE
+    assert e.identity.assurance_level is AssuranceLevel.STEP_UP_VERIFIED
+
+
+def test_u89_lixeira_completa_forma_envelope():
+    """Caminho positivo integral da lixeira, com assurance proporcional."""
+    p = proposta(operation=DestructiveOperation.MOVE_TO_TRASH)
+    e = envelope(proposal=p, identity=identidade(assurance_level=AssuranceLevel.AUTHENTICATED))
+    assert e.proposal.governance_resolution.operation is (CognitiveOperation.RETENTION_DISPOSITION)
+
+
+@pytest.mark.parametrize(
+    ("canal", "revisao"),
+    [
+        (InputChannel.TEXT, VoiceReviewState.NOT_APPLICABLE),
+        (InputChannel.VOICE, VoiceReviewState.REVIEWED_AND_CONFIRMED),
+    ],
+)
+def test_u90_texto_e_voz_passam_nos_mesmos_bindings(canal, revisao):
+    prov = proveniencia(channel=canal, voice_review=revisao)
+    assert envelope(proposal=proposta(provenance=prov), provenance=prov)
+
+
+@pytest.mark.parametrize(
+    ("canal", "revisao"),
+    [
+        (InputChannel.TEXT, VoiceReviewState.NOT_APPLICABLE),
+        (InputChannel.VOICE, VoiceReviewState.REVIEWED_AND_CONFIRMED),
+    ],
+)
+@pytest.mark.parametrize(
+    ("quebra", "trecho"),
+    [
+        ({"governance_resolution": "OUTCOME"}, "exige ADMISSIBLE"),
+        ({"governance_resolution": "OPERACAO"}, "exige resolução de"),
+        ({"governance_resolution": "DOMINIO"}, "domínio avaliado"),
+        ({"governance_resolution": "FINALIDADE"}, "finalidade avaliada"),
+    ],
+)
+def test_u91_texto_e_voz_falham_nos_mesmos_bindings(canal, revisao, quebra, trecho):
+    """`TEXT_GOVERNANCE = VOICE_GOVERNANCE` — nas recusas, não só nos aceites."""
+    prov = proveniencia(channel=canal, voice_review=revisao)
+    variantes = {
+        "OUTCOME": resolucao(outcome=GovernanceOutcome.INADMISSIBLE),
+        "OPERACAO": resolucao(operation=CognitiveOperation.READ),
+        "DOMINIO": resolucao(context_domain_ids=(uuid.uuid4(),)),
+        "FINALIDADE": resolucao(context_purpose="purpose:outra"),
+    }
+    with pytest.raises(ValueError, match=trecho):
+        proposta(
+            provenance=prov,
+            governance_resolution=variantes[quebra["governance_resolution"]],
         )

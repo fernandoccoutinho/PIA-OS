@@ -78,6 +78,7 @@ from app.memory.models.approval_enums import (
     VoiceReviewState,
 )
 from app.memory.models.erasure_enums import ErasureTargetClass
+from app.memory.models.governance_enums import CognitiveOperation, GovernanceOutcome
 from app.memory.schemas.erasure_target import (
     CLASSES_DE_CONTEUDO,
     TEXTO_OCULTO,
@@ -101,6 +102,30 @@ no `repr` dela — `context_actor_ref`, `context_purpose`,
 Delegar `resolution!r` vazaria os onze pela composição, que é exatamente
 o defeito medido na cadeia 82. Redigi-los na origem seria alterar
 assinatura pública existente — Stop Condition. Resta redigir aqui.
+"""
+
+
+OPERACAO_DE_GOVERNANCA: dict[DestructiveOperation, CognitiveOperation] = {
+    DestructiveOperation.MOVE_TO_TRASH: CognitiveOperation.RETENTION_DISPOSITION,
+    DestructiveOperation.PERMANENT_ERASURE: CognitiveOperation.LEGAL_ERASURE,
+}
+"""Correspondência **positiva** entre operação destrutiva e a pergunta
+que a governança precisa ter respondido (`E4.9.8.1`).
+
+```text
+GOVERNANCE_RESOLUTION_PRESENT != GOVERNANCE_AUTHORITY_FOR_THIS_ACTION
+WRONG_OPERATION != APPROVABLE
+```
+
+Fonte **única** no módulo. A cadeia 85 incorporava o objeto exato e
+verificava apenas `isinstance` — então uma resolução de
+`CognitiveOperation.READ` autorizava um apagamento permanente. Objeto
+exato não é resolução exata **daquela pergunta**.
+
+Correspondência positiva, sem fallback: `READ`, `RETENTION_ASSESSMENT`,
+`ACCESSIBILITY_TRANSITION` e qualquer outra são erro controlado. Um
+membro novo em `DestructiveOperation` sem entrada aqui derruba os testes
+antes de virar autorização implícita.
 """
 
 
@@ -434,12 +459,23 @@ class DestructiveApprovalProposal:
 
         if not isinstance(self.blockers, tuple):
             raise TypeError("blockers deve ser tuple[ApprovalBlockerKind, ...]")
+        vistos_bloqueios: set[ApprovalBlockerKind] = set()
         for indice, bloqueio in enumerate(self.blockers):
             if not isinstance(bloqueio, ApprovalBlockerKind):
                 raise TypeError(
                     f"blockers[{indice}] deve ser ApprovalBlockerKind, recebido "
                     f"{type(bloqueio).__name__}"
                 )
+            # E4.9.8.1: duplicata recusada, NÃO desduplicada. Um `set` ou
+            # `frozenset` perderia a ordem declarada, e absorver a
+            # repetição em silêncio esconderia um erro de quem montou a
+            # proposta. A ordem faz parte do que foi apresentado.
+            if bloqueio in vistos_bloqueios:
+                raise ValueError(
+                    f"blocker duplicado: {bloqueio.value} — repetição não é "
+                    "absorvida nem reordenada, é recusada"
+                )
+            vistos_bloqueios.add(bloqueio)
 
         validar_instante_ciente("materialized_at", self.materialized_at)
 
@@ -448,6 +484,57 @@ class DestructiveApprovalProposal:
                 f"entrada de voz em estado {self.provenance.voice_review.value} não "
                 "forma proposta — baixa confiança, ambiguidade e ausência de "
                 "revisão pertencem à fronteira anterior e não são corrigidas aqui"
+            )
+
+        # ------------------------------------------------------------------
+        # E4.9.8.1 — a governança respondeu ESTA pergunta?
+        #
+        # A cadeia 85 exigia apenas que o campo fosse uma
+        # `GovernanceResolution`. Eu escrevi no EDR que ação, policy,
+        # domínio e finalidade estavam vinculados, e o runtime não
+        # comparava nada. As quatro checagens abaixo são o binding que a
+        # matriz do §5 daquele documento afirmava existir.
+        #
+        # HUMAN_CONFIRMATION CANNOT CREATE MISSING AUTHORITY
+        # ------------------------------------------------------------------
+        resolucao = self.governance_resolution
+
+        if resolucao.outcome is not GovernanceOutcome.ADMISSIBLE:
+            raise ValueError(
+                f"governança respondeu {resolucao.outcome.value} — proposta "
+                "destrutiva exige ADMISSIBLE. INADMISSIBLE, NOT_APPLICABLE e "
+                "PROHIBITED não concedem, e confirmação humana não cria "
+                "autoridade ausente"
+            )
+        # Segunda condição, INDEPENDENTE da primeira. Hoje
+        # `execution_authorized` é derivada do outcome, mas o contrato não
+        # deve depender disso: se a E4.3 passar a derivá-la de outra coisa,
+        # esta linha continua exigindo autorização de execução.
+        if not resolucao.execution_authorized:
+            raise ValueError(
+                "governança não autoriza execução — outcome admissível sem "
+                "execution_authorized não é autorização"
+            )
+
+        esperada = OPERACAO_DE_GOVERNANCA[self.operation]
+        if resolucao.operation is not esperada:
+            raise ValueError(
+                f"{self.operation.value} exige resolução de {esperada.value}, "
+                f"e a apresentada avaliou {resolucao.operation.value} — "
+                "resolução de outra ação não autoriza esta"
+            )
+
+        if resolucao.context_domain_ids != (self.context.domain_id,):
+            raise ValueError(
+                "domínio avaliado pela governança diverge do domínio da "
+                "proposta — subconjunto, interseção e conjunto mais amplo não "
+                "são a mesma pergunta"
+            )
+
+        if resolucao.context_purpose != self.context.purpose_ref:
+            raise ValueError(
+                "finalidade avaliada pela governança diverge da finalidade da "
+                "proposta — finalidade aproximada não é a mesma pergunta"
             )
 
         for alvo in self.targets:
@@ -579,6 +666,50 @@ class DestructiveApprovalEnvelope:
             raise ValueError(
                 "canal do envelope diverge da proposta — a confirmação vincula o "
                 "canal em que a intenção foi apresentada"
+            )
+
+        # ------------------------------------------------------------------
+        # E4.9.8.1 — a governança avaliou o MESMO principal que a fronteira
+        # externa declarou autenticado, e esse principal controla os alvos?
+        #
+        # A igualdade NÃO promove `context_actor_ref` a autenticador. Ela
+        # impede que governança, identidade externa e alvo descrevam
+        # PESSOAS DIFERENTES — que é coisa distinta, e a única que um
+        # contrato sem autenticador pode verificar.
+        #
+        # STRING_EQUALITY != AUTHENTICATION
+        # ------------------------------------------------------------------
+        if self.proposal.governance_resolution.context_actor_ref != (self.identity.principal_ref):
+            raise ValueError(
+                "ator avaliado pela governança diverge do principal declarado "
+                "autenticado — a governança respondeu sobre outra pessoa"
+            )
+
+        # Enquanto não existe delegação modelada, o contrato só representa o
+        # caso DIRETO: quem confirma é quem controla. Papel, grupo,
+        # procuração, ACL e admin override NÃO são modelados aqui, e
+        # inventá-los seria criar autoridade organizacional sem contrato.
+        for indice, alvo in enumerate(self.proposal.targets):
+            if alvo.control_scope.control_principal_ref != self.identity.principal_ref:
+                raise ValueError(
+                    f"alvo[{indice}] é controlado por outro principal — sem "
+                    "modelo de delegação, apenas o próprio controlador forma "
+                    "envelope"
+                )
+
+        # `authenticated_at` participa da ordem temporal desde a E4.9.8.1.
+        # Antes da proposta é sessão antiga, não step-up vinculado à ação;
+        # depois da confirmação é causalmente impossível como fundamento
+        # dela. Nenhuma duração canônica é inventada.
+        if not self.proposal.materialized_at <= self.identity.authenticated_at:
+            raise ValueError(
+                "authenticated_at anterior à materialização da proposta — "
+                "sessão antiga não é step-up vinculado a esta ação"
+            )
+        if not self.identity.authenticated_at <= self.confirmed_at:
+            raise ValueError(
+                "authenticated_at posterior à confirmação — uma autenticação "
+                "que ocorre depois não pode ser o fundamento dela"
             )
 
         if not self.proposal.materialized_at <= self.issued_at:
