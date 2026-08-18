@@ -271,8 +271,9 @@ def test_s13_todos_os_value_objects_sao_frozen() -> None:
     arvore = ast.parse(
         (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
     )
+    # 6 → 7 na E4.9.7.2: `ReferenceProvenance` substituiu `origin: str`.
     classes = [no for no in ast.walk(arvore) if isinstance(no, ast.ClassDef)]
-    assert len(classes) == 6
+    assert len(classes) == 7
     for classe in classes:
         congelada = any(
             isinstance(dec, ast.Call)
@@ -356,7 +357,7 @@ def test_s17_o_localizador_de_sucesso_passa_pelo_validador_exato() -> None:
         and no.args[0].value == "transient_locator"
     ]
     assert [no.func.id for no in chamadas if isinstance(no.func, ast.Name)] == [
-        "validar_localizador_exato"
+        "validar_localizador_sem_expansao_literal"
     ]
 
 
@@ -373,7 +374,7 @@ def test_s18_a_verificacao_de_alvo_exato_e_estrutural() -> None:
     (validador,) = [
         no
         for no in ast.walk(arvore)
-        if isinstance(no, ast.FunctionDef) and no.name == "validar_localizador_exato"
+        if isinstance(no, ast.FunctionDef) and no.name == "validar_localizador_sem_expansao_literal"
     ]
     executavel = [linha for linha in validador.body if not isinstance(linha, ast.Expr)]
     corpo = "\n".join(ast.unparse(linha) for linha in executavel)
@@ -404,11 +405,12 @@ def test_s19_a_recusa_nao_tem_campo_de_texto_livre() -> None:
     assert campos["observed_dimension"] == (RefusalDimension | None)
     assert len(RefusalDimension) == 8
 
-    # Nenhum outro campo pode ser texto livre de diagnóstico. `origin` é
-    # `str` porque é a referência que motivou a tentativa — dado do
-    # pedido, não contexto que o resolvedor compõe.
+    # ATUALIZADO NA E4.9.7.2, e a mudança é um endurecimento. A cadeia 81
+    # isentava `origin` por ser "dado do pedido" — a auditoria mostrou que
+    # a intenção do nome não vale como garantia do tipo, e o campo aceitava
+    # o localizador. Agora a recusa não tem NENHUM campo `str`.
     de_texto = {nome for nome, tipo in campos.items() if tipo is str}
-    assert de_texto == {"origin"}
+    assert de_texto == set()
 
 
 def test_s20_nenhum_bool_declarativo_de_exatidao() -> None:
@@ -454,7 +456,13 @@ def test_s21_o_dubl_observacional_verifica_todas_as_dimensoes() -> None:
 
 
 def test_s22_o_corretivo_nao_criou_capability_nova() -> None:
-    """Reafirmação após a E4.9.7.1 — o escopo continua fechado."""
+    """Reafirmação após a E4.9.7.2 — nenhuma capacidade nova entrou.
+
+    Corrigido na E4.9.7.2: a formulação anterior dizia "o escopo continua
+    fechado", que se confundia com o fechamento de cross-tenant em
+    runtime — esse continua DEFERRED. Aqui o que se prova é a ausência de
+    capability nova nos módulos da fatia.
+    """
     proibidos = (
         "ErasureRecordRepository",
         "append_observed",
@@ -472,3 +480,155 @@ def test_s22_o_corretivo_nao_criou_capability_nova() -> None:
         executavel = _executavel(caminho)
         for termo in proibidos:
             assert termo not in executavel, f"{caminho.name}: {termo}"
+
+
+# ======================================================================
+# E4.9.7.2 — origem tipada, referência sensível e alegações alinhadas
+# ======================================================================
+
+
+def test_s23_origin_e_tipado_nos_tres_value_objects() -> None:
+    """`FREE_TEXT_ORIGIN = CONFIDENTIALITY_CHANNEL`.
+
+    Se alguém devolver `origin` a `str`, o canal livre volta e o
+    localizador entra por ele de novo.
+    """
+    import dataclasses
+
+    from app.memory.schemas.erasure_target import (
+        ErasureTargetDescriptor,
+        ErasureTargetReference,
+        ReferenceProvenance,
+        TargetResolutionRefusal,
+    )
+
+    for classe in (ErasureTargetReference, ErasureTargetDescriptor, TargetResolutionRefusal):
+        campos = {c.name: c.type for c in dataclasses.fields(classe)}
+        assert campos["origin"] is ReferenceProvenance, classe.__name__
+
+
+def test_s24_inventario_dos_campos_textuais_publicos() -> None:
+    """Nenhum campo `str` novo entrou sem inventário.
+
+    O §3.3 do prompt exige inventariar todos os campos textuais antes de
+    fazer a quinta alegação absoluta. Esta guarda congela o conjunto: um
+    campo `str` novo em qualquer contrato da fatia derruba o teste e
+    obriga a decidir explicitamente se ele é canal de confidencialidade.
+    """
+    import dataclasses
+
+    from app.memory.schemas.erasure_target import (
+        ControlScope,
+        CustodyNamespace,
+        ErasureTargetDescriptor,
+        ErasureTargetReference,
+        ReferenceProvenance,
+        TargetResolutionRefusal,
+        VerifiedDeletionCapability,
+    )
+
+    textuais = {
+        classe.__name__: sorted(c.name for c in dataclasses.fields(classe) if c.type is str)
+        for classe in (
+            ControlScope,
+            CustodyNamespace,
+            VerifiedDeletionCapability,
+            ReferenceProvenance,
+            ErasureTargetReference,
+            ErasureTargetDescriptor,
+            TargetResolutionRefusal,
+        )
+    }
+    assert textuais == {
+        "ControlScope": ["control_principal_ref"],
+        "CustodyNamespace": ["namespace", "provider"],
+        "VerifiedDeletionCapability": ["operation", "scope"],
+        "ReferenceProvenance": [],
+        "ErasureTargetReference": ["opaque_reference"],
+        "ErasureTargetDescriptor": ["transient_locator"],
+        "TargetResolutionRefusal": [],
+    }
+
+
+def test_s25_os_dois_campos_sensiveis_sao_redigidos_na_representacao() -> None:
+    """`REQUIRED_SENSITIVE_INPUT = REDACTED_FROM_REPR_AND_STR`.
+
+    `opaque_reference` e `transient_locator` são os dois únicos campos
+    que podem transportar material sensível. Ambos têm `repr=False` na
+    dataclass e `__repr__`/`__str__` próprios — duas camadas, porque um
+    argumento é fácil de apagar sem perceber.
+    """
+    import dataclasses
+
+    from app.memory.schemas.erasure_target import (
+        ErasureTargetDescriptor,
+        ErasureTargetReference,
+    )
+
+    esperado = {
+        ErasureTargetReference: "opaque_reference",
+        ErasureTargetDescriptor: "transient_locator",
+    }
+    for classe, campo in esperado.items():
+        (sensivel,) = [c for c in dataclasses.fields(classe) if c.name == campo]
+        assert sensivel.repr is False, classe.__name__
+        assert {"__repr__", "__str__"} <= set(vars(classe)), classe.__name__
+
+    fonte = (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
+    assert "REFERENCIA_OCULTA" in fonte
+    assert "LOCALIZADOR_OCULTO" in fonte
+
+
+def test_s26_o_vocabulario_de_origem_veio_do_repositorio_real() -> None:
+    """Os cinco nomes existem de fato na E3, e não foram presumidos."""
+    from app.memory.models.target_resolution_enums import ORIGENS_PLURAIS, ReferenceOrigin
+
+    modelos = {
+        "payload_ref": APP / "cognitive" / "models" / "causal_history.py",
+        "source_ref": APP / "cognitive" / "models" / "provenance_record.py",
+        "evidence_refs": APP / "cognitive" / "models" / "provenance_record.py",
+        "input_refs": APP / "cognitive" / "models" / "transformation_record.py",
+        "output_refs": APP / "cognitive" / "models" / "transformation_record.py",
+    }
+    assert {o.value for o in ReferenceOrigin} == set(modelos)
+    for campo, caminho in modelos.items():
+        texto = caminho.read_text(encoding="utf-8")
+        assert f"{campo}: Mapped[" in texto, campo
+
+    # As três plurais são exatamente as colunas JSON de lista.
+    assert {o.value for o in ORIGENS_PLURAIS} == {
+        "evidence_refs",
+        "input_refs",
+        "output_refs",
+    }
+
+
+def test_s27_nenhuma_alegacao_de_fechamento_externo_permanece() -> None:
+    """`EXTERNAL_RUNTIME_CROSS_TENANT_CLOSURE = DEFERRED`.
+
+    Busca semântica pelas formulações que a auditoria apontou. Ler o
+    texto bruto é correto aqui: o alvo É o texto das docstrings, não o
+    código executável.
+    """
+    alvos = (
+        APP / "memory" / "schemas" / "erasure_target.py",
+        APP / "memory" / "models" / "target_resolution_enums.py",
+        APP / "memory" / "ports" / "erasure_target.py",
+    )
+    for caminho in alvos:
+        texto = caminho.read_text(encoding="utf-8")
+        for frase in ("Fecha o *cross-tenant*", "fecham a *credential confusion*"):
+            assert frase not in texto, f"{caminho.name}: {frase}"
+        # As formulações corretas têm de estar presentes, não só as erradas ausentes.
+    schemas = (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
+    enums = (APP / "memory" / "models" / "target_resolution_enums.py").read_text(encoding="utf-8")
+    assert "CREDENTIAL_CONFUSION_RUNTIME_CLOSURE = DEFERRED" in schemas
+    assert "EXTERNAL_RUNTIME_CROSS_TENANT_CLOSURE = DEFERRED" in enums
+
+
+def test_s28_o_nome_do_validador_nao_promete_exatidao_material() -> None:
+    """`RAW_PATTERN_SYNTAX_REJECTION != MATERIAL_TARGET_CARDINALITY_PROOF`."""
+    fonte = (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
+    assert "def validar_localizador_sem_expansao_literal(" in fonte
+    assert "def validar_localizador_exato(" not in fonte
+    assert "MATERIAL_EXACT_TARGET_PROOF = DEFERRED" in fonte

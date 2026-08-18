@@ -10,6 +10,7 @@ TARGET_RESOLUTION != DELETION_AUTHORITY
 ```
 """
 
+import pathlib
 import uuid
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError
@@ -19,6 +20,8 @@ import pytest
 
 from app.memory.models.erasure_enums import ErasureTargetClass
 from app.memory.models.target_resolution_enums import (
+    ORIGENS_PLURAIS,
+    ReferenceOrigin,
     RefusalDimension,
     TargetResolutionRefusalReason,
 )
@@ -29,20 +32,24 @@ from app.memory.schemas.erasure_target import (
     MAX_OPAQUE_LENGTH,
     METACARACTERES_DE_EXPANSAO,
     NOMES_DE_CAMPO_PROIBIDOS,
+    REFERENCIA_OCULTA,
     ControlScope,
     CustodyNamespace,
     ErasureTargetDescriptor,
     ErasureTargetReference,
+    ReferenceProvenance,
     TargetResolutionRefusal,
     TargetResolutionResult,
     VerifiedDeletionCapability,
-    validar_localizador_exato,
+    validar_localizador_sem_expansao_literal,
     validar_texto_opaco,
 )
 
 W1, T1, S1 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 AGORA = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 LOCALIZADOR = "s3://bucket-privado/objeto-abc123"
+PROVENIENCIA = ReferenceProvenance(ReferenceOrigin.PAYLOAD_REF)
+SEGREDO = "https://user:password@storage.example/object?token=secret"
 
 
 def _chamar(alvo: object, metodo: str, **kwargs: object) -> object:
@@ -104,7 +111,7 @@ def descritor(**overrides: object) -> ErasureTargetDescriptor:
         "custody_namespace": custodia(),
         "capability": capacidade(),
         "resolved_at": AGORA,
-        "origin": "payload_ref",
+        "origin": PROVENIENCIA,
         "transient_locator": LOCALIZADOR,
     }
     base.update(overrides)
@@ -117,7 +124,7 @@ def referencia(**overrides: object) -> ErasureTargetReference:
     base: dict[str, object] = {
         "subject_coid": S1,
         "opaque_reference": "payload://abc",
-        "origin": "payload_ref",
+        "origin": PROVENIENCIA,
         "control_scope": escopo(),
     }
     base.update(overrides)
@@ -130,7 +137,7 @@ def recusa(**overrides: object) -> TargetResolutionRefusal:
     base: dict[str, object] = {
         "reason": TargetResolutionRefusalReason.UNRESOLVED_OPAQUE_REFERENCE,
         "subject_coid": S1,
-        "origin": "payload_ref",
+        "origin": PROVENIENCIA,
     }
     base.update(overrides)
     construida = _construir(TargetResolutionRefusal, **base)
@@ -316,7 +323,7 @@ def test_u19_invariantes_valem_no_construtor_direto():
             custody_namespace=custodia(),
             capability=capacidade(),
             resolved_at=AGORA,
-            origin="payload_ref",
+            origin=PROVENIENCIA,
             transient_locator=LOCALIZADOR,
         )
 
@@ -552,7 +559,17 @@ def test_u34_resolucao_nao_produz_escrita_nem_chamada_externa():
 
 
 def test_u35_escopo_divergente_nao_vira_sucesso():
-    """Fecha o cross-tenant no comportamento, não só no contrato."""
+    """Prova CONTRATUAL de isolamento, não fechamento em runtime externo.
+
+    Corrigido na E4.9.7.2. A cadeia 81 dizia "fecha o cross-tenant no
+    comportamento" — o dublê é o contrato exercitado, não um resolvedor
+    real, e não há adaptador nesta fatia.
+
+    ```text
+    CONTRACT_AND_FAKE_ISOLATION_PROOF = IMPLEMENTED
+    EXTERNAL_RUNTIME_CROSS_TENANT_CLOSURE = DEFERRED
+    ```
+    """
     porta: ErasureTargetResolverPort = _ResolvedorObservacional()
     resultado = porta.resolve_target(referencia(control_scope=escopo(workspace_id=uuid.uuid4())))
     assert isinstance(resultado, TargetResolutionRefusal)
@@ -584,8 +601,8 @@ def test_u38_um_descritor_representa_exatamente_um_alvo():
 
 def test_u39_origem_e_rastreabilidade_nunca_autoridade():
     """Mudar a origem não altera nada sobre poder agir."""
-    a = descritor(origin="payload_ref")
-    b = descritor(origin="evidence_refs")
+    a = descritor(origin=PROVENIENCIA)
+    b = descritor(origin=ReferenceProvenance(ReferenceOrigin.EVIDENCE_REFS))
     assert a.capability == b.capability
     assert a.control_scope == b.control_scope
     assert a.target_class == b.target_class
@@ -698,14 +715,14 @@ def test_u49_metacaracteres_sao_neutros_de_provedor():
     ],
 )
 def test_u50_localizador_exato_aceito_sem_normalizacao(locator):
-    devolvido = validar_localizador_exato("transient_locator", locator)
+    devolvido = validar_localizador_sem_expansao_literal("transient_locator", locator)
     assert devolvido is locator
     assert devolvido.encode("utf-8") == locator.encode("utf-8")
 
 
 def test_u51_localizador_com_unicode_portugues_preservado():
     locator = "s3://bucket/ação/produção-São_Paulo.txt"
-    assert validar_localizador_exato("transient_locator", locator) is locator
+    assert validar_localizador_sem_expansao_literal("transient_locator", locator) is locator
     assert descritor(transient_locator=locator).transient_locator == locator
 
 
@@ -794,7 +811,7 @@ def test_u57_diagnostico_de_texto_livre_nao_existe_mais():
             TargetResolutionRefusal,
             reason=TargetResolutionRefusalReason.UNRESOLVED_OPAQUE_REFERENCE,
             subject_coid=S1,
-            origin="payload_ref",
+            origin=PROVENIENCIA,
             diagnostic=LOCALIZADOR,
         )
 
@@ -919,3 +936,279 @@ def test_u69_isolamento_continua_sem_escrita_nem_chamada_externa():
     assert dubl.resolucoes == 4
     assert dubl.escritas == 0
     assert dubl.chamadas_externas == 0
+
+
+# ======================================================================
+# E4.9.7.2 — origem tipada, referência sensível e fronteira de prova
+#
+# As cinco evidências do segundo reprodutor viram regressão aqui.
+# A3c: `origin: str` era o novo canal livre — nome do campo != tipo.
+# A3d: `opaque_reference` é entrada NECESSÁRIA e vazava na representação.
+# A1:  restrição lexical não é prova de cardinalidade material.
+# ======================================================================
+
+
+# --- A3c: origem tipada ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        LOCALIZADOR,
+        SEGREDO,
+        "payload_ref",
+        "evidence_refs",
+        "",
+        42,
+        None,
+        ReferenceOrigin.PAYLOAD_REF,
+    ],
+)
+def test_u70_origem_recusa_texto_na_referencia(valor):
+    """`FREE_TEXT_ORIGIN = CONFIDENTIALITY_CHANNEL`.
+
+    Nem o localizador, nem o segredo, nem sequer o nome certo em string —
+    e nem o enum cru, que não carrega posição.
+    """
+    with pytest.raises(TypeError, match="ReferenceProvenance"):
+        referencia(origin=valor)
+
+
+@pytest.mark.parametrize("valor", [LOCALIZADOR, SEGREDO, "payload_ref", 42, None])
+def test_u71_origem_recusa_texto_no_descritor(valor):
+    with pytest.raises(TypeError, match="ReferenceProvenance"):
+        descritor(origin=valor)
+
+
+@pytest.mark.parametrize("valor", [LOCALIZADOR, SEGREDO, "payload_ref", 42, None])
+def test_u72_origem_recusa_texto_na_recusa(valor):
+    with pytest.raises(TypeError, match="ReferenceProvenance"):
+        recusa(origin=valor)
+
+
+def test_u73_origin_nao_e_str_em_nenhum_dos_tres_value_objects():
+    """`dataclasses.fields` como prova, não a docstring."""
+    import dataclasses
+
+    for classe in (ErasureTargetReference, ErasureTargetDescriptor, TargetResolutionRefusal):
+        campos = {c.name: c.type for c in dataclasses.fields(classe)}
+        assert campos["origin"] is ReferenceProvenance, classe.__name__
+
+
+def test_u74_as_cinco_origens_reais_da_e3_sao_aceitas():
+    """Conferidas no repositório antes de congelar o vocabulário."""
+    assert [o.value for o in ReferenceOrigin] == [
+        "payload_ref",
+        "source_ref",
+        "evidence_refs",
+        "input_refs",
+        "output_refs",
+    ]
+    for origem in ReferenceOrigin:
+        assert referencia(origin=ReferenceProvenance(origem)).origin.origin is origem
+
+
+def test_u75_nenhum_membro_generico_de_origem():
+    for proibido in ("UNKNOWN", "OTHER", "GENERIC", "FALLBACK", "FREE_TEXT", "CUSTOM"):
+        assert proibido not in ReferenceOrigin.__members__
+
+
+@pytest.mark.parametrize("origem", sorted(ORIGENS_PLURAIS, key=lambda o: o.value))
+def test_u76_posicao_admitida_apenas_nas_origens_plurais(origem):
+    p = ReferenceProvenance(origem, 3)
+    assert p.position == 3
+    assert p.origin is origem
+
+
+@pytest.mark.parametrize("origem", [ReferenceOrigin.PAYLOAD_REF, ReferenceOrigin.SOURCE_REF])
+def test_u77_posicao_recusada_em_origem_escalar(origem):
+    """`payload_ref` e `source_ref` são colunas escalares na E3."""
+    with pytest.raises(ValueError, match="não admite position"):
+        ReferenceProvenance(origem, 0)
+    assert ReferenceProvenance(origem).position is None
+
+
+@pytest.mark.parametrize("valor", [True, False, "3", 1.5, [], {}])
+def test_u78_posicao_exige_inteiro_verdadeiro(valor):
+    with pytest.raises(TypeError, match="position deve ser int"):
+        ReferenceProvenance(ReferenceOrigin.EVIDENCE_REFS, valor)
+
+
+def test_u79_posicao_nao_pode_ser_negativa():
+    with pytest.raises(ValueError, match=">= 0"):
+        ReferenceProvenance(ReferenceOrigin.EVIDENCE_REFS, -1)
+    assert ReferenceProvenance(ReferenceOrigin.EVIDENCE_REFS, 0).position == 0
+
+
+def test_u80_posicao_nao_e_codificada_em_texto():
+    """`evidence_refs[3]` em string reabriria o canal livre."""
+    with pytest.raises(TypeError):
+        referencia(origin="evidence_refs[3]")
+
+
+def test_u81_proveniencia_e_congelada():
+    p = ReferenceProvenance(ReferenceOrigin.INPUT_REFS, 1)
+    with pytest.raises(FrozenInstanceError):
+        _atribuir_campo(p, "origin", ReferenceOrigin.OUTPUT_REFS)
+    with pytest.raises(FrozenInstanceError):
+        _atribuir_campo(p, "position", 9)
+
+
+def test_u82_origem_continua_sem_virar_autoridade():
+    """`ORIGIN IS TRACEABILITY, NEVER AUTHORITY`."""
+    a = descritor(origin=ReferenceProvenance(ReferenceOrigin.PAYLOAD_REF))
+    b = descritor(origin=ReferenceProvenance(ReferenceOrigin.OUTPUT_REFS, 2))
+    assert a.capability == b.capability
+    assert a.control_scope == b.control_scope
+    assert a.target_class == b.target_class
+
+
+@pytest.mark.parametrize("origem", list(ReferenceOrigin))
+def test_u83_nenhuma_representacao_de_recusa_revela_segredo(origem):
+    r = recusa(origin=ReferenceProvenance(origem))
+    for proibido in (LOCALIZADOR, SEGREDO, "password", "token"):
+        assert proibido not in repr(r)
+        assert proibido not in str(r)
+
+
+# --- A3d: referência opaca é entrada sensível necessária ------------------
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        SEGREDO,
+        "https://host/obj?token=abc&signature=x",
+        "s3://AKIA:chave@bucket/objeto",
+        LOCALIZADOR,
+        "payload://abc",
+        "referência/comum/ação.txt",
+    ],
+)
+def test_u84_referencia_opaca_nunca_aparece_na_representacao(valor):
+    """`REQUIRED_SENSITIVE_INPUT = REDACTED_FROM_REPR_AND_STR`."""
+    r = referencia(opaque_reference=valor)
+    assert valor not in repr(r)
+    assert valor not in str(r)
+    assert valor not in f"{r}"
+    assert REFERENCIA_OCULTA in repr(r)
+
+
+def test_u85_referencia_opaca_continua_acessivel_a_quem_resolve():
+    """Redigir a representação não pode inutilizar a entrada."""
+    r = referencia(opaque_reference=SEGREDO)
+    assert r.opaque_reference == SEGREDO
+    porta: ErasureTargetResolverPort = _ResolvedorObservacional()
+    assert isinstance(porta.resolve_target(r), ErasureTargetDescriptor)
+
+
+def test_u86_a_referencia_sensivel_nao_e_copiada_para_a_recusa():
+    """Nenhuma recusa tem onde guardá-la — não há campo."""
+    import dataclasses
+
+    campos = {c.name for c in dataclasses.fields(TargetResolutionRefusal)}
+    assert "opaque_reference" not in campos
+    assert "transient_locator" not in campos
+    assert "diagnostic" not in campos
+
+
+def test_u87_o_objeto_nao_e_declarado_livre_de_segredo():
+    """`REDACTION != SECRET_FREE_OBJECT` — declarado, não escondido.
+
+    O valor sensível está no objeto de propósito, porque a resolução
+    precisa dele. O que a fatia garante é que ele não escapa pela
+    representação — e a docstring do campo diz isso, em vez de alegar
+    ausência.
+    """
+    fonte = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "app"
+        / "memory"
+        / "schemas"
+        / "erasure_target.py"
+    ).read_text(encoding="utf-8")
+    assert "REDACTION != SECRET_FREE_OBJECT" in fonte
+    assert "REQUIRED_SENSITIVE_INPUT" in fonte
+    assert referencia(opaque_reference=SEGREDO).opaque_reference == SEGREDO
+
+
+# --- A1: fronteira entre restrição lexical e exatidão material ------------
+
+
+def test_u88_o_nome_do_validador_nao_promete_exatidao_material():
+    """`RAW_PATTERN_SYNTAX_REJECTION != MATERIAL_TARGET_CARDINALITY_PROOF`.
+
+    A função da cadeia 81 se chamava `validar_localizador_exato` e o EDR
+    a apresentava como prova de cardinalidade. Renomear foi a correção,
+    não cosmética: o nome antigo prometia o que nenhuma camada sem
+    adaptador pode provar.
+    """
+    from app.memory.schemas import erasure_target
+
+    assert hasattr(erasure_target, "validar_localizador_sem_expansao_literal")
+    assert not hasattr(erasure_target, "validar_localizador_exato")
+
+
+@pytest.mark.parametrize(
+    "locator",
+    ["s3://bucket/%2A", "s3://bucket/%5Ba-z%5D", "regex://bucket/.+", "glob://b/x"],
+)
+def test_u89_limite_declarado_percent_encoding_e_scheme_desconhecido(locator):
+    """Aceitos de propósito, e o limite é declarado, não escondido.
+
+    Decodificar `%2A` seria interpretar a string em nome de um adaptador
+    que não existe, e a interpretação varia por provedor. Rejeitar
+    schemes por lista quebraria a neutralidade de provedor.
+    """
+    assert validar_localizador_sem_expansao_literal("transient_locator", locator) is locator
+    assert descritor(transient_locator=locator).transient_locator == locator
+
+
+def test_u90_nenhuma_decodificacao_silenciosa_no_validador():
+    """`unquote` e normalização continuam ausentes."""
+    import ast
+    import pathlib
+
+    fonte = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "app"
+        / "memory"
+        / "schemas"
+        / "erasure_target.py"
+    ).read_text(encoding="utf-8")
+    arvore = ast.parse(fonte)
+    (validador,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "validar_localizador_sem_expansao_literal"
+    ]
+    corpo = ast.unparse(
+        ast.Module(
+            body=[linha for linha in validador.body if not isinstance(linha, ast.Expr)],
+            type_ignores=[],
+        )
+    )
+    for proibido in ("unquote", "normalize", "casefold", "lower()", "replace("):
+        assert proibido not in corpo, proibido
+
+
+def test_u91_a_recusa_literal_da_cadeia_81_continua_valendo():
+    """Nenhuma das oito correções anteriores regrediu."""
+    for locator in ("s3://bucket/*", "s3://b/[a-z]", "s3://b/prefixo/", SEGREDO):
+        with pytest.raises(ValueError):
+            descritor(transient_locator=locator)
+    assert descritor(capability=capacidade(scope="workspace/w1/*")).capability.scope == (
+        "workspace/w1/*"
+    )
+
+
+@pytest.mark.parametrize("valor", ["payload_ref", 42, None, ReferenceProvenance])
+def test_u92_proveniencia_exige_o_enum_fechado_de_origem(valor):
+    """Fronteira descoberta pela exigência de 100%.
+
+    `ReferenceProvenance` recusa o texto no PRÓPRIO construtor, e não só
+    quando entra num dos três value objects. Sem isto, o vocabulário
+    fechado dependeria de quem o embrulha.
+    """
+    with pytest.raises(TypeError, match="ReferenceOrigin"):
+        _construir(ReferenceProvenance, origin=valor)

@@ -69,8 +69,19 @@ class TargetResolutionRefusalReason(StrEnum):
     CONTROL_SCOPE_MISMATCH = "control_scope_mismatch"
     """Workspace, tenant ou principal de controle divergem do declarado.
 
-    Fecha o *cross-tenant* da tabela de ameaças da E4.9.1: um descritor
-    resolvido num contexto não pode valer noutro.
+    Endereça o *cross-tenant* da tabela de ameaças da E4.9.1: o contrato
+    obriga a recusa quando o contexto diverge, e nenhuma das cinco
+    dimensões divergentes pode devolver descritor de sucesso.
+
+    ```text
+    CONTRACT_AND_FAKE_ISOLATION_PROOF = IMPLEMENTED
+    EXTERNAL_RUNTIME_CROSS_TENANT_CLOSURE = DEFERRED
+    ```
+
+    Corrigido na E4.9.7.2: a cadeia 81 dizia "fecha o cross-tenant". Não
+    fecha — não existe adaptador, e um resolvedor real que ignore
+    `ControlScope` satisfaz o `Protocol` mesmo assim. Fechamento em
+    runtime externo pertence ao adaptador autorizado.
     """
 
     DELETION_CAPABILITY_NOT_VERIFIED = "deletion_capability_not_verified"
@@ -131,3 +142,58 @@ class RefusalDimension(StrEnum):
     REFERENCE = "reference"
     CAPABILITY = "capability"
     RESOLUTION_FRESHNESS = "resolution_freshness"
+
+
+class ReferenceOrigin(StrEnum):
+    """De qual campo da E3 veio a referência que motivou a resolução.
+
+    ```text
+    ORIGIN = CLOSED_TYPED_PROVENANCE
+    INTENDED_FIELD_NAME != ENFORCED_FIELD_NAME
+    ```
+
+    Acrescentado pela `E4.9.7.2`. Até a cadeia 81, `origin` era `str` livre
+    nos três value objects, e a auditoria mediu a consequência: o próprio
+    localizador e uma URL assinada entravam pelo campo e a representação
+    da recusa os revelava. O nome do campo dizia "origem"; o tipo aceitava
+    qualquer coisa.
+
+    Os cinco membros são os campos de referência **reais** da E3,
+    conferidos no repositório antes de congelar este vocabulário e não
+    presumidos da documentação:
+
+    ```text
+    causal_history_events.payload_ref       String(512), nullable
+    provenance_records.source_ref           String(512), nullable
+    provenance_records.evidence_refs        JSON list
+    transformation_records.input_refs       JSON list
+    transformation_records.output_refs      JSON list
+    ```
+
+    A E3 **não é tocada** por este enum. Ele nomeia uma fonte que já
+    existe; não a redefine, não a lê e não cria coluna.
+
+    Não existe membro genérico. Uma origem nova exige EDR — e, antes
+    disso, um campo novo na E3, que é congelada.
+    """
+
+    PAYLOAD_REF = "payload_ref"
+    SOURCE_REF = "source_ref"
+    EVIDENCE_REFS = "evidence_refs"
+    INPUT_REFS = "input_refs"
+    OUTPUT_REFS = "output_refs"
+
+
+ORIGENS_PLURAIS = frozenset(
+    {
+        ReferenceOrigin.EVIDENCE_REFS,
+        ReferenceOrigin.INPUT_REFS,
+        ReferenceOrigin.OUTPUT_REFS,
+    }
+)
+"""As três origens que são listas JSON, e só elas admitem posição.
+
+`payload_ref` e `source_ref` são colunas escalares: uma posição ali não
+significaria nada, e aceitá-la deixaria o contrato dizer algo que a E3
+não sustenta.
+"""

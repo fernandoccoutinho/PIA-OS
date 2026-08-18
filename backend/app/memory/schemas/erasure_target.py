@@ -54,6 +54,8 @@ from urllib.parse import urlsplit
 
 from app.memory.models.erasure_enums import ErasureTargetClass
 from app.memory.models.target_resolution_enums import (
+    ORIGENS_PLURAIS,
+    ReferenceOrigin,
     RefusalDimension,
     TargetResolutionRefusalReason,
 )
@@ -187,13 +189,30 @@ todos são universalmente usados para designar **mais de um** objeto.
 """
 
 
-def validar_localizador_exato(nome: str, valor: object) -> str:
-    """O localizador designa **um** alvo material, e só (`E4.9.7.1`).
+def validar_localizador_sem_expansao_literal(nome: str, valor: object) -> str:
+    """Recusa **sintaxe literal** de expansão no localizador (`E4.9.7.1`).
 
     ```text
-    ONE_DESCRIPTOR = ONE_EXACT_TARGET
-    FIELD_COUNT = 1 DOES_NOT_PROVE TARGET_CARDINALITY = 1
+    RAW_PATTERN_SYNTAX_REJECTION != MATERIAL_TARGET_CARDINALITY_PROOF
+    PROVIDER_NEUTRAL_LEXICAL_CHECK != ADAPTER_SEMANTICS
+    MATERIAL_EXACT_TARGET_PROOF = DEFERRED
     ```
+
+    **Renomeada na E4.9.7.2, e a renomeação é a correção.** A versão da
+    cadeia 81 se chamava `validar_localizador_exato` e o EDR apresentava a
+    checagem como prova de que um descritor representa um alvo material
+    exato. A auditoria mostrou o limite: `s3://bucket/%2A`,
+    `s3://bucket/%5Ba-z%5D` e `regex://bucket/.+` são aceitos, e se são
+    expansão depende do adaptador que os interpretar — adaptador que não
+    existe.
+
+    Uma camada neutra de provedor consegue provar restrição **lexical**.
+    Não consegue provar a semântica material de toda string para todo
+    provedor futuro. O nome passou a dizer o que a função faz.
+
+    `ONE_DESCRIPTOR = ONE_EXACT_TARGET` continua sendo requisito do
+    contrato — mas é obrigação do adaptador e da prova de efeito, não
+    garantia já fechada por este value object.
 
     A cadeia 80 provava cardinalidade inspecionando **nomes de campo
     plurais**, e a auditoria mostrou por que isso não prova nada: uma
@@ -215,6 +234,17 @@ def validar_localizador_exato(nome: str, valor: object) -> str:
 
     ### Limites declarados
 
+    - **Percent-encoding não é decodificado.** `%2A` continua aceito, e
+      `unquote` **não** é aplicado: decodificar seria interpretar a
+      string em nome de um adaptador que ainda não existe, e a
+      interpretação varia por provedor. Aplicar `unquote` aqui trocaria
+      um limite declarado por uma normalização silenciosa, que o §3.4 do
+      prompt proíbe.
+    - **Scheme desconhecido não é rejeitado.** `regex://`, `glob://` ou
+      qualquer outro passam se a forma literal for limpa. Rejeitar
+      schemes por lista quebraria a neutralidade de provedor e criaria
+      exatamente a "lista finita apresentada como prova" que a auditoria
+      recusou.
     - Um localizador cujo nome legítimo contenha `[`, `{` ou `?` é
       recusado. É recusa conservadora deliberada: aceitar por engano
       designa alvo errado; recusar por engano só exige que o adaptador
@@ -255,6 +285,65 @@ def validar_localizador_exato(nome: str, valor: object) -> str:
     return texto
 
 
+REFERENCIA_OCULTA = "<opaque_reference:redacted>"
+"""O que `repr()` mostra no lugar da referência opaca."""
+
+
+@dataclass(frozen=True)
+class ReferenceProvenance:
+    """De onde veio a referência — em vocabulário fechado (`E4.9.7.2`).
+
+    ```text
+    ORIGIN = CLOSED_TYPED_PROVENANCE
+    FREE_TEXT_ORIGIN = CONFIDENTIALITY_CHANNEL
+    ```
+
+    Substitui o `origin: str` da cadeia 81 nos três value objects. O campo
+    antigo dizia "origem" no nome e aceitava qualquer texto no tipo — e a
+    auditoria mediu o custo: localizador e URL assinada entravam por ele e
+    a representação da recusa os revelava.
+
+    A correção **não** é redigir a representação, porque o valor proibido
+    continuaria dentro do objeto e poderia ser propagado da referência
+    para a recusa. É tornar o campo incapaz de transportar conteúdo
+    arbitrário.
+
+    `position` existe porque três das cinco origens da E3 são listas
+    JSON. Ela é **inteiro tipado e separado**, nunca `evidence_refs[3]`
+    codificado numa string — codificar posição em texto reabriria o canal
+    livre pela porta dos fundos.
+
+    ```text
+    ORIGIN IS TRACEABILITY, NEVER AUTHORITY
+    ```
+
+    Continua valendo o que a E4.9.1 sublinhou: transformar origem em
+    autoridade recriaria, por outro caminho, o defeito de tratar uma
+    string sintaticamente válida como capacidade.
+    """
+
+    origin: ReferenceOrigin
+    position: int | None = None
+    """Índice dentro da origem, quando ela é uma lista JSON da E3."""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.origin, ReferenceOrigin):
+            raise TypeError(
+                f"origin deve ser um ReferenceOrigin, recebido " f"{type(self.origin).__name__}"
+            )
+        if self.position is None:
+            return
+        if isinstance(self.position, bool) or not isinstance(self.position, int):
+            raise TypeError(f"position deve ser int, recebido {type(self.position).__name__}")
+        if self.position < 0:
+            raise ValueError("position deve ser >= 0")
+        if self.origin not in ORIGENS_PLURAIS:
+            raise ValueError(
+                f"{self.origin.value} é campo escalar na E3 e não admite position — "
+                "uma posição ali não significaria nada"
+            )
+
+
 @dataclass(frozen=True)
 class ControlScope:
     """A quem um alvo está tecnicamente vinculado.
@@ -292,9 +381,18 @@ class ControlScope:
 class CustodyNamespace:
     """Onde o conteúdo vive, quando vive em algum lugar.
 
-    Provedor e namespace explícitos fecham a *credential confusion* da
-    tabela de ameaças: credencial de um provedor não vale no namespace de
-    outro, ainda que a referência pareça compatível.
+    Provedor e namespace explícitos **endereçam** a *credential
+    confusion* da tabela de ameaças: credencial de um provedor não vale
+    no namespace de outro, ainda que a referência pareça compatível.
+
+    ```text
+    CREDENTIAL_CONFUSION_RUNTIME_CLOSURE = DEFERRED
+    ```
+
+    Corrigido na E4.9.7.2: a cadeia 81 dizia "fecham". Não fecham — os
+    campos tornam a divergência **verificável** e o contrato obriga a
+    recusa, mas nada valida a credencial, porque não há conector. Fechar
+    é obrigação do adaptador autorizado.
 
     Nenhum provedor é padrão. `PROVIDER_NEUTRALITY_PRESERVED`.
     """
@@ -359,11 +457,34 @@ class ErasureTargetReference:
     """Identificador histórico do sujeito. Distingue *removido* de
     *nunca existiu*, e **não** é localizador."""
 
-    opaque_reference: str
-    """A referência tal como está gravada. Sem FK, sem capacidade."""
+    opaque_reference: str = field(repr=False)
+    """A referência tal como está gravada. Sem FK, sem capacidade.
 
-    origin: str
-    """De onde a referência veio. Rastreabilidade, não autoridade."""
+    ```text
+    OPAQUE_REFERENCE = REQUIRED_SENSITIVE_INPUT
+    REQUIRED_SENSITIVE_INPUT = REDACTED_FROM_REPR_AND_STR
+    REDACTION != SECRET_FREE_OBJECT
+    ```
+
+    **Entrada necessária, e por isso tratada de forma diferente de
+    `origin`.** Este campo transporta a referência legada da E3, que pode
+    conter material sensível — uma URL assinada gravada há anos em
+    `source_ref` é referência legítima. Substituí-lo por vocabulário
+    fechado destruiria a função do contrato: sem ele não há o que
+    resolver.
+
+    A solução correta é outra: o valor continua acessível a quem resolve
+    e é **redigido** em `repr()` e `str()`. E, ao contrário do que a
+    cadeia 80 tentou com o localizador, aqui isso **não** é apresentado
+    como objeto livre de segredo — o objeto transporta entrada sensível
+    necessária e restringe a exposição dela.
+    """
+
+    origin: ReferenceProvenance
+    """De onde a referência veio. Rastreabilidade, não autoridade.
+
+    Tipado desde a E4.9.7.2 — ver `ReferenceProvenance`.
+    """
 
     control_scope: ControlScope
     expected_namespace: CustodyNamespace | None = None
@@ -376,13 +497,32 @@ class ErasureTargetReference:
                 f"subject_coid deve ser UUID, recebido {type(self.subject_coid).__name__}"
             )
         validar_texto_opaco("opaque_reference", self.opaque_reference)
-        validar_texto_opaco("origin", self.origin)
+        if not isinstance(self.origin, ReferenceProvenance):
+            raise TypeError("origin deve ser um ReferenceProvenance")
         if not isinstance(self.control_scope, ControlScope):
             raise TypeError("control_scope deve ser um ControlScope")
         if self.expected_namespace is not None and not isinstance(
             self.expected_namespace, CustodyNamespace
         ):
             raise TypeError("expected_namespace deve ser um CustodyNamespace ou None")
+
+    def __repr__(self) -> str:
+        """Representação **sem** a referência opaca.
+
+        A dataclass já a oculta por `repr=False`; este método existe pela
+        mesma razão do `__repr__` do descritor — um argumento é fácil de
+        apagar sem perceber, e a redação explícita fica visível no texto.
+        """
+        return (
+            f"ErasureTargetReference(subject_coid={self.subject_coid!r}, "
+            f"origin={self.origin!r}, "
+            f"control_scope={self.control_scope!r}, "
+            f"expected_namespace={self.expected_namespace!r}, "
+            f"opaque_reference={REFERENCIA_OCULTA})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 @dataclass(frozen=True)
@@ -409,7 +549,7 @@ class ErasureTargetDescriptor:
     custody_namespace: CustodyNamespace
     capability: VerifiedDeletionCapability
     resolved_at: datetime
-    origin: str
+    origin: ReferenceProvenance
     transient_locator: str = field(repr=False)
     """Suficiente para um adaptador futuro agir, e nada além.
 
@@ -444,8 +584,9 @@ class ErasureTargetDescriptor:
                 "capacidade presumida é a forma silenciosa do confused deputy"
             )
         validar_instante_ciente("resolved_at", self.resolved_at)
-        validar_texto_opaco("origin", self.origin)
-        validar_localizador_exato("transient_locator", self.transient_locator)
+        if not isinstance(self.origin, ReferenceProvenance):
+            raise TypeError("origin deve ser um ReferenceProvenance")
+        validar_localizador_sem_expansao_literal("transient_locator", self.transient_locator)
         if self.version_etag is not None:
             validar_texto_opaco("version_etag", self.version_etag)
 
@@ -510,7 +651,7 @@ class TargetResolutionRefusal:
 
     reason: TargetResolutionRefusalReason
     subject_coid: uuid.UUID
-    origin: str
+    origin: ReferenceProvenance
     classified_as: ErasureTargetClass | None = None
     """Classe observada, quando a resolução chegou a classificar."""
     observed_dimension: RefusalDimension | None = None
@@ -526,7 +667,8 @@ class TargetResolutionRefusal:
             raise TypeError(
                 f"subject_coid deve ser UUID, recebido {type(self.subject_coid).__name__}"
             )
-        validar_texto_opaco("origin", self.origin)
+        if not isinstance(self.origin, ReferenceProvenance):
+            raise TypeError("origin deve ser um ReferenceProvenance")
         if self.classified_as is not None and not isinstance(
             self.classified_as, ErasureTargetClass
         ):
