@@ -46,6 +46,12 @@ PERMITIDOS = {
     APP / "memory" / "models" / "__init__.py",
     APP / "memory" / "errors" / "codes.py",
     APP / "memory" / "errors" / "exceptions.py",
+    # E4.9.7: os contratos de resolução de alvo reutilizam
+    # `ErasureTargetClass` em vez de declarar um segundo enum com os
+    # mesmos quatro membros. Conhecer o vocabulário de classificação NÃO
+    # é conhecer a primitiva de recibo — `test_erasure_target_isolation`
+    # prova que nada ali importa `ErasureRecord`, repositório ou writer.
+    APP / "memory" / "schemas" / "erasure_target.py",
 }
 
 
@@ -161,10 +167,16 @@ def test_s08_target_resolver_effect_approval_e_retention_continuam_ausentes() ->
     # fez exatamente o que devia — acusou a chegada da fatia seguinte.
     # As demais continuam ausentes, e o próprio isolamento da retenção
     # é provado em `test_retention_policy_isolation.py`.
+    #
+    # Atualizado de novo pela E4.9.7, pela MESMA razão e com o mesmo
+    # efeito: `ErasureTargetResolverPort` e `ErasureTargetDescriptor`
+    # saíram porque a E4.9.1 os autorizou e a E4.9.7 os materializou como
+    # contratos observacionais. `ErasureEffectPort` PERMANECE na lista —
+    # a E4.9.1 autorizou DUAS portas e exigiu que ficassem separadas, e a
+    # fronteira de efeito continua sem existir. `test_s09` do isolamento
+    # da E4.9.7 prova a mesma ausência do outro lado.
     ausentes = (
         "ErasureEffectPort",
-        "ErasureTargetResolverPort",
-        "ErasureTargetDescriptor",
         "DestructiveApprovalEnvelope",
         "ApprovalRecord",
     )

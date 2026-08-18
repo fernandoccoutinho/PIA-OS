@@ -22,6 +22,7 @@ from app.memory.ports.consolidation import (
     MultiInputTransformationPort,
     MultiInputTransformationReceiptPort,
 )
+from app.memory.ports.erasure_target import ErasureTargetResolverPort
 from app.memory.ports.isolation import (
     ContextValidationPort,
     DomainMembershipPort,
@@ -38,6 +39,7 @@ from app.memory.ports.retrieval import (
 __all__ = [
     "ContextValidationPort",
     "DomainMembershipPort",
+    "ErasureTargetResolverPort",
     "GovernanceResolutionPort",
     "IsolatedRetrievalPort",
     "MembershipView",
