@@ -427,3 +427,52 @@ PIA_8043_RETENTION_POLICY_IMMUTABLE = ErrorCode(
 Correção semântica cria versão nova. Vale aqui a mesma disciplina de
 `PIA-8028`, `PIA-8036` e `PIA-8041`.
 """
+
+PIA_8044_APPROVAL_RECORD_NOT_USABLE = ErrorCode(
+    code="PIA-8044",
+    default_message="approval_record_not_usable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""A aprovação não pôde ser consumida ou revogada (`E4.9.9.a`).
+
+Carrega um `ApprovalUsageRefusalReason` fechado: não encontrada, já
+consumida, revogada, expirada, binding divergente, linha inválida ou
+corrida concorrente perdida.
+
+```text
+BOOLEAN_OUTCOME = FORBIDDEN
+```
+
+`False` não distinguiria "expirada" de "binding divergente", e a segunda
+hipótese é sinal que ninguém deveria perder.
+"""
+
+PIA_8045_APPROVAL_RECORD_IMMUTABLE = ErrorCode(
+    code="PIA-8045",
+    default_message="approval_record_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de reescrever binding ou remover a trilha de aprovação
+(`E4.9.9.a`).
+
+Mesma disciplina de `PIA-8041` e `PIA-8043`: o registro admite **uma**
+transição de ciclo de vida e nada mais.
+"""
+
+PIA_8046_APPROVAL_RECORD_PERSISTED_ROW_INVALID = ErrorCode(
+    code="PIA-8046",
+    default_message="approval_record_persisted_row_invalid",
+    category=ErrorCategory.VALIDATION,
+    http_status=500,
+    severity=ErrorSeverity.ERROR,
+)
+"""Uma linha persistida não reconstrói contrato válido (`E4.9.9.a`).
+
+Falha **controlada e tipada**. A alternativa — devolver um objeto
+tolerante — transformaria linha corrompida em aprovação utilizável, que é
+exatamente o que a revalidação existe para impedir.
+"""

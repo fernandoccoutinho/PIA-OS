@@ -196,7 +196,9 @@ def test_s07_nenhuma_migration_nova() -> None:
     revisoes = {p.name.split("_")[0] for p in versoes.glob("*.py")}
     assert "c8a3f5017e94" in revisoes
     for arquivo in versoes.glob("*.py"):
-        if arquivo.name.startswith("c8a3f5017e94"):
+        # E4.9.9.a: `a1f7c2d40e93` é a sucessora AUTORIZADA do head
+        # anterior. A guarda continua provando que nenhuma OUTRA nasceu.
+        if arquivo.name.startswith(("c8a3f5017e94", "a1f7c2d40e93")):
             continue
         texto = arquivo.read_text(encoding="utf-8")
         assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
@@ -265,6 +267,15 @@ def test_s10_nenhum_consumidor_runtime_da_porta_apareceu() -> None:
         APP / "memory" / "schemas" / "__init__.py",
         # Consumidor AUTORIZADO pela E4.9.8.
         APP / "memory" / "schemas" / "destructive_approval.py",
+        # Consumidor AUTORIZADO pela E4.9.9.a: a persistência reconstrói
+        # `ControlScope`, `CustodyNamespace` e `ReferenceProvenance` pelos
+        # construtores públicos ao materializar do banco.
+        #
+        # A metade que importa continua intacta acima:
+        # `ErasureTargetResolverPort` segue com ZERO consumidores, e
+        # nenhum adaptador de resolução existe.
+        APP / "memory" / "repositories" / "approval_record_repository.py",
+        APP / "memory" / "models" / "approval_record.py",
     }
     consumidores_dos_vo = [
         str(p.relative_to(APP))
@@ -1222,10 +1233,13 @@ def test_s37_nenhuma_migration_orm_ou_repository_nesta_fatia() -> None:
     # segunda forma escapava da guarda da cadeia 88, que só comparava com
     # o head. Nenhuma revisão pode ter `c8a3f5017e94` como descendente, e
     # o head não pode deixar de ser folha.
+    # ATUALIZADO PELA E4.9.9.a: `a1f7c2d40e93` é a sucessora AUTORIZADA.
+    # A guarda continua provando que nenhuma OUTRA migration nasceu e que
+    # o head atual é folha — só o alvo do "nenhuma" mudou.
     filhos = [rev for rev, pai in grafo.items() if pai == "c8a3f5017e94"]
-    assert filhos == [], filhos
-    descendentes = {pai for pai in grafo.values() if pai}
-    assert "c8a3f5017e94" not in descendentes
+    assert filhos == ["a1f7c2d40e93"], filhos
+    netos = [rev for rev, pai in grafo.items() if pai == "a1f7c2d40e93"]
+    assert netos == [], netos
 
     for caminho in (
         APP / "memory" / "schemas" / "erasure_target.py",
@@ -1236,16 +1250,36 @@ def test_s37_nenhuma_migration_orm_ou_repository_nesta_fatia() -> None:
         assert presentes == set(), f"{caminho.name}: {presentes}"
 
 
-def test_s38_e4_9_9_a_nao_foi_iniciada() -> None:
-    """A E4.9.9.a permanece bloqueada até `PASS_FINAL` independente."""
+def test_s38_e4_9_9_b_c_d_nao_foram_iniciadas() -> None:
+    """As fatias b, c e d continuam sem símbolo, stub ou contrato.
+
+    RENOMEADA NA E4.9.9.a: enquanto a fatia `a` estava bloqueada, o nome
+    dizia o que a guarda media. Agora que ela foi autorizada e
+    implementada, manter o nome antigo faria a guarda prometer uma
+    ausência que deixou de existir.
+
+    ```text
+    GUARD_NAME != GUARD_MEASUREMENT  ->  renomear, não afrouxar
+    ```
+    """
+    # ATUALIZADO PELA E4.9.9.a: `ApprovalRecord`, o repositório e
+    # `consume_once` saíram porque a fatia os autorizou e materializou.
+    #
+    # As capacidades das fatias b, c e d PERMANECEM ausentes:
+    #
+    # ```text
+    # ErasureEffectPort            = ABSENT   (E4.9.9.b)
+    # ObservedAttemptResult        = ABSENT   (E4.9.9.b)
+    # RetentionEvaluator           = ABSENT   (E4.9.9.c)
+    # DestructiveExecutionService  = ABSENT   (E4.9.9.d)
+    # ```
     ausentes = (
-        "ApprovalRecord",
-        "ApprovalRecordRepository",
         "ErasureEffectPort",
+        "ObservedAttemptResult",
         "RetentionEvaluator",
         "DestructiveExecutionService",
+        "comparar_com_snapshot",
     )
-    ausentes = ausentes + ("consume_once",)
     infratores: list[str] = []
     for caminho in _fontes():
         fonte = caminho.read_text(encoding="utf-8")

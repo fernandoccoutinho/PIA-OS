@@ -419,3 +419,39 @@ PROTECTED_IS_AUTOMATIC_PERMISSION = FALSE
 A proteção pertence ao usuário: retirar proteção e excluir são decisões
 distintas, e o PIA não retira proteção como efeito colateral de uma proposta
 destrutiva.
+
+---
+
+## Atualização aditiva — E4.9.9.a (cadeia 90)
+
+```text
+APPROVAL_RECORD_PERSISTENCE   = IMPLEMENTED_CANDIDATE
+ATOMIC_SINGLE_USE_CONSUMPTION = IMPLEMENTED_CANDIDATE
+ATOMIC_REVOCATION             = IMPLEMENTED_CANDIDATE
+REPLAY_AFTER_RESTART          = BLOCKED_CANDIDATE
+APPROVAL_PERSISTENCE_TABLES   = 3
+```
+
+Continuam deferidos, e esta fatia **não** os toca:
+
+```text
+ERASURE_EFFECT_PORT           = NONE            (E4.9.9.b)
+OBSERVED_ATTEMPT_RESULT       = NONE            (E4.9.9.b)
+RETENTION_EVALUATOR           = NOT_COMPOSED    (E4.9.9.c)
+DESTRUCTIVE_ORCHESTRATOR      = NONE            (E4.9.9.d)
+FRESH_TARGET_RE_RESOLUTION    = NONE            (E4.9.9.d)
+ERASURE_RECORD_RUNTIME_WRITER = NOT_COMPOSED    (E4.9.9.d)
+AUTHENTICATOR / IdP / STEP_UP = NONE
+TRASH_RUNTIME / API / UI      = NONE
+```
+
+```text
+PERSISTED_APPROVAL != EXECUTION
+CONSUMED_APPROVAL  != OBSERVED_ERASURE_ATTEMPT
+EXPIRY_IS_DERIVED_NOT_STORED
+REVOCATION = DURABLE_STATE_TRANSITION, NEVER_ROW_REMOVAL
+```
+
+Limites declarados: o binding compara o que foi **persistido**, não o
+mundo — TOCTOU segue aberto até a E4.9.9.d; `IdentityEvidence` continua
+**representando** evidência externa, sem verificá-la.

@@ -713,7 +713,7 @@ def test_ii16_no_schema_orm_drift_and_single_head():
     # `retention_policies`, segunda fatia de runtime da E4.9. O head
     # continua ÚNICO — o que este guarda protege é a ausência de
     # branching, não a imobilidade.
-    assert tuple(heads) == ("c8a3f5017e94",), f"migration head: {heads}"
+    assert tuple(heads) == ("a1f7c2d40e93",), f"migration head: {heads}"
 
 
 def test_ii17_no_new_table_was_introduced():

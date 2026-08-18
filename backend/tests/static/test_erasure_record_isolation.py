@@ -40,6 +40,15 @@ NOVOS_MODULOS = {
 # `__init__` de models, que existe para que `Base.metadata` a registre.
 PERMITIDOS = {
     APP / "memory" / "models" / "erasure_record.py",
+    # E4.9.9.a: a aprovação persistente reutiliza `ErasureTargetClass`
+    # para classificar cada alvo do lote — mesma razão da entrada da
+    # E4.9.7 mais abaixo. Conhecer o vocabulário de classificação NÃO é
+    # conhecer a primitiva de recibo, e `test_approval_record_isolation`
+    # prova pelo outro lado que nada ali importa `ErasureRecord`,
+    # `ErasureRecordRepository` ou `append_observed`.
+    APP / "memory" / "models" / "approval_record.py",
+    APP / "memory" / "models" / "approval_lifecycle_enums.py",
+    APP / "memory" / "repositories" / "approval_record_repository.py",
     APP / "memory" / "models" / "erasure_enums.py",
     APP / "memory" / "schemas" / "erasure_record.py",
     APP / "memory" / "repositories" / "erasure_record_repository.py",
@@ -184,13 +193,25 @@ def test_s08_target_resolver_effect_approval_e_retention_continuam_ausentes() ->
     # Atualizado pela E4.9.8, pela mesma razão e com o mesmo efeito das
     # atualizações anteriores: `DestructiveApprovalEnvelope` saiu porque
     # a E4.9.8 o autorizou e materializou como contrato inerte.
-    # `ErasureEffectPort` e `ApprovalRecord` PERMANECEM — o efeito e a
-    # persistência de aprovação continuam sem existir, e
-    # `test_destructive_approval_isolation` prova as duas ausências pelo
-    # outro lado.
+    #
+    # ATUALIZADO PELA E4.9.9.a: `ApprovalRecord` saiu porque a fatia o
+    # autorizou e materializou como persistência inerte.
+    #
+    # `ErasureEffectPort` PERMANECE, e a lista GANHOU o executor e o
+    # writer — as três capacidades que continuam sem existir:
+    #
+    # ```text
+    # ErasureEffectPort        = ABSENT
+    # DESTRUCTIVE_EXECUTOR     = ABSENT
+    # ERASURE_RECORD_WRITER    = NOT_COMPOSED
+    # ```
+    #
+    # Persistir uma aprovação é o oposto de executá-la, e esta guarda
+    # continua sendo uma das provas disso.
     ausentes = (
         "ErasureEffectPort",
-        "ApprovalRecord",
+        "DestructiveExecutionService",
+        "ObservedAttemptResult",
     )
     encontrados: list[str] = []
     for arquivo in _fontes():

@@ -34,7 +34,11 @@ from app.memory.errors.codes import (
     PIA_8041_ERASURE_RECORD_IMMUTABLE,
     PIA_8042_RETENTION_POLICY_VERSION_EXISTS,
     PIA_8043_RETENTION_POLICY_IMMUTABLE,
+    PIA_8044_APPROVAL_RECORD_NOT_USABLE,
+    PIA_8045_APPROVAL_RECORD_IMMUTABLE,
+    PIA_8046_APPROVAL_RECORD_PERSISTED_ROW_INVALID,
 )
+from app.memory.models.approval_lifecycle_enums import ApprovalUsageRefusalReason
 
 
 class MemoryDomainNotFoundError(PIAOSException):
@@ -373,4 +377,81 @@ class RetentionPolicyImmutableError(PIAOSException):
                 "recusada; publique uma nova versão."
             ),
             detail={"policy_id": str(policy_id) if policy_id else None, "operation": operation},
+        )
+
+
+class ApprovalRecordNotUsableError(PIAOSException):
+    """A aprovação não pôde ser consumida ou revogada (`E4.9.9.a`).
+
+    ```text
+    BOOLEAN_OUTCOME = FORBIDDEN
+    ```
+
+    O motivo é um vocabulário fechado. Distinguir "expirada" de "binding
+    divergente" importa: a primeira é rotina, a segunda é sinal de que
+    alguém pediu consumo com um contexto que não corresponde ao aprovado.
+    """
+
+    error_code = PIA_8044_APPROVAL_RECORD_NOT_USABLE
+
+    def __init__(self, approval_id: uuid.UUID, reason: ApprovalUsageRefusalReason) -> None:
+        self.approval_id = approval_id
+        self.reason = reason
+        super().__init__(
+            message=(f"Aprovação {approval_id} não utilizável — motivo " f"'{reason.value}'."),
+            detail={"approval_id": str(approval_id), "reason": reason.value},
+        )
+
+
+class ApprovalRecordImmutableError(PIAOSException):
+    """Binding de aprovação não se reescreve e a trilha não se apaga
+    (`E4.9.9.a`).
+
+    ```text
+    APPROVAL_TRAIL_IS_PERMANENT
+    ```
+
+    A trigger no PostgreSQL recusa antes de chegar aqui, e é a única
+    camada que continua valendo em SQL bruto.
+    """
+
+    error_code = PIA_8045_APPROVAL_RECORD_IMMUTABLE
+
+    def __init__(self, approval_id: uuid.UUID | None, operation: str) -> None:
+        self.approval_id = approval_id
+        self.operation = operation
+        super().__init__(
+            message=(
+                f"ApprovalRecord {approval_id} é imutável — operação " f"'{operation}' recusada."
+            ),
+            detail={
+                "approval_id": str(approval_id) if approval_id else None,
+                "operation": operation,
+            },
+        )
+
+
+class ApprovalRecordPersistedRowInvalidError(PIAOSException):
+    """A linha persistida não reconstrói contrato válido (`E4.9.9.a`).
+
+    ```text
+    INVALID_ROW != USABLE_APPROVAL
+    ```
+
+    Falha controlada. Tolerar a linha produziria uma aprovação que os
+    construtores públicos jamais teriam aceitado.
+    """
+
+    error_code = PIA_8046_APPROVAL_RECORD_PERSISTED_ROW_INVALID
+
+    def __init__(self, approval_id: uuid.UUID, campo: str, causa: str) -> None:
+        self.approval_id = approval_id
+        self.campo = campo
+        self.causa = causa
+        super().__init__(
+            message=(
+                f"Linha persistida da aprovação {approval_id} é inválida no campo "
+                f"'{campo}': {causa}"
+            ),
+            detail={"approval_id": str(approval_id), "field": campo, "cause": causa},
         )

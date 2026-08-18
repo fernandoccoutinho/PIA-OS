@@ -686,7 +686,7 @@ def test_e342_pg22_migration_head_is_unchanged_and_single():
     # `retention_policies`, segunda fatia de runtime da E4.9. O head
     # continua ÚNICO — o que este guarda protege é a ausência de
     # branching, não a imobilidade.
-    assert tuple(heads) == ("c8a3f5017e94",), f"migration head mudou: {heads}"
+    assert tuple(heads) == ("a1f7c2d40e93",), f"migration head mudou: {heads}"
 
 
 # --- Guardas adicionais -------------------------------------------------

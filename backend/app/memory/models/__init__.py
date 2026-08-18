@@ -13,6 +13,16 @@ from app.memory.models.approval_enums import (
     InputChannel,
     VoiceReviewState,
 )
+from app.memory.models.approval_lifecycle_enums import (
+    ApprovalLifecycleState,
+    ApprovalUsageRefusalReason,
+    GovernanceItemKind,
+)
+from app.memory.models.approval_record import (
+    ApprovalRecord,
+    ApprovalRecordGovernanceItem,
+    ApprovalRecordTarget,
+)
 from app.memory.models.erasure_enums import ErasureOutcome, ErasureTargetClass
 from app.memory.models.erasure_record import ErasureRecord
 from app.memory.models.governance_policy import GovernancePolicy
@@ -33,6 +43,12 @@ __all__ = [
     "AccessibilityPolicy",
     "ErasureOutcome",
     "ErasureRecord",
+    "ApprovalLifecycleState",
+    "ApprovalUsageRefusalReason",
+    "GovernanceItemKind",
+    "ApprovalRecord",
+    "ApprovalRecordGovernanceItem",
+    "ApprovalRecordTarget",
     "ErasureTargetClass",
     "ApprovalBlockerKind",
     "AssuranceLevel",

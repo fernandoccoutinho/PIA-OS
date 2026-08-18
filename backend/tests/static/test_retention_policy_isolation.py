@@ -226,7 +226,9 @@ def test_s12_nenhuma_migration_nova() -> None:
     # Nenhuma revisão declara `c8a3f5017e94` como pai: ele é o head.
     for arquivo in versoes.glob("*.py"):
         texto = arquivo.read_text(encoding="utf-8")
-        if arquivo.name.startswith("c8a3f5017e94"):
+        # E4.9.9.a: `a1f7c2d40e93` é a sucessora AUTORIZADA do head
+        # anterior. A guarda continua provando que nenhuma OUTRA nasceu.
+        if arquivo.name.startswith(("c8a3f5017e94", "a1f7c2d40e93")):
             continue
         assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
 

@@ -576,7 +576,7 @@ def test_ri24_migration_head_is_unchanged_and_single():
     # `retention_policies`, segunda fatia de runtime da E4.9. O head
     # continua ÚNICO — o que este guarda protege é a ausência de
     # branching, não a imobilidade.
-    assert tuple(heads) == ("c8a3f5017e94",), f"migration head mudou: {heads}"
+    assert tuple(heads) == ("a1f7c2d40e93",), f"migration head mudou: {heads}"
 
 
 def test_ri25_no_new_memory_table_was_introduced():
@@ -605,6 +605,10 @@ def test_ri25_no_new_memory_table_was_introduced():
         "accessibility_policies",
         "erasure_records",
         "retention_policies",
+        # E4.9.9.a — três tabelas de aprovação persistente, autorizadas.
+        "approval_records",
+        "approval_record_targets",
+        "approval_record_governance_items",
     }, tabelas
 
 

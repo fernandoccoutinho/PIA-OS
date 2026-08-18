@@ -807,7 +807,7 @@ def test_ai20_migration_head_is_the_new_one_and_single():
     # `retention_policies`, segunda fatia de runtime da E4.9. O head
     # continua ÚNICO — o que este guarda protege é a ausência de
     # branching, não a imobilidade.
-    assert tuple(heads) == ("c8a3f5017e94",), f"migration head: {heads}"
+    assert tuple(heads) == ("a1f7c2d40e93",), f"migration head: {heads}"
 
 
 def test_ai21_no_new_column_on_cognitive_object():

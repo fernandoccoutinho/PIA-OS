@@ -68,6 +68,10 @@ _E4_TABLES = (
     "accessibility_policies",
     "erasure_records",
     "retention_policies",
+    # E4.9.9.a — três tabelas de aprovação persistente, autorizadas.
+    "approval_records",
+    "approval_record_targets",
+    "approval_record_governance_items",
     "governance_policies",
     "memory_domain_memberships",
     "memory_domains",

@@ -436,8 +436,12 @@ def test_i21_round_trip_da_migration():
     # Descer DUAS revisões é o que exercita de novo o round trip desta
     # tabela — e o teste continua provando o mesmo: a tabela some, a
     # função não fica órfã, e o reupgrade restaura tudo.
+    # ATUALIZADO PELA E4.9.9.a: o head passou a ser `a1f7c2d40e93`, e um
+    # `-N` relativo quebra a cada migration nova. O alvo passa a ser
+    # EXPLÍCITO — a revisão anterior a `erasure_records` —, que é o que o
+    # teste sempre quis dizer.
     migrations.upgrade("head")
-    migrations.downgrade("-2")
+    migrations.downgrade("7b2e4c9a15df")
 
     with engine.connect() as conn:
         assert conn.execute(sa.text("SELECT to_regclass('erasure_records')")).scalar() is None
@@ -459,8 +463,8 @@ def test_i21_round_trip_da_migration():
 
 def test_i22_single_head():
     # Atualizado pela E4.9.6 — head único, agora `c8a3f5017e94`.
-    assert migrations.head_revision() == "c8a3f5017e94"
-    assert migrations.current_revision() == "c8a3f5017e94"
+    assert migrations.head_revision() == "a1f7c2d40e93"
+    assert migrations.current_revision() == "a1f7c2d40e93"
 
 
 # --- Guardas do §15.3 ----------------------------------------------------

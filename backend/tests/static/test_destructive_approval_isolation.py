@@ -230,7 +230,9 @@ def test_s11_nenhuma_migration_nova() -> None:
     revisoes = {p.name.split("_")[0] for p in versoes.glob("*.py")}
     assert "c8a3f5017e94" in revisoes
     for arquivo in versoes.glob("*.py"):
-        if arquivo.name.startswith("c8a3f5017e94"):
+        # E4.9.9.a: `a1f7c2d40e93` é a sucessora AUTORIZADA do head
+        # anterior. A guarda continua provando que nenhuma OUTRA nasceu.
+        if arquivo.name.startswith(("c8a3f5017e94", "a1f7c2d40e93")):
             continue
         texto = arquivo.read_text(encoding="utf-8")
         assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
@@ -238,9 +240,19 @@ def test_s11_nenhuma_migration_nova() -> None:
 
 def test_s12_nenhum_consumidor_de_producao_fora_dos_exports() -> None:
     """Contrato sem consumidor é o estado correto desta fatia."""
+    # ATUALIZADO PELA E4.9.9.a: a persistência de aprovação é o primeiro
+    # consumidor AUTORIZADO destes contratos — foi para isso que a
+    # E4.9.8 os criou.
+    #
+    # O que a guarda continua provando, e é o que importa: nenhum
+    # consumidor DESTRUTIVO apareceu. `test_approval_record_isolation`
+    # prova pelo outro lado que a persistência não executa, não compõe
+    # writer de recibo e não conhece efeito.
     permitidos = set(CAMINHOS_NOVOS) | {
         APP / "memory" / "models" / "__init__.py",
         APP / "memory" / "schemas" / "__init__.py",
+        APP / "memory" / "models" / "approval_record.py",
+        APP / "memory" / "repositories" / "approval_record_repository.py",
     }
     infratores = [
         str(p.relative_to(APP))
