@@ -433,3 +433,91 @@ def test_s21_categorias_proibidas_sao_exatamente_as_autorizadas() -> None:
     from app.memory.schemas.retention import CATEGORIAS_UNICODE_PROIBIDAS
 
     assert set(CATEGORIAS_UNICODE_PROIBIDAS) == {"Cc", "Cf", "Zl", "Zp"}
+
+
+# ======================================================================
+# E4.9.6.3 — guardas de atribuição, forma JSON e supressões
+# ======================================================================
+
+
+def test_s22_a_reatribuicao_e_recusada_pelo_estado_do_mapeamento() -> None:
+    """`INITIALIZATION != REASSIGNMENT`, provado na AST.
+
+    Se alguém trocar a checagem por `"rules" in self.__dict__`, uma
+    instância expirada volta a aceitar substituição — o escape que a
+    auditoria da cadeia 78 mandou fechar.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "models" / "retention_policy.py").read_text(encoding="utf-8")
+    )
+    (validador,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "_validar_rules"
+    ]
+    executavel = [linha for linha in validador.body if not isinstance(linha, ast.Expr)]
+    corpo = "\n".join(ast.unparse(linha) for linha in executavel)
+    assert "has_identity" in corpo
+    assert "self.__dict__" not in corpo
+
+
+def test_s23_a_forma_do_json_e_validada_antes_da_conversao() -> None:
+    """`JSON ITERABLE != CANONICAL JSON ARRAY`.
+
+    `deserialize_rules` não pode voltar a converter direto: a forma dos
+    seis campos é verificada por `regra_de_json` antes de qualquer
+    `uuid.UUID()` ou construção de enum.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "models" / "retention_policy.py").read_text(encoding="utf-8")
+    )
+    (desserializa,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "deserialize_rules"
+    ]
+    corpo = ast.unparse(desserializa)
+    assert "regra_de_json" in corpo
+    assert "uuid.UUID" not in corpo
+    assert "RetentionScopeKind(" not in corpo
+
+
+def test_s24_nenhuma_supressao_de_typing_na_producao_da_retencao() -> None:
+    """A histórica do `JSONB()` continua sendo exatamente uma."""
+    marcador = "type:" + " ignore["
+    contagens = {
+        "schemas/retention.py": (APP / "memory" / "schemas" / "retention.py").read_text(
+            encoding="utf-8"
+        ),
+        "models/retention_policy.py": (APP / "memory" / "models" / "retention_policy.py").read_text(
+            encoding="utf-8"
+        ),
+        "repositories/retention_policy_repository.py": (
+            APP / "memory" / "repositories" / "retention_policy_repository.py"
+        ).read_text(encoding="utf-8"),
+    }
+    assert {nome: texto.count(marcador) for nome, texto in contagens.items()} == {
+        "schemas/retention.py": 0,
+        "models/retention_policy.py": 1,
+        "repositories/retention_policy_repository.py": 0,
+    }
+    for nome, texto in contagens.items():
+        assert "cast(" not in texto, nome
+
+
+def test_s25_o_corretivo_nao_trouxe_capability_nova() -> None:
+    """Reafirmação após a E4.9.6.3."""
+    for modulo in NOVOS_MODULOS:
+        caminho = APP.parent / (modulo.replace(".", "/") + ".py")
+        executavel = _executavel(caminho)
+        for termo in (
+            "ErasureRecordRepository",
+            "append_observed",
+            "evaluate",
+            "assess(",
+            "trash",
+            "purge",
+            "scheduler",
+            "datetime.now",
+        ):
+            assert termo not in executavel, f"{modulo}: {termo}"

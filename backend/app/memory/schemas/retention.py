@@ -66,6 +66,21 @@ marcas, pontuação, símbolos e o espaço comum (`Zs`). Acento e cedilha
 não são invisíveis e nunca foram o problema.
 """
 
+CAMPOS_JSON_OBRIGATORIOS = (
+    "rule_id",
+    "scope_kind",
+    "domain_ids",
+    "anchor",
+    "minimum_age_days",
+    "on_expiry_action",
+)
+"""Os seis campos do JSON canônico de uma regra (`E4.9.6.3`).
+
+Fixados aqui, junto do contrato tipado, e não dentro da desserialização:
+é a mesma lista que `RetentionPolicy.serialize_rules` escreve, e mantê-la
+em dois lugares é como as fronteiras divergem.
+"""
+
 
 def validar_identificador_opaco(nome: str, valor: object, tamanho: int) -> str:
     """Contrato único de identificador opaco (`E4.9.6.1`, endurecido em `E4.9.6.2`).
@@ -120,6 +135,92 @@ def _inteiro_real(nome: str, valor: object) -> int:
     if isinstance(valor, bool) or not isinstance(valor, int):
         raise TypeError(f"{nome} deve ser int, recebido {type(valor).__name__}")
     return valor
+
+
+def regra_de_json(indice: int, item: object) -> "RetentionRule":
+    """Contrato **estrutural** do JSON persistido, e a reconstrução (`E4.9.6.3`).
+
+    ```text
+    JSON ITERABLE != CANONICAL JSON ARRAY
+    ```
+
+    A E4.9.6.2 verificou que o item era `dict` e que as seis chaves
+    existiam, e passou a conversão direto ao construtor de
+    `RetentionRule`. Faltava o passo do meio: **a forma de cada campo**.
+    A auditoria da cadeia 78 mediu o custo — um `domain_ids` que fosse
+    objeto JSON era iterado por Python pelas **chaves**, cada chave
+    virava UUID e os valores sumiam em silêncio. JSON estruturalmente
+    inválido virava regra válida com significado diferente do gravado.
+
+    Duas camadas, nesta ordem: forma aqui, domínio no construtor de
+    `RetentionRule`, que continua sendo a autoridade final sobre
+    vocabulário fechado, `minimum_age_days >= 1` e a matriz de escopo.
+    Nenhuma substitui a outra.
+
+    Validar a forma antes de converter também é o que remove a
+    necessidade de `cast`: cada `isinstance` estreita o tipo para o
+    verificador, e o construtor recebe valores já tipados.
+    """
+    if not isinstance(item, dict):
+        raise ValueError(f"regra[{indice}] deve ser um objeto JSON, recebido {type(item).__name__}")
+
+    faltando = [chave for chave in CAMPOS_JSON_OBRIGATORIOS if chave not in item]
+    if faltando:
+        raise ValueError(f"regra[{indice}] não tem as chaves obrigatórias: {', '.join(faltando)}")
+
+    textos: dict[str, str] = {}
+    for campo in ("rule_id", "scope_kind", "anchor", "on_expiry_action"):
+        bruto = item[campo]
+        if not isinstance(bruto, str):
+            raise TypeError(
+                f"regra[{indice}].{campo} deve ser str, recebido {type(bruto).__name__}"
+            )
+        textos[campo] = bruto
+
+    idade = item["minimum_age_days"]
+    if isinstance(idade, bool) or not isinstance(idade, int):
+        raise TypeError(
+            f"regra[{indice}].minimum_age_days deve ser int, " f"recebido {type(idade).__name__}"
+        )
+
+    # `list` EXATA. `dict` é o caso reproduzido pela auditoria; `str`,
+    # `tuple` e `set` também são iteráveis e produziriam conversão
+    # plausível a partir de algo que o formato canônico nunca gravou.
+    dominios = item["domain_ids"]
+    if not isinstance(dominios, list):
+        raise TypeError(
+            f"regra[{indice}].domain_ids deve ser uma lista JSON, "
+            f"recebido {type(dominios).__name__}"
+        )
+    convertidos: list[uuid.UUID] = []
+    for posicao, bruto_id in enumerate(dominios):
+        if not isinstance(bruto_id, str):
+            raise TypeError(
+                f"regra[{indice}].domain_ids[{posicao}] deve ser str, "
+                f"recebido {type(bruto_id).__name__}"
+            )
+        try:
+            convertidos.append(uuid.UUID(bruto_id))
+        except ValueError as exc:
+            raise ValueError(
+                f"regra[{indice}].domain_ids[{posicao}] não é um UUID válido: " f"{bruto_id!r}"
+            ) from exc
+
+    try:
+        escopo = RetentionScopeKind(textos["scope_kind"])
+        ancora = RetentionAnchor(textos["anchor"])
+        acao = RetentionExpiryAction(textos["on_expiry_action"])
+    except ValueError as exc:
+        raise ValueError(f"regra[{indice}]: {exc}") from exc
+
+    return RetentionRule(
+        rule_id=textos["rule_id"],
+        scope_kind=escopo,
+        domain_ids=frozenset(convertidos),
+        anchor=ancora,
+        minimum_age_days=idade,
+        on_expiry_action=acao,
+    )
 
 
 @dataclass(frozen=True)

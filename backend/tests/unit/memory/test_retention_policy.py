@@ -10,6 +10,7 @@ RETENTION_POLICY_PERSISTENCE != RETENTION_EVALUATION
 """
 
 import uuid
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 
@@ -617,8 +618,14 @@ def test_u49_type_decorator_trata_nulo_e_forma_invalida():
 
     tipo = RetentionRulesType()
     dialeto = postgresql.dialect()
-    assert tipo.process_bind_param(None, dialeto) is None
-    assert tipo.process_result_value(None, dialeto) is None
+    # ATUALIZADO NA E4.9.6.3. Este teste congelava a passagem de `None`
+    # pelas duas fronteiras. A coluna é `nullable=False`, então `NULL`
+    # nunca é valor legítimo, e devolvê-lo daqui delegava a recusa ao
+    # banco: NOT NULL CONSTRAINT != DOMAIN BOUNDARY VALIDATION.
+    with pytest.raises(TypeError):
+        tipo.process_bind_param(None, dialeto)
+    with pytest.raises(ValueError, match="estado impossível"):
+        tipo.process_result_value(None, dialeto)
     with pytest.raises(ValueError, match="lista JSON"):
         tipo.process_result_value({"nao": "lista"}, dialeto)
 
@@ -648,6 +655,35 @@ def test_u50_type_decorator_usa_jsonb_no_postgres_e_json_nos_demais():
 # ======================================================================
 
 
+# As entradas inválidas abaixo são deliberadas, e a E4.9.6.3 removeu as
+# seis supressões que a cadeia 78 usara para expressá-las. Estes três
+# helpers passam pelo verificador sem silenciá-lo: uma chamada obtida por
+# `getattr` não tem assinatura conhecida, e `__setitem__` obtido por nome
+# continua sendo o método real — se `rules` voltar a ser lista de dicts,
+# ele existe e o teste falha, como deve.
+
+
+def _construir(alvo: Callable[..., object], **kwargs: object) -> object:
+    return alvo(**kwargs)
+
+
+def _chamar(alvo: object, metodo: str, **kwargs: object) -> object:
+    funcao: Callable[..., object] = getattr(alvo, metodo)
+    return funcao(**kwargs)
+
+
+def _atribuir_item(alvo: object, chave: object, valor: object) -> None:
+    metodo = getattr(alvo, "__setitem__", None)
+    if metodo is None:
+        raise TypeError(f"{type(alvo).__name__} não suporta atribuição por índice")
+    metodo(chave, valor)
+
+
+def _atribuir_campo(alvo: object, campo: str, valor: object) -> None:
+    """`setattr` com o nome em variável: sem supressão e sem reescrita do ruff."""
+    setattr(alvo, campo, valor)
+
+
 def _policy(**overrides: object) -> RetentionPolicy:
     base: dict[str, object] = {
         "policy_key": "ret.default",
@@ -656,7 +692,9 @@ def _policy(**overrides: object) -> RetentionPolicy:
         "rules": (regra(),),
     }
     base.update(overrides)
-    return RetentionPolicy(**base)  # type: ignore[arg-type]
+    construida = _construir(RetentionPolicy, **base)
+    assert isinstance(construida, RetentionPolicy)
+    return construida
 
 
 # --- Fronteira 1: construtor ORM direto ----------------------------------
@@ -724,20 +762,35 @@ def test_u56_atribuicao_invalida_preserva_o_valor_anterior(valor):
     assert isinstance(p.rules[0], RetentionRule)
 
 
-def test_u57_atribuicao_valida_substitui():
+def test_u57_reatribuicao_valida_tambem_e_recusada():
+    """INVERTIDO NA E4.9.6.3 — a versão da cadeia 78 congelava o defeito A4a.
+
+    ```text
+    VALID_TUPLE != AUTHORITY_TO_REWRITE_PUBLISHED_POLICY
+    ```
+
+    O teste anterior afirmava que uma segunda tupla válida substituía a
+    primeira. Isso contradizia o contrato que a própria E4.9.6.1
+    declarou: duas leituras na mesma sessão não podem divergir. Uma
+    correção semântica cria versão nova; não reescreve a publicada.
+    """
     p = _policy()
-    nova = (regra(rule_id="outra"),)
-    p.rules = nova
-    assert p.rules is nova
+    anterior = p.rules
+    with pytest.raises(ValueError, match="não pode ser reatribuída"):
+        p.rules = (regra(rule_id="outra"),)
+    assert p.rules is anterior
+    assert p.rules[0].rule_id == "ret-001"
 
 
 def test_u58_mutacao_aninhada_impossivel_pelo_construtor_direto():
     """O caminho exato da reprodução da auditoria da cadeia 77."""
     p = _policy()
     with pytest.raises(TypeError):
-        p.rules[0]["minimum_age_days"] = 0  # type: ignore[index]
+        _atribuir_item(p.rules[0], "minimum_age_days", 0)
     with pytest.raises(FrozenInstanceError):
-        p.rules[0].minimum_age_days = 0  # type: ignore[misc]
+        _atribuir_campo(p.rules[0], "minimum_age_days", 0)
+    with pytest.raises(TypeError):
+        _atribuir_item(p.rules, 0, regra(rule_id="outra"))
     assert p.rules[0].minimum_age_days == 30
 
 
@@ -867,7 +920,7 @@ def test_u66_invisiveis_unicode_recusados_nos_dois_campos(campo, invisivel):
     }
     base[campo] = f"x{invisivel}y"
     with pytest.raises(ValueError, match="caracteres de controle"):
-        _repo().add_policy(**base)  # type: ignore[arg-type]
+        _chamar(_repo(), "add_policy", **base)
 
 
 @pytest.mark.parametrize("invisivel", INVISIVEIS)
@@ -925,7 +978,7 @@ def test_u71_validador_de_regras_devolve_a_mesma_tupla_sem_reordenar():
 def test_u72_serialize_rules_delegou_ao_contrato_compartilhado():
     """Uma lista deixou de ser aceita — o contrato exige tupla."""
     with pytest.raises(TypeError):
-        RetentionPolicy.serialize_rules([regra()])  # type: ignore[arg-type]
+        _chamar(RetentionPolicy, "serialize_rules", rules=[regra()])
 
 
 def test_u73_codigos_de_erro_permanecem_inalterados():
@@ -933,3 +986,317 @@ def test_u73_codigos_de_erro_permanecem_inalterados():
     assert PIA_8043_RETENTION_POLICY_IMMUTABLE.code == "PIA-8043"
     assert RetentionPolicyVersionExistsError("k", 1).error_code.code == "PIA-8042"
     assert RetentionPolicyImmutableError(None, operation="update").error_code.code == "PIA-8043"
+
+
+# ======================================================================
+# E4.9.6.3 — fronteiras de atribuição e de result
+#
+# A4a e A4c FALHAM na cadeia 78, onde @validates só verificava a forma e
+# o bind deixava `None` passar. A4b idem: `domain_ids` como objeto JSON
+# era iterado pelas chaves e os valores sumiam.
+# ======================================================================
+
+
+# --- A4a: inicialização versus reatribuição -------------------------------
+
+
+def test_u74_inicializacao_permitida_reatribuicao_recusada():
+    """`INITIALIZATION != REASSIGNMENT`."""
+    p = _policy()
+    assert p.rules[0].rule_id == "ret-001"
+    with pytest.raises(ValueError, match="não pode ser reatribuída"):
+        p.rules = (regra(rule_id="segunda"),)
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        [{"rule_id": "r1"}],
+        "texto",
+        42,
+        None,
+        (),
+        ({"rule_id": "r1"},),
+        (regra(rule_id="a"), regra(rule_id="a")),
+        (regra(rule_id="valida"),),
+    ],
+)
+def test_u75_toda_reatribuicao_preserva_referencia_e_conteudo(valor):
+    """Válida ou inválida, a segunda atribuição não altera o observado."""
+    p = _policy()
+    anterior = p.rules
+    with pytest.raises((TypeError, ValueError)):
+        _atribuir_campo(p, "rules", valor)
+    assert p.rules is anterior
+    assert p.rules[0].rule_id == "ret-001"
+    assert p.rules[0].minimum_age_days == 30
+
+
+def test_u76_a_recusa_nao_depende_so_do_dict_da_instancia():
+    """Guarda contra o escape que o §11.5 do prompt manda evitar.
+
+    Numa instância expirada `rules` some do `__dict__`. Se a distinção
+    usasse só `"rules" in self.__dict__`, a reatribuição seguinte
+    passaria por primeira inicialização. O mecanismo tem de consultar o
+    estado do mapeamento, e este teste prova que consulta.
+    """
+    import ast
+    import pathlib
+
+    fonte = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "app"
+        / "memory"
+        / "models"
+        / "retention_policy.py"
+    ).read_text(encoding="utf-8")
+    arvore = ast.parse(fonte)
+    (validador,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "_validar_rules"
+    ]
+    # Sem a docstring, que EXPLICA por que não se usa `self.__dict__` e
+    # seria acusada por busca no texto bruto. É o quarto falso positivo
+    # desta forma no projeto (gv16 na E4.3.1, s02/s11 na E4.9.6, s15 na
+    # E4.9.6.1) e a solução do projeto é sempre a mesma: comparar o
+    # código EXECUTÁVEL.
+    executavel = [linha for linha in validador.body if not isinstance(linha, ast.Expr)]
+    corpo = "\n".join(ast.unparse(linha) for linha in executavel)
+    assert "inspect(self)" in corpo
+    assert "has_identity" in corpo
+    assert "self.__dict__" not in corpo
+
+
+# --- A4c: semântica de `None` --------------------------------------------
+
+
+def test_u77_bind_e_result_recusam_none_com_erro_controlado():
+    """`NOT NULL CONSTRAINT != DOMAIN BOUNDARY VALIDATION`."""
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(TypeError):
+        tipo.process_bind_param(None, dialeto)
+    with pytest.raises(ValueError, match="estado impossível"):
+        tipo.process_result_value(None, dialeto)
+
+
+def test_u78_o_bind_nao_tem_mais_atalho_antes_do_contrato():
+    """Prova estrutural: nenhum `return None` precoce no bind."""
+    import ast
+    import pathlib
+
+    fonte = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "app"
+        / "memory"
+        / "models"
+        / "retention_policy.py"
+    ).read_text(encoding="utf-8")
+    arvore = ast.parse(fonte)
+    (bind,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "process_bind_param"
+    ]
+    executavel = [linha for linha in bind.body if not isinstance(linha, ast.Expr)]
+    assert len(executavel) == 1
+    assert isinstance(executavel[0], ast.Return)
+
+
+# --- A4b: matriz estrutural do JSON persistido ----------------------------
+
+
+CANONICO: dict[str, object] = {
+    "rule_id": "r1",
+    "scope_kind": "all_local_patrimony",
+    "domain_ids": [],
+    "anchor": "created_at",
+    "minimum_age_days": 30,
+    "on_expiry_action": "assess_and_inform",
+}
+
+
+def _payload(**overrides: object) -> list[dict[str, object]]:
+    return [{**CANONICO, **overrides}]
+
+
+def test_u79_domain_ids_objeto_json_recusado():
+    """A reprodução exata do achado A4b.
+
+    ```text
+    JSON ITERABLE != CANONICAL JSON ARRAY
+    ```
+
+    Na cadeia 78 este payload virava `frozenset({UUID(...)})` a partir
+    das CHAVES do objeto, com os valores descartados em silêncio.
+    """
+    tipo, dialeto = _tipo_e_dialeto()
+    payload = _payload(
+        scope_kind="memory_domain_set",
+        domain_ids={str(D1): "valor ignorado"},
+    )
+    with pytest.raises(TypeError, match="lista JSON"):
+        tipo.process_result_value(payload, dialeto)
+
+
+@pytest.mark.parametrize("valor", ["nao e lista", 7, None, (str(D1),), {str(D1)}, True])
+def test_u80_domain_ids_de_forma_errada_recusado(valor):
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(TypeError, match="lista JSON"):
+        tipo.process_result_value(_payload(domain_ids=valor), dialeto)
+
+
+@pytest.mark.parametrize("elemento", [123, None, True, [], {}, ["x"]])
+def test_u81_elemento_de_domain_ids_nao_string_recusado(elemento):
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(TypeError, match=r"domain_ids\[0\]"):
+        tipo.process_result_value(
+            _payload(scope_kind="memory_domain_set", domain_ids=[elemento]), dialeto
+        )
+
+
+@pytest.mark.parametrize("texto", ["nao-uuid", "", "1234", str(D1)[:-1]])
+def test_u82_elemento_de_domain_ids_com_uuid_invalido_recusado(texto):
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(ValueError, match="não é um UUID válido"):
+        tipo.process_result_value(
+            _payload(scope_kind="memory_domain_set", domain_ids=[texto]), dialeto
+        )
+
+
+@pytest.mark.parametrize("campo", ["rule_id", "scope_kind", "anchor", "on_expiry_action"])
+@pytest.mark.parametrize("valor", [[], {}, 5, None, True, 1.5])
+def test_u83_campos_de_texto_com_forma_errada_recusados(campo, valor):
+    """Inclui `rule_id=[]`, que na cadeia 78 dava `unhashable type: 'list'`."""
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(TypeError, match=f"{campo} deve ser str"):
+        tipo.process_result_value(_payload(**{campo: valor}), dialeto)
+
+
+@pytest.mark.parametrize("valor", [True, False, "30", 30.0, None, [], {}])
+def test_u84_minimum_age_days_com_forma_errada_recusado(valor):
+    """`bool` é subclasse de `int` e continua proibido."""
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(TypeError, match="minimum_age_days deve ser int"):
+        tipo.process_result_value(_payload(minimum_age_days=valor), dialeto)
+
+
+def test_u85_rule_id_e_validado_antes_da_checagem_de_duplicidade():
+    """Ordem importa: forma primeiro, duplicidade depois."""
+    tipo, dialeto = _tipo_e_dialeto()
+    payload = [{**CANONICO, "rule_id": []}, {**CANONICO, "rule_id": []}]
+    with pytest.raises(TypeError, match="rule_id deve ser str"):
+        tipo.process_result_value(payload, dialeto)
+
+
+def test_u86_duplicidade_continua_recusada_apos_a_validacao_de_forma():
+    tipo, dialeto = _tipo_e_dialeto()
+    payload = [{**CANONICO, "rule_id": "a"}, {**CANONICO, "rule_id": "a"}]
+    with pytest.raises(ValueError, match="duplicado"):
+        tipo.process_result_value(payload, dialeto)
+
+
+def test_u87_o_construtor_permanece_autoridade_do_dominio():
+    """Forma válida, domínio inválido — quem recusa é `RetentionRule`."""
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(ValueError, match="minimum_age_days deve ser >= 1"):
+        tipo.process_result_value(_payload(minimum_age_days=0), dialeto)
+    with pytest.raises(ValueError, match="ALL_LOCAL_PATRIMONY não aceita"):
+        tipo.process_result_value(_payload(domain_ids=[str(D1)]), dialeto)
+    with pytest.raises(ValueError, match="MEMORY_DOMAIN_SET exige"):
+        tipo.process_result_value(_payload(scope_kind="memory_domain_set"), dialeto)
+
+
+@pytest.mark.parametrize("campo", ["scope_kind", "anchor", "on_expiry_action"])
+def test_u88_valor_fora_do_vocabulario_fechado_recusado(campo):
+    """`rule_id` fica de fora: é opaco, não pertence a vocabulário fechado."""
+    tipo, dialeto = _tipo_e_dialeto()
+    with pytest.raises(ValueError):
+        tipo.process_result_value(_payload(**{campo: "inexistente"}), dialeto)
+
+
+def test_u89_nenhum_erro_incidental_na_matriz_invalida():
+    """Nada de `KeyError`, `AttributeError` ou `unhashable`."""
+    tipo, dialeto = _tipo_e_dialeto()
+    invalidos: list[object] = [
+        "x",
+        42,
+        None,
+        [],
+        {},
+        {**CANONICO, "rule_id": []},
+        {**CANONICO, "domain_ids": {str(D1): "v"}},
+        {**CANONICO, "minimum_age_days": True},
+        {k: v for k, v in CANONICO.items() if k != "anchor"},
+    ]
+    for item in invalidos:
+        with pytest.raises((TypeError, ValueError)) as capturado:
+            tipo.process_result_value([item], dialeto)
+        assert not isinstance(capturado.value, KeyError | AttributeError)
+
+
+def test_u90_payload_canonico_da_cadeia_78_continua_legivel():
+    """Compatibilidade do que já está gravado."""
+    tipo, dialeto = _tipo_e_dialeto()
+    originais = (
+        regra(rule_id="b"),
+        regra(
+            rule_id="a",
+            scope_kind=RetentionScopeKind.MEMORY_DOMAIN_SET,
+            domain_ids={D1, D2},
+        ),
+    )
+    canonico = RetentionPolicy.serialize_rules(originais)
+    voltou = tipo.process_result_value(canonico, dialeto)
+    assert voltou is not None
+    assert set(voltou) == set(originais)
+    assert tipo.process_bind_param(voltou, dialeto) == canonico
+
+
+def test_u91_regra_de_json_e_o_contrato_compartilhado():
+    from app.memory.schemas.retention import CAMPOS_JSON_OBRIGATORIOS, regra_de_json
+
+    assert set(CAMPOS_JSON_OBRIGATORIOS) == set(CANONICO)
+    reconstruida = regra_de_json(0, dict(CANONICO))
+    assert isinstance(reconstruida, RetentionRule)
+    assert reconstruida.rule_id == "r1"
+
+
+# --- A3a/A3b/A3c da cadeia 78 continuam fechados -------------------------
+
+
+def test_u92_as_fronteiras_da_cadeia_78_permanecem_fechadas():
+    from app.memory.schemas.retention import validar_identificador_opaco
+
+    p = _policy()
+    assert isinstance(p.rules, tuple)
+    assert isinstance(p.rules[0], RetentionRule)
+    assert p.typed_rules is p.rules
+    for invisivel in ("\u0085", "\u200b", "\u2028", "\u2029", "\u202e"):
+        with pytest.raises(ValueError):
+            validar_identificador_opaco("policy_key", f"x{invisivel}y", 256)
+    assert validar_identificador_opaco("policy_key", "ação", 256) == "ação"
+
+
+def test_u93_nenhuma_supressao_de_typing_nova_nos_testes():
+    """O §7 do prompt: as seis supressões da cadeia 78 saíram."""
+    import pathlib
+
+    testes = pathlib.Path(__file__).resolve().parents[2]
+    # Montado em pedaços para que a própria guarda não se conte.
+    marcador = "type:" + " ignore["
+    encontradas = {
+        arquivo.name: arquivo.read_text(encoding="utf-8").count(marcador)
+        for arquivo in (
+            testes / "unit" / "memory" / "test_retention_policy.py",
+            testes / "integration" / "memory" / "test_retention_policy_integration.py",
+            testes / "static" / "test_retention_policy_isolation.py",
+        )
+    }
+    # Exatamente as contagens da cadeia 77, medidas: a 78 acrescentara
+    # cinco no unitário e uma na integração, e a 79 as removeu.
+    assert encontradas == {
+        "test_retention_policy.py": 11,
+        "test_retention_policy_integration.py": 8,
+        "test_retention_policy_isolation.py": 0,
+    }

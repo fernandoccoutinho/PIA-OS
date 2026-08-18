@@ -36,13 +36,25 @@ Nenhum avaliador foi composto; nada consulta esta tabela para agir.
 
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Integer, String, UniqueConstraint, event
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Integer,
+    String,
+    UniqueConstraint,
+    event,
+    inspect,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine.interfaces import Dialect
 from sqlalchemy.orm import Mapped, mapped_column, validates
 from sqlalchemy.types import JSON, TypeDecorator, TypeEngine
 
-from app.memory.schemas.retention import RetentionRule, validar_regras_retencao
+from app.memory.schemas.retention import (
+    RetentionRule,
+    regra_de_json,
+    validar_regras_retencao,
+)
 from app.models.base_model import BaseModel
 
 
@@ -118,18 +130,24 @@ class RetentionRulesType(TypeDecorator[tuple["RetentionRule", ...]]):
     ) -> list[dict[str, Any]] | None:
         """Regras tipadas → JSON canônico, na ida para o disco.
 
-        `None` atravessa como `NULL` SQL, que a coluna `NOT NULL`
-        recusa no banco — a recusa de `None` como *valor de atributo*
-        acontece antes, no `@validates`.
+        **`None` é recusado** desde a E4.9.6.3. A coluna é
+        `nullable=False`, então `NULL` nunca é um valor legítimo desta
+        coluna, e devolver `None` daqui delegava a recusa ao banco:
 
-        Qualquer outra entrada passa pelo contrato compartilhado, que
-        levanta `TypeError`/`ValueError`. Antes da E4.9.6.2 um
-        `list[dict]` chegava aqui e morria com `AttributeError: 'dict'
-        object has no attribute 'rule_id'` — erro incidental, vindo do
-        acesso a atributo dentro da serialização, não do contrato.
+        ```text
+        NOT NULL CONSTRAINT != DOMAIN BOUNDARY VALIDATION
+        ```
+
+        A E4.9.6.2 afirmou que atribuição, bind e leitura defensiva
+        usavam o mesmo contrato. Com o atalho de `None` isso não era
+        literalmente verdade, e a auditoria da cadeia 78 apontou o
+        bypass. Agora é: toda entrada passa por
+        `validar_regras_retencao`.
+
+        O tipo de retorno mantém `| None` porque é a assinatura que o
+        `TypeDecorator` declara; o valor `None` simplesmente não é
+        alcançável por este corpo.
         """
-        if value is None:
-            return None
         return RetentionPolicy.serialize_rules(validar_regras_retencao("rules", value))
 
     def process_result_value(
@@ -137,13 +155,21 @@ class RetentionRulesType(TypeDecorator[tuple["RetentionRule", ...]]):
     ) -> "tuple[RetentionRule, ...] | None":
         """JSON → regras tipadas, na volta do disco.
 
+        **`None` é recusado** desde a E4.9.6.3, pela mesma razão do
+        bind: a coluna é `nullable=False`, logo `NULL` na volta é
+        estado impossível, não valor. Aceitá-lo em silêncio produziria
+        uma policy publicada sem regra alguma, que é exatamente o que
+        `rules` sem `default` existe para impedir.
+
         Reconstrói **pelo construtor**, que reaplica todos os
-        invariantes. Uma linha gravada por SQL bruto com JSON
-        semanticamente inválido falha aqui, na leitura — limite já
-        declarado pela E4.9.6 e inalterado por este corretivo.
+        invariantes de domínio, depois de `validar_forma_json_regra`
+        ter verificado a forma de cada campo.
         """
         if value is None:
-            return None
+            raise ValueError(
+                "coluna `rules` é NOT NULL — NULL na leitura é estado impossível, "
+                "não uma policy sem regras"
+            )
         if not isinstance(value, list):
             raise ValueError("coluna `rules` deve conter uma lista JSON de regras")
         return RetentionPolicy.deserialize_rules(value)
@@ -277,65 +303,30 @@ class RetentionPolicy(BaseModel):
     def deserialize_rules(payload: list[dict[str, Any]]) -> "tuple[RetentionRule, ...]":
         """Reconstrói regras tipadas a partir do JSON.
 
-        Reconstrói **pelo construtor**, que reaplica todos os
-        invariantes. Um valor fora do vocabulário fechado levanta erro
-        em vez de virar regra silenciosamente inerte — que seria o pior
-        desfecho: uma policy que parece reter e não retém.
+        Delega item a item para `regra_de_json`, que valida a **forma**
+        dos seis campos antes de converter e só então chama o construtor
+        de `RetentionRule`, autoridade final do **domínio**.
+
+        A duplicidade é checada **depois** da forma. Na cadeia 78 um
+        `rule_id` de tipo errado chegava primeiro a este `set` e
+        produzia `unhashable type: 'list'` — erro incidental da
+        estrutura de dados, não do contrato.
         """
-        import uuid as _uuid
-
-        from app.memory.models.retention_enums import (
-            RetentionAnchor,
-            RetentionExpiryAction,
-            RetentionScopeKind,
-        )
-
         if not payload:
             raise ValueError("payload de regras vazio — versão inválida")
 
-        # Erro CONTROLADO para linha malformada. Até a E4.9.6.1 um item
-        # sem as chaves esperadas morria em `KeyError`, e um item que não
-        # fosse dicionário morria no próprio `[]` — erros incidentais,
-        # vindos do acesso, não do contrato.
-        obrigatorias = (
-            "rule_id",
-            "scope_kind",
-            "domain_ids",
-            "anchor",
-            "minimum_age_days",
-            "on_expiry_action",
-        )
-        for indice, item in enumerate(payload):
-            if not isinstance(item, dict):
-                raise ValueError(
-                    f"regra[{indice}] deve ser um objeto JSON, recebido " f"{type(item).__name__}"
-                )
-            faltando = [chave for chave in obrigatorias if chave not in item]
-            if faltando:
-                raise ValueError(
-                    f"regra[{indice}] não tem as chaves obrigatórias: " f"{', '.join(faltando)}"
-                )
+        regras = tuple(regra_de_json(indice, item) for indice, item in enumerate(payload))
 
         vistos: set[str] = set()
-        for item in payload:
-            if item["rule_id"] in vistos:
+        for regra in regras:
+            if regra.rule_id in vistos:
                 raise ValueError(
-                    f"rule_id duplicado na mesma versão: '{item['rule_id']}' — "
+                    f"rule_id duplicado na mesma versão: '{regra.rule_id}' — "
                     "duplicata torna o fundamento da avaliação ambíguo"
                 )
-            vistos.add(item["rule_id"])
+            vistos.add(regra.rule_id)
 
-        return tuple(
-            RetentionRule(
-                rule_id=item["rule_id"],
-                scope_kind=RetentionScopeKind(item["scope_kind"]),
-                domain_ids=frozenset(_uuid.UUID(d) for d in item["domain_ids"]),
-                anchor=RetentionAnchor(item["anchor"]),
-                minimum_age_days=item["minimum_age_days"],
-                on_expiry_action=RetentionExpiryAction(item["on_expiry_action"]),
-            )
-            for item in payload
-        )
+        return regras
 
     @validates("rules")
     def _validar_rules(self, key: str, value: object) -> "tuple[RetentionRule, ...]":
@@ -357,7 +348,37 @@ class RetentionPolicy(BaseModel):
 
         Como levanta antes de escrever, uma atribuição inválida deixa o
         valor anterior intacto: recusar não é o mesmo que corromper.
+
+        **E4.9.6.3 — `INITIALIZATION != REASSIGNMENT`.** A cadeia 78
+        validava só a forma e devolvia qualquer tupla válida, inclusive
+        na segunda atribuição. O mapper impedia o `UPDATE`, mas um
+        consumidor na mesma `UnitOfWork` observaria uma regra que o
+        banco não tem — exatamente a classe de risco que motivou a
+        E4.9.6.1.
+
+        ```text
+        VALID_TUPLE != AUTHORITY_TO_REWRITE_PUBLISHED_POLICY
+        ```
+
+        A distinção usa o **estado do mapeamento**, não `"rules" in
+        self.__dict__` sozinho: numa instância expirada o `__dict__`
+        não tem a chave, e confiar só nele trataria a reatribuição
+        seguinte como primeira inicialização — o escape que o §11.5 do
+        prompt manda evitar. `has_identity` é verdadeiro para
+        persistente e para expirada, então as duas recusam; e é falso
+        para transiente, onde `estado.dict` distingue a primeira
+        atribuição das seguintes.
+
+        Carregamento e `refresh` continuam funcionando porque não
+        passam por evento de atributo.
         """
+        estado = inspect(self)
+        if estado.has_identity or key in estado.dict:
+            raise ValueError(
+                "rules não pode ser reatribuída — uma versão de RetentionPolicy é "
+                "imutável, e corrigir semântica cria versão nova "
+                "(INITIALIZATION != REASSIGNMENT)"
+            )
         return validar_regras_retencao(key, value)
 
     @property

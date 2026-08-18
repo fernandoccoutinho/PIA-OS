@@ -8,6 +8,7 @@ round trip da migration sem tocar `erasure_records`.
 
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -51,6 +52,21 @@ def _clean():
 def _truncate() -> None:
     with engine.begin() as conn:
         conn.execute(sa.text("TRUNCATE retention_policies CASCADE"))
+
+
+def _chamar(alvo: object, metodo: str, **kwargs: object) -> object:
+    """Chamada dinâmica para entradas deliberadamente inválidas (`E4.9.6.3`).
+
+    Uma função obtida por `getattr` não tem assinatura conhecida, então o
+    argumento inválido é expresso sem `# type: ignore`.
+    """
+    funcao: Callable[..., object] = getattr(alvo, metodo)
+    return funcao(**kwargs)
+
+
+def _atribuir_campo(alvo: object, campo: str, valor: object) -> None:
+    """`setattr` com o nome em variável: sem supressão e sem reescrita do ruff."""
+    setattr(alvo, campo, valor)
 
 
 def regra(**overrides: object) -> RetentionRule:
@@ -624,15 +640,23 @@ def test_i32_os_sete_metodos_herdados_devolvem_a_forma_tipada():
 
 
 def test_i33_nova_sessao_observa_os_bytes_originais_apos_tentativa_de_mutacao():
-    """A tentativa é recusada em memória e nada muda no disco."""
+    """A tentativa é recusada em memória e nada muda no disco.
+
+    Atualizado pela E4.9.6.3: numa instância **carregada** a recusa
+    agora é de autoridade, não de forma. `has_identity` é verdadeiro,
+    então qualquer reatribuição para — inclusive uma tupla válida — e o
+    erro é `ValueError`, não mais o `TypeError` de forma.
+    """
     _publicar(policy_key="ret.imutavel")
 
     with UnitOfWork() as uow:
         lida = RetentionPolicyRepository(uow.session).get_version("ret.imutavel", 1)
         assert lida is not None
         antes = lida.rules
-        with pytest.raises(TypeError):
-            lida.rules = [{"rule_id": "r1"}]
+        with pytest.raises(ValueError, match="não pode ser reatribuída"):
+            _atribuir_campo(lida, "rules", [{"rule_id": "r1"}])
+        with pytest.raises(ValueError, match="não pode ser reatribuída"):
+            lida.rules = (regra(rule_id="outra"),)
         assert lida.rules is antes
 
     with engine.connect() as conn:
@@ -664,11 +688,13 @@ def test_i34_duas_leituras_na_mesma_sessao_nao_divergem():
 def test_i35_publicacao_com_representacao_nao_tipada_e_recusada_antes_do_banco():
     """Nada chega ao INSERT — a recusa é de contrato, não da constraint."""
     with pytest.raises(TypeError), UnitOfWork() as uow:
-        RetentionPolicyRepository(uow.session).add_policy(
+        _chamar(
+            RetentionPolicyRepository(uow.session),
+            "add_policy",
             policy_key="ret.naotipada",
             version=1,
             governance_policy_key="gov.default",
-            rules=[{"rule_id": "r1"}],  # type: ignore[arg-type]
+            rules=[{"rule_id": "r1"}],
         )
 
     with engine.connect() as conn:
@@ -759,3 +785,174 @@ def test_i39_schema_e_migration_head_identicos_a_cadeia_77():
 def test_i40_erasure_records_permanece_intacta():
     with engine.connect() as conn:
         assert conn.execute(sa.text("SELECT to_regclass('erasure_records')")).scalar() is not None
+
+
+# ======================================================================
+# E4.9.6.3 — fronteiras de atribuição e de result, contra PostgreSQL real
+# ======================================================================
+
+
+def test_i41_reatribuicao_valida_recusada_em_instancia_persistida():
+    """`VALID_TUPLE != AUTHORITY_TO_REWRITE_PUBLISHED_POLICY`."""
+    _publicar(policy_key="ret.reatrib")
+
+    with UnitOfWork() as uow:
+        lida = RetentionPolicyRepository(uow.session).get_version("ret.reatrib", 1)
+        assert lida is not None
+        anterior = lida.rules
+        with pytest.raises(ValueError, match="não pode ser reatribuída"):
+            lida.rules = (regra(rule_id="nova"),)
+        assert lida.rules is anterior
+        assert lida.rules[0].rule_id == "ret-001"
+
+
+def test_i42_instancia_expirada_nao_abre_escape_de_reatribuicao():
+    """O escape que o §11.5 do prompt manda evitar.
+
+    Depois de `expire()`, `rules` some do `__dict__`. Um mecanismo que
+    olhasse só o `__dict__` trataria a próxima atribuição como primeira
+    inicialização e aceitaria a substituição.
+    """
+    _publicar(policy_key="ret.expirada")
+
+    with UnitOfWork() as uow:
+        repo = RetentionPolicyRepository(uow.session)
+        lida = repo.get_version("ret.expirada", 1)
+        assert lida is not None
+
+        uow.session.expire(lida)
+        assert "rules" not in lida.__dict__
+
+        with pytest.raises(ValueError, match="não pode ser reatribuída"):
+            lida.rules = (regra(rule_id="nova"),)
+
+        # A leitura seguinte recarrega do banco e traz o valor original.
+        assert lida.rules[0].rule_id == "ret-001"
+        assert isinstance(lida.rules, tuple)
+
+
+def test_i43_refresh_e_carregamento_continuam_funcionais():
+    """A recusa é do evento de atributo; o loading não passa por ele."""
+    _publicar(policy_key="ret.refresh")
+
+    with UnitOfWork() as uow:
+        repo = RetentionPolicyRepository(uow.session)
+        lida = repo.get_version("ret.refresh", 1)
+        assert lida is not None
+        uow.session.refresh(lida)
+        assert isinstance(lida.rules, tuple)
+        assert isinstance(lida.rules[0], RetentionRule)
+        assert lida.rules[0].rule_id == "ret-001"
+
+
+def test_i44_duas_leituras_na_mesma_sessao_veem_o_valor_persistido():
+    _publicar(policy_key="ret.duasleituras")
+
+    with UnitOfWork() as uow:
+        repo = RetentionPolicyRepository(uow.session)
+        primeira = repo.get_version("ret.duasleituras", 1)
+        assert primeira is not None
+        with pytest.raises(ValueError):
+            primeira.rules = (regra(rule_id="nova"),)
+        segunda = repo.get_version("ret.duasleituras", 1)
+        assert segunda is not None
+        assert primeira.rules == segunda.rules
+        assert segunda.rules[0].rule_id == "ret-001"
+
+
+def test_i45_domain_ids_objeto_gravado_por_sql_bruto_recusado_na_carga():
+    """A reprodução do A4b, do disco para dentro.
+
+    ```text
+    JSON ITERABLE != CANONICAL JSON ARRAY
+    ```
+    """
+    import json
+
+    payload = [
+        {
+            "rule_id": "r1",
+            "scope_kind": "memory_domain_set",
+            "domain_ids": {str(D1): "valor ignorado"},
+            "anchor": "created_at",
+            "minimum_age_days": 30,
+            "on_expiry_action": "assess_and_inform",
+        }
+    ]
+    with engine.begin() as conn:
+        _insert_raw(conn, policy_key="ret.objeto", rules=json.dumps(payload))
+
+    with pytest.raises(TypeError, match="lista JSON"), UnitOfWork() as uow:
+        RetentionPolicyRepository(uow.session).get_version("ret.objeto", 1)
+
+
+@pytest.mark.parametrize(
+    ("nome", "regra_json"),
+    [
+        ("rule_id_lista", {"rule_id": []}),
+        ("idade_bool", {"minimum_age_days": True}),
+        ("dominio_nao_uuid", {"scope_kind": "memory_domain_set", "domain_ids": ["x"]}),
+        ("dominio_string", {"domain_ids": "nao"}),
+    ],
+)
+def test_i46_forma_invalida_gravada_por_sql_bruto_recusada_na_carga(nome, regra_json):
+    """Erro sempre de contrato — nunca `KeyError` nem `unhashable`."""
+    import json
+
+    canonico = {
+        "rule_id": "r1",
+        "scope_kind": "all_local_patrimony",
+        "domain_ids": [],
+        "anchor": "created_at",
+        "minimum_age_days": 30,
+        "on_expiry_action": "assess_and_inform",
+    }
+    with engine.begin() as conn:
+        _insert_raw(conn, policy_key=f"ret.{nome}", rules=json.dumps([{**canonico, **regra_json}]))
+
+    with pytest.raises((TypeError, ValueError)) as capturado, UnitOfWork() as uow:
+        RetentionPolicyRepository(uow.session).get_version(f"ret.{nome}", 1)
+    assert not isinstance(capturado.value, KeyError | AttributeError)
+
+
+def test_i47_nova_sessao_ve_os_bytes_originais_apos_tentativa_de_reatribuicao():
+    _publicar(policy_key="ret.bytes")
+
+    with UnitOfWork() as uow:
+        lida = RetentionPolicyRepository(uow.session).get_version("ret.bytes", 1)
+        assert lida is not None
+        with pytest.raises(ValueError):
+            lida.rules = (regra(rule_id="nova"),)
+
+    with engine.connect() as conn:
+        bruto = conn.execute(
+            sa.text("SELECT rules FROM retention_policies WHERE policy_key = 'ret.bytes'")
+        ).scalar_one()
+    assert bruto == RetentionPolicy.serialize_rules((regra(),))
+
+
+def test_i48_trigger_colisao_e_schema_permanecem_inalterados():
+    _publicar(policy_key="ret.inalterado")
+
+    with pytest.raises(RetentionPolicyVersionExistsError):
+        _publicar(policy_key="ret.inalterado")
+
+    with pytest.raises(sa.exc.DatabaseError) as atualizado, engine.begin() as conn:
+        conn.execute(
+            sa.text("UPDATE retention_policies SET version = 9 WHERE policy_key = 'ret.inalterado'")
+        )
+    assert "append-only" in str(atualizado.value)
+
+    with engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one() == (
+            "c8a3f5017e94"
+        )
+        assert (
+            conn.execute(
+                sa.text(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name = 'retention_policies' AND column_name = 'rules'"
+                )
+            ).scalar_one()
+            == "jsonb"
+        )
