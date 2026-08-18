@@ -18,12 +18,16 @@ from datetime import UTC, datetime
 import pytest
 
 from app.memory.models.erasure_enums import ErasureTargetClass
-from app.memory.models.target_resolution_enums import TargetResolutionRefusalReason
+from app.memory.models.target_resolution_enums import (
+    RefusalDimension,
+    TargetResolutionRefusalReason,
+)
 from app.memory.ports.erasure_target import ErasureTargetResolverPort
 from app.memory.schemas.erasure_target import (
     CLASSES_DE_CONTEUDO,
     LOCALIZADOR_OCULTO,
     MAX_OPAQUE_LENGTH,
+    METACARACTERES_DE_EXPANSAO,
     NOMES_DE_CAMPO_PROIBIDOS,
     ControlScope,
     CustodyNamespace,
@@ -32,6 +36,7 @@ from app.memory.schemas.erasure_target import (
     TargetResolutionRefusal,
     TargetResolutionResult,
     VerifiedDeletionCapability,
+    validar_localizador_exato,
     validar_texto_opaco,
 )
 
@@ -377,9 +382,19 @@ def test_u23_o_localizador_continua_acessivel_ao_titular_do_objeto():
 
 
 def test_u24_recusa_nao_carrega_localizador():
-    r = recusa(diagnostic="referência não resolvida por adaptador autorizado")
+    """ATUALIZADO NA E4.9.7.1 — `diagnostic` de texto livre foi removido.
+
+    A versão da cadeia 80 passava um diagnóstico benigno e concluía que
+    a recusa não vazava. A auditoria passou o localizador e o campo o
+    aceitou, com a representação padrão revelando-o. Agora não há campo
+    de texto livre onde ele pudesse caber.
+    """
+    r = recusa(observed_dimension=RefusalDimension.REFERENCE)
     assert LOCALIZADOR not in repr(r)
-    assert "transient_locator" not in {campo for campo in vars(r)}
+    assert LOCALIZADOR not in str(r)
+    campos = set(vars(r))
+    assert "transient_locator" not in campos
+    assert "diagnostic" not in campos
 
 
 def test_u25_nenhum_campo_de_credencial_nos_contratos():
@@ -461,14 +476,52 @@ class _ResolvedorObservacional:
         self.chamadas_externas = 0
         self.resolucoes = 0
 
+    CUSTODIA_CANONICA = ("pia-storage", "workspace/w1")
+
     def resolve_target(self, reference: ErasureTargetReference) -> TargetResolutionResult:
         self.resolucoes += 1
-        if reference.control_scope.workspace_id != W1:
-            return TargetResolutionRefusal(
-                reason=TargetResolutionRefusalReason.CONTROL_SCOPE_MISMATCH,
-                subject_coid=reference.subject_coid,
-                origin=reference.origin,
-            )
+
+        # ATUALIZADO NA E4.9.7.1. A versão da cadeia 80 comparava APENAS
+        # `workspace_id`, e o EDR afirmava fechamento de cross-tenant e de
+        # divergências de contexto mais amplas. A auditoria mediu: tenant,
+        # principal, provedor e namespace divergentes devolviam descritor
+        # de SUCESSO. Cada dimensão agora tem recusa própria, e cada uma
+        # tem teste comportamental independente.
+        escopo_divergente = {
+            RefusalDimension.WORKSPACE: reference.control_scope.workspace_id != W1,
+            RefusalDimension.TENANT: reference.control_scope.tenant_id != T1,
+            RefusalDimension.CONTROL_PRINCIPAL: (
+                reference.control_scope.control_principal_ref != "principal:controle-1"
+            ),
+        }
+        for dimensao, divergiu in escopo_divergente.items():
+            if divergiu:
+                return TargetResolutionRefusal(
+                    reason=TargetResolutionRefusalReason.CONTROL_SCOPE_MISMATCH,
+                    subject_coid=reference.subject_coid,
+                    origin=reference.origin,
+                    observed_dimension=dimensao,
+                )
+
+        # `expected_namespace=None` continua legítimo: a maior parte das
+        # referências da E3 não diz onde o conteúdo vive. Ausência NÃO
+        # fabrica correspondência — apenas não há o que comparar.
+        esperado = reference.expected_namespace
+        if esperado is not None:
+            provedor, namespace = self.CUSTODIA_CANONICA
+            divergencia = {
+                RefusalDimension.PROVIDER: esperado.provider != provedor,
+                RefusalDimension.NAMESPACE: esperado.namespace != namespace,
+            }
+            for dimensao, divergiu in divergencia.items():
+                if divergiu:
+                    return TargetResolutionRefusal(
+                        reason=(TargetResolutionRefusalReason.PROVIDER_NAMESPACE_OUT_OF_SCOPE),
+                        subject_coid=reference.subject_coid,
+                        origin=reference.origin,
+                        observed_dimension=dimensao,
+                    )
+
         return descritor(subject_coid=reference.subject_coid, origin=reference.origin)
 
 
@@ -585,3 +638,284 @@ def test_u44_recusa_exige_uuid_no_subject_coid(valor):
 def test_u45_recusa_exige_classificacao_tipada_ou_none(valor):
     with pytest.raises(TypeError, match="ErasureTargetClass"):
         recusa(classified_as=valor)
+
+
+# ======================================================================
+# E4.9.7.1 — alvo exato, isolamento contextual e confidencialidade
+#
+# As oito evidências da auditoria da cadeia 80 viram regressão aqui.
+# A1: um campo escalar não prova cardinalidade — a string cabia `*`.
+# A2: o dublê comparava só workspace, e o EDR afirmava mais.
+# A3: `repr` redigido não torna o objeto livre de segredo.
+# ======================================================================
+
+
+# --- A1: alvo exato ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "s3://bucket/*",
+        "s3://bucket/prefixo/*",
+        "s3://bucket/[a-z].txt",
+        "s3://bucket/{a,b}.txt",
+        "pia://workspace/w1/*",
+        "*",
+    ],
+)
+def test_u46_localizador_com_expansao_recusado(locator):
+    """`FIELD_COUNT = 1 DOES_NOT_PROVE TARGET_CARDINALITY = 1`."""
+    with pytest.raises(ValueError, match="exatamente um alvo"):
+        descritor(transient_locator=locator)
+
+
+def test_u47_glob_de_um_caractere_recusado():
+    """`?` designa um caractere qualquer — e também abre query."""
+    with pytest.raises(ValueError, match="query nem fragmento"):
+        descritor(transient_locator="s3://bucket/fi?e.txt")
+
+
+@pytest.mark.parametrize("locator", ["s3://bucket/prefixo/", "pia://workspace/w1/", "s3://bucket/"])
+def test_u48_prefixo_terminado_em_barra_recusado(locator):
+    """Prefixo designa coleção, não objeto."""
+    with pytest.raises(ValueError, match="coleção"):
+        descritor(transient_locator=locator)
+
+
+def test_u49_metacaracteres_sao_neutros_de_provedor():
+    """Nenhum deles é sintaxe de um storage específico."""
+    assert set(METACARACTERES_DE_EXPANSAO) == {"*", "[", "]", "{", "}"}
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "s3://bucket-privado/objeto-abc123",
+        "pia://workspace/w1/artefato-1",
+        "gs://outro/objeto.bin",
+        "arquivo,com,virgula.txt",
+    ],
+)
+def test_u50_localizador_exato_aceito_sem_normalizacao(locator):
+    devolvido = validar_localizador_exato("transient_locator", locator)
+    assert devolvido is locator
+    assert devolvido.encode("utf-8") == locator.encode("utf-8")
+
+
+def test_u51_localizador_com_unicode_portugues_preservado():
+    locator = "s3://bucket/ação/produção-São_Paulo.txt"
+    assert validar_localizador_exato("transient_locator", locator) is locator
+    assert descritor(transient_locator=locator).transient_locator == locator
+
+
+def test_u52_a_capacidade_ainda_pode_expressar_escopo_amplo():
+    """Distinção que o corretivo NÃO pode apagar.
+
+    `capability.scope` descreve o que a conta **pode** — legitimamente
+    um conjunto, como `workspace/w1/*`. O localizador descreve **um
+    objeto**. Aplicar a mesma regra aos dois confundiria autoridade com
+    alvo, que é o oposto do contrato.
+    """
+    d = descritor(capability=capacidade(scope="workspace/w1/*"))
+    assert d.capability.scope == "workspace/w1/*"
+    assert "*" not in d.transient_locator
+
+
+# --- A3a: segredo no localizador ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "https://user:password@storage.example/object",
+        "https://u:p@host/obj",
+        "https://apenas-usuario@host/obj",
+        "s3://AKIAEXEMPLO:chave@bucket/objeto",
+    ],
+)
+def test_u53_userinfo_recusado_como_credencial_embutida(locator):
+    """`REDACTED_REPR != SECRET_FREE_OBJECT`."""
+    with pytest.raises(ValueError, match="credencial"):
+        descritor(transient_locator=locator)
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "https://storage.example/object?token=secret",
+        "https://storage.example/object?signature=abc",
+        "https://storage.example/object?api_key=x&expires=1",
+        "https://storage.example/object?credential=y",
+        "https://storage.example/object#signature=abc",
+        "s3://bucket/objeto?versionId=1",
+    ],
+)
+def test_u54_query_e_fragmento_recusados(locator):
+    """Parâmetro de capacidade não pertence ao localizador.
+
+    A recusa é **estrutural** — toda query cai, não apenas as que
+    contêm palavras conhecidas. É mais forte que vocabulário e não
+    depende de adivinhar o nome do parâmetro de cada provedor. Versão
+    tem campo próprio: `version_etag`.
+    """
+    with pytest.raises(ValueError, match="query nem fragmento"):
+        descritor(transient_locator=locator)
+
+
+def test_u55_a_url_assinada_do_reprodutor_e_recusada():
+    """O caso exato medido pela auditoria da cadeia 80."""
+    with pytest.raises(ValueError):
+        descritor(
+            transient_locator=(
+                "https://user:password@storage.example/object" "?token=secret&signature=abc"
+            )
+        )
+
+
+def test_u56_versao_continua_tendo_campo_proprio():
+    """Se a versão tem onde ir, o localizador não precisa de query."""
+    d = descritor(version_etag='W/"v2"')
+    assert d.version_etag == 'W/"v2"'
+    assert "?" not in d.transient_locator
+
+
+# --- A3b: diagnóstico -----------------------------------------------------
+
+
+def test_u57_diagnostico_de_texto_livre_nao_existe_mais():
+    """`SAFE_DIAGNOSTIC != FREE_TEXT`.
+
+    Na cadeia 80 este construtor aceitava o localizador. Agora o campo
+    não existe, então não há onde ele caber.
+    """
+    with pytest.raises(TypeError):
+        _construir(
+            TargetResolutionRefusal,
+            reason=TargetResolutionRefusalReason.UNRESOLVED_OPAQUE_REFERENCE,
+            subject_coid=S1,
+            origin="payload_ref",
+            diagnostic=LOCALIZADOR,
+        )
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        LOCALIZADOR,
+        "https://user:password@storage.example/object?token=secret",
+        "token=abc",
+        "workspace",
+    ],
+)
+def test_u58_contexto_seguro_nao_aceita_texto(valor):
+    """Vocabulário fechado: nem o localizador, nem sequer o nome certo."""
+    with pytest.raises(TypeError, match="RefusalDimension"):
+        recusa(observed_dimension=valor)
+
+
+def test_u59_dimensoes_de_recusa_sao_fechadas_e_sem_generico():
+    assert [d.value for d in RefusalDimension] == [
+        "workspace",
+        "tenant",
+        "control_principal",
+        "provider",
+        "namespace",
+        "reference",
+        "capability",
+        "resolution_freshness",
+    ]
+    for proibido in ("UNKNOWN", "OTHER", "GENERIC", "FREE_TEXT", "DETAIL"):
+        assert proibido not in RefusalDimension.__members__
+
+
+@pytest.mark.parametrize("dimensao", list(RefusalDimension))
+def test_u60_nenhuma_forma_de_recusa_revela_localizador(dimensao):
+    r = recusa(observed_dimension=dimensao)
+    assert LOCALIZADOR not in repr(r)
+    assert LOCALIZADOR not in str(r)
+
+
+@pytest.mark.parametrize("motivo", list(TargetResolutionRefusalReason))
+def test_u61_repr_de_toda_recusa_e_seguro(motivo):
+    r = recusa(reason=motivo, classified_as=ErasureTargetClass.COGNITIVE_METADATA_RECORD)
+    for proibido in (LOCALIZADOR, "password", "token", "secret"):
+        assert proibido not in repr(r)
+        assert proibido not in str(r)
+
+
+# --- A2: isolamento contextual, dimensão por dimensão --------------------
+
+
+def test_u62_workspace_divergente_recusado():
+    porta: ErasureTargetResolverPort = _ResolvedorObservacional()
+    r = porta.resolve_target(referencia(control_scope=escopo(workspace_id=uuid.uuid4())))
+    assert isinstance(r, TargetResolutionRefusal)
+    assert r.reason is TargetResolutionRefusalReason.CONTROL_SCOPE_MISMATCH
+    assert r.observed_dimension is RefusalDimension.WORKSPACE
+
+
+def test_u63_tenant_divergente_recusado():
+    """Na cadeia 80 este caso devolvia descritor de SUCESSO."""
+    porta: ErasureTargetResolverPort = _ResolvedorObservacional()
+    r = porta.resolve_target(referencia(control_scope=escopo(tenant_id=uuid.uuid4())))
+    assert isinstance(r, TargetResolutionRefusal)
+    assert r.reason is TargetResolutionRefusalReason.CONTROL_SCOPE_MISMATCH
+    assert r.observed_dimension is RefusalDimension.TENANT
+
+
+def test_u64_principal_de_controle_divergente_recusado():
+    porta: ErasureTargetResolverPort = _ResolvedorObservacional()
+    r = porta.resolve_target(
+        referencia(control_scope=escopo(control_principal_ref="principal:outro"))
+    )
+    assert isinstance(r, TargetResolutionRefusal)
+    assert r.reason is TargetResolutionRefusalReason.CONTROL_SCOPE_MISMATCH
+    assert r.observed_dimension is RefusalDimension.CONTROL_PRINCIPAL
+
+
+def test_u65_provedor_divergente_recusado():
+    porta: ErasureTargetResolverPort = _ResolvedorObservacional()
+    r = porta.resolve_target(referencia(expected_namespace=custodia(provider="outro")))
+    assert isinstance(r, TargetResolutionRefusal)
+    assert r.reason is TargetResolutionRefusalReason.PROVIDER_NAMESPACE_OUT_OF_SCOPE
+    assert r.observed_dimension is RefusalDimension.PROVIDER
+
+
+def test_u66_namespace_divergente_recusado():
+    porta: ErasureTargetResolverPort = _ResolvedorObservacional()
+    r = porta.resolve_target(referencia(expected_namespace=custodia(namespace="workspace/outro")))
+    assert isinstance(r, TargetResolutionRefusal)
+    assert r.reason is TargetResolutionRefusalReason.PROVIDER_NAMESPACE_OUT_OF_SCOPE
+    assert r.observed_dimension is RefusalDimension.NAMESPACE
+
+
+def test_u67_namespace_ausente_e_legitimo_e_nao_fabrica_correspondencia():
+    """`expected_namespace=None` continua válido — não há o que comparar."""
+    porta: ErasureTargetResolverPort = _ResolvedorObservacional()
+    assert referencia().expected_namespace is None
+    assert isinstance(porta.resolve_target(referencia()), ErasureTargetDescriptor)
+
+
+def test_u68_namespace_coincidente_resolve():
+    porta: ErasureTargetResolverPort = _ResolvedorObservacional()
+    r = porta.resolve_target(
+        referencia(expected_namespace=custodia(provider="pia-storage", namespace="workspace/w1"))
+    )
+    assert isinstance(r, ErasureTargetDescriptor)
+
+
+def test_u69_isolamento_continua_sem_escrita_nem_chamada_externa():
+    """As recusas novas não introduziram efeito colateral."""
+    dubl = _ResolvedorObservacional()
+    porta: ErasureTargetResolverPort = dubl
+    for referencia_divergente in (
+        referencia(control_scope=escopo(workspace_id=uuid.uuid4())),
+        referencia(control_scope=escopo(tenant_id=uuid.uuid4())),
+        referencia(expected_namespace=custodia(provider="outro")),
+        referencia(),
+    ):
+        porta.resolve_target(referencia_divergente)
+    assert dubl.resolucoes == 4
+    assert dubl.escritas == 0
+    assert dubl.chamadas_externas == 0

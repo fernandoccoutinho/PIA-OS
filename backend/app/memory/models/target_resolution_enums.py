@@ -95,3 +95,39 @@ class TargetResolutionRefusalReason(StrEnum):
     janela real entre resolução e efeito. O contrato existe para que a
     recusa seja obrigatória quando houver.
     """
+
+
+class RefusalDimension(StrEnum):
+    """Qual dimensão do contexto divergiu, quando a recusa observou uma.
+
+    ```text
+    SAFE_DIAGNOSTIC != FREE_TEXT
+    ```
+
+    Acrescentado pela `E4.9.7.1`. A cadeia 80 tinha um campo
+    `diagnostic: str | None` validado apenas como texto opaco — e a
+    auditoria mediu o resultado: ele **aceitava o próprio localizador**, e
+    a representação padrão da dataclass o revelava.
+
+    Redigir a representação não teria resolvido, porque o valor proibido
+    já estaria dentro do objeto. A correção é estrutural: o contexto
+    seguro passa a ser um vocabulário **fechado** que nomeia a dimensão
+    observada, e por construção não tem onde transportar localizador,
+    segredo ou conteúdo.
+
+    ```text
+    REDACTED_REPR != SECRET_FREE_OBJECT
+    ```
+
+    Não existe membro genérico. Uma dimensão nova exige EDR, como em todo
+    vocabulário fechado deste projeto.
+    """
+
+    WORKSPACE = "workspace"
+    TENANT = "tenant"
+    CONTROL_PRINCIPAL = "control_principal"
+    PROVIDER = "provider"
+    NAMESPACE = "namespace"
+    REFERENCE = "reference"
+    CAPABILITY = "capability"
+    RESOLUTION_FRESHNESS = "resolution_freshness"

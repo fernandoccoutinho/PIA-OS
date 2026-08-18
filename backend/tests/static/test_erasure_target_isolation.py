@@ -120,10 +120,17 @@ def test_s03_nenhum_efeito_destrutivo_nem_escritor_de_recibo() -> None:
 
 
 def test_s04_nenhum_storage_conector_ou_cliente_externo() -> None:
+    # ATUALIZADA NA E4.9.7.1, deliberadamente. A versão da cadeia 80
+    # proibia `urllib` inteiro — grosso demais, pela mesma razão que
+    # proibir `unicodedata` inteiro foi grosso demais na E4.9.6.2:
+    # `urllib.parse.urlsplit` é decomposição de string, sem rede. O que
+    # não pode aparecer é o que ABRE CONEXÃO.
     proibidos = (
         "requests",
         "httpx",
-        "urllib",
+        "urllib.request",
+        "urlopen",
+        "urlretrieve",
         "boto3",
         "aiohttp",
         "socket",
@@ -317,3 +324,151 @@ def test_s16_enums_e_policies_anteriores_intocados() -> None:
 
     retention = (APP / "memory" / "schemas" / "retention.py").read_text(encoding="utf-8")
     assert "ErasureTarget" not in retention
+
+
+# ======================================================================
+# E4.9.7.1 — guardas do corretivo de alvo exato e confidencialidade
+# ======================================================================
+
+
+def test_s17_o_localizador_de_sucesso_passa_pelo_validador_exato() -> None:
+    """`FIELD_COUNT = 1 DOES_NOT_PROVE TARGET_CARDINALITY = 1`.
+
+    Se alguém devolver `transient_locator` ao validador de texto opaco
+    genérico, wildcard e URL assinada voltam a entrar. A guarda prova na
+    AST qual função é chamada para aquele campo.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
+    )
+    (classe,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.ClassDef) and no.name == "ErasureTargetDescriptor"
+    ]
+    chamadas = [
+        no
+        for no in ast.walk(classe)
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Name)
+        and no.args
+        and isinstance(no.args[0], ast.Constant)
+        and no.args[0].value == "transient_locator"
+    ]
+    assert [no.func.id for no in chamadas if isinstance(no.func, ast.Name)] == [
+        "validar_localizador_exato"
+    ]
+
+
+def test_s18_a_verificacao_de_alvo_exato_e_estrutural() -> None:
+    """Não é lista de substrings apresentada como segurança.
+
+    O validador decompõe a URL e recusa por estrutura — userinfo, query,
+    fragmento, metacaractere e barra final. Se alguém trocar isso por uma
+    lista de palavras proibidas, esta guarda cai.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
+    )
+    (validador,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "validar_localizador_exato"
+    ]
+    executavel = [linha for linha in validador.body if not isinstance(linha, ast.Expr)]
+    corpo = "\n".join(ast.unparse(linha) for linha in executavel)
+    assert "urlsplit" in corpo
+    assert "username" in corpo
+    assert "password" in corpo
+    assert "METACARACTERES_DE_EXPANSAO" in corpo
+    # Devolve o valor recebido, sem normalizar.
+    for proibido in ("normalize", "casefold", "lower()", "upper()", "replace("):
+        assert proibido not in corpo, proibido
+
+
+def test_s19_a_recusa_nao_tem_campo_de_texto_livre() -> None:
+    """`SAFE_DIAGNOSTIC != FREE_TEXT`.
+
+    Um campo `str` livre na recusa é onde o localizador coube na cadeia
+    80. `origin` continua sendo `str` porque é a referência que motivou
+    a tentativa, e não contexto de diagnóstico.
+    """
+    import dataclasses
+
+    from app.memory.models.target_resolution_enums import RefusalDimension
+    from app.memory.schemas.erasure_target import TargetResolutionRefusal
+
+    campos = {campo.name: campo.type for campo in dataclasses.fields(TargetResolutionRefusal)}
+    assert "diagnostic" not in campos
+    assert "observed_dimension" in campos
+    assert campos["observed_dimension"] == (RefusalDimension | None)
+    assert len(RefusalDimension) == 8
+
+    # Nenhum outro campo pode ser texto livre de diagnóstico. `origin` é
+    # `str` porque é a referência que motivou a tentativa — dado do
+    # pedido, não contexto que o resolvedor compõe.
+    de_texto = {nome for nome, tipo in campos.items() if tipo is str}
+    assert de_texto == {"origin"}
+
+
+def test_s20_nenhum_bool_declarativo_de_exatidao() -> None:
+    """Exatidão é verificada, não declarada pelo chamador.
+
+    Um `exact=True` que qualquer chamador pudesse afirmar seria o mesmo
+    defeito com outro nome — o §2.1 do prompt proíbe explicitamente.
+    """
+    import dataclasses
+
+    from app.memory.schemas.erasure_target import ErasureTargetDescriptor
+
+    nomes = {campo.name for campo in dataclasses.fields(ErasureTargetDescriptor)}
+    for proibido in ("exact", "is_exact", "exato", "single_target", "verified_exact"):
+        assert proibido not in nomes, proibido
+
+
+def test_s21_o_dubl_observacional_verifica_todas_as_dimensoes() -> None:
+    """A prova comportamental do §11.3, que a cadeia 80 não tinha.
+
+    O dublê vive nos testes, mas a auditoria mediu justamente que ele
+    comparava só `workspace_id` enquanto o EDR afirmava mais. Esta guarda
+    fixa as cinco dimensões na AST do dublê.
+    """
+    testes = pathlib.Path(__file__).resolve().parents[1]
+    arvore = ast.parse(
+        (testes / "unit" / "memory" / "test_erasure_target.py").read_text(encoding="utf-8")
+    )
+    (metodo,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "resolve_target"
+    ]
+    corpo = ast.unparse(metodo)
+    for dimensao in (
+        "WORKSPACE",
+        "TENANT",
+        "CONTROL_PRINCIPAL",
+        "PROVIDER",
+        "NAMESPACE",
+    ):
+        assert f"RefusalDimension.{dimensao}" in corpo, dimensao
+
+
+def test_s22_o_corretivo_nao_criou_capability_nova() -> None:
+    """Reafirmação após a E4.9.7.1 — o escopo continua fechado."""
+    proibidos = (
+        "ErasureRecordRepository",
+        "append_observed",
+        "ErasureEffectPort",
+        "evaluate",
+        "assess(",
+        "trash",
+        "purge",
+        "scheduler",
+        "requests",
+        "httpx",
+        "boto3",
+    )
+    for caminho in CAMINHOS_NOVOS:
+        executavel = _executavel(caminho)
+        for termo in proibidos:
+            assert termo not in executavel, f"{caminho.name}: {termo}"

@@ -50,9 +50,13 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from app.memory.models.erasure_enums import ErasureTargetClass
-from app.memory.models.target_resolution_enums import TargetResolutionRefusalReason
+from app.memory.models.target_resolution_enums import (
+    RefusalDimension,
+    TargetResolutionRefusalReason,
+)
 
 MAX_OPAQUE_LENGTH = 512
 """Teto das strings opacas, alinhado às colunas de referência da E3.
@@ -173,6 +177,82 @@ def validar_instante_ciente(nome: str, valor: object) -> datetime:
     if valor.tzinfo is None or valor.tzinfo.utcoffset(valor) is None:
         raise ValueError(f"{nome} deve ser timezone-aware")
     return valor
+
+
+METACARACTERES_DE_EXPANSAO = ("*", "[", "]", "{", "}")
+"""Metacaracteres que exprimem coleção, classe ou expansão de padrão.
+
+Neutros de provedor: nenhum deles é sintaxe de um storage específico, e
+todos são universalmente usados para designar **mais de um** objeto.
+"""
+
+
+def validar_localizador_exato(nome: str, valor: object) -> str:
+    """O localizador designa **um** alvo material, e só (`E4.9.7.1`).
+
+    ```text
+    ONE_DESCRIPTOR = ONE_EXACT_TARGET
+    FIELD_COUNT = 1 DOES_NOT_PROVE TARGET_CARDINALITY = 1
+    ```
+
+    A cadeia 80 provava cardinalidade inspecionando **nomes de campo
+    plurais**, e a auditoria mostrou por que isso não prova nada: uma
+    única string cabe `s3://bucket/*`. Um campo escalar contendo um
+    padrão continua designando um conjunto.
+
+    A verificação é **estrutural**, não uma lista de substrings
+    apresentada como segurança:
+
+    1. `userinfo` (`//usuário:senha@`) — credencial embutida;
+    2. query ou fragmento — o localizador não transporta parâmetro de
+       capacidade; versão pertence a `version_etag`, que já existe como
+       campo próprio, e credencial pertence ao adaptador;
+    3. metacaracteres de expansão e `?` — designam mais de um objeto;
+    4. barra final — prefixo é coleção, não objeto.
+
+    O valor aceito é devolvido **byte a byte**: nada é normalizado,
+    reescrito ou canonicalizado. Recusar não é corrigir.
+
+    ### Limites declarados
+
+    - Um localizador cujo nome legítimo contenha `[`, `{` ou `?` é
+      recusado. É recusa conservadora deliberada: aceitar por engano
+      designa alvo errado; recusar por engano só exige que o adaptador
+      forneça outra forma de endereçar o mesmo objeto.
+    - Segredo escondido **no caminho** — uma chave pré-assinada embutida
+      como segmento — não é detectável por estrutura, e nenhuma lista de
+      palavras o detectaria de forma confiável. Fica declarado como
+      limite, não coberto por checagem que falharia em silêncio.
+    - Vírgula não é recusada: é comum em nome legítimo de objeto, e
+      recusá-la trocaria uma proteção real por ruído.
+    """
+    texto = validar_texto_opaco(nome, valor)
+
+    partes = urlsplit(texto)
+    if partes.username or partes.password:
+        raise ValueError(
+            f"{nome} não pode embutir credencial — usuário e senha em URL são "
+            "material de autenticação, e autenticação pertence ao adaptador, "
+            "nunca a um value object que circula"
+        )
+    if "?" in texto or "#" in texto:
+        raise ValueError(
+            f"{nome} não pode conter query nem fragmento — parâmetro de "
+            "capacidade não pertence ao localizador (versão vai em "
+            "version_etag), e `?` também designaria um caractere qualquer"
+        )
+    for metacaractere in METACARACTERES_DE_EXPANSAO:
+        if metacaractere in texto:
+            raise ValueError(
+                f"{nome} não pode conter '{metacaractere}' — um descritor de "
+                "sucesso representa exatamente um alvo, e expansão de padrão "
+                "designa mais de um"
+            )
+    if texto.endswith("/"):
+        raise ValueError(
+            f"{nome} não pode terminar em '/' — prefixo designa uma coleção, " "não um objeto"
+        )
+    return texto
 
 
 @dataclass(frozen=True)
@@ -365,7 +445,7 @@ class ErasureTargetDescriptor:
             )
         validar_instante_ciente("resolved_at", self.resolved_at)
         validar_texto_opaco("origin", self.origin)
-        validar_texto_opaco("transient_locator", self.transient_locator)
+        validar_localizador_exato("transient_locator", self.transient_locator)
         if self.version_etag is not None:
             validar_texto_opaco("version_etag", self.version_etag)
 
@@ -406,6 +486,26 @@ class TargetResolutionRefusal:
     `classified_as` preserva a classificação quando ela foi possível —
     saber que o alvo é metadado é informação útil, e perdê-la faria toda
     recusa parecer a mesma.
+
+    ### Mudança pública da E4.9.7.1
+
+    O campo `diagnostic: str | None` da cadeia 80 **foi removido**. Ele
+    era validado apenas como texto opaco, e a auditoria mediu o
+    resultado: aceitava o próprio localizador, e a representação padrão
+    da dataclass o revelava.
+
+    ```text
+    SAFE_DIAGNOSTIC != FREE_TEXT
+    REDACTED_REPR   != SECRET_FREE_OBJECT
+    ```
+
+    Redigir a representação não teria bastado, porque o valor proibido
+    já estaria **dentro** do objeto. O contexto seguro passou a ser
+    `observed_dimension`, um vocabulário fechado que nomeia a dimensão
+    divergente e não tem onde transportar localizador, segredo ou
+    conteúdo. Manter a assinatura antiga só para preservar
+    compatibilidade seria manter uma API que a auditoria demonstrou
+    insegura.
     """
 
     reason: TargetResolutionRefusalReason
@@ -413,8 +513,11 @@ class TargetResolutionRefusal:
     origin: str
     classified_as: ErasureTargetClass | None = None
     """Classe observada, quando a resolução chegou a classificar."""
-    diagnostic: str | None = None
-    """Contexto seguro para o chamador. **Nunca** o localizador."""
+    observed_dimension: RefusalDimension | None = None
+    """Qual dimensão do contexto divergiu, quando a recusa observou uma.
+
+    Vocabulário **fechado**. Substitui o texto livre da cadeia 80.
+    """
 
     def __post_init__(self) -> None:
         if not isinstance(self.reason, TargetResolutionRefusalReason):
@@ -428,8 +531,10 @@ class TargetResolutionRefusal:
             self.classified_as, ErasureTargetClass
         ):
             raise TypeError("classified_as deve ser um ErasureTargetClass ou None")
-        if self.diagnostic is not None:
-            validar_texto_opaco("diagnostic", self.diagnostic)
+        if self.observed_dimension is not None and not isinstance(
+            self.observed_dimension, RefusalDimension
+        ):
+            raise TypeError("observed_dimension deve ser um RefusalDimension ou None")
 
 
 TargetResolutionResult = ErasureTargetDescriptor | TargetResolutionRefusal
