@@ -331,6 +331,9 @@ def test_s15_os_sete_contratos_da_e4_9_7_nao_mudaram() -> None:
     }
     assert sem_default["VerifiedDeletionCapability"] == ("operation", "scope", "verified")
     assert sem_default["ReferenceProvenance"] == ("origin",)
+    # ATUALIZADO NA E4.9.8.3: `legacy_protection_state` é campo novo
+    # OBRIGATÓRIO, quebra pública deliberada e autorizada. Continua sem
+    # default — é a razão de existir da fatia.
     assert sem_default["ErasureTargetDescriptor"] == (
         "target_class",
         "subject_coid",
@@ -339,6 +342,7 @@ def test_s15_os_sete_contratos_da_e4_9_7_nao_mudaram() -> None:
         "capability",
         "resolved_at",
         "origin",
+        "legacy_protection_state",
         "transient_locator",
     )
 
@@ -379,10 +383,91 @@ def test_s16_a_resolucao_de_governanca_nao_e_delegada_no_repr() -> None:
 
 
 def test_s17_o_snapshot_nao_reutiliza_o_descritor() -> None:
-    """`SNAPSHOT != ErasureTargetDescriptor` — o descritor tem localizador."""
-    executavel = _executavel(APP / "memory" / "schemas" / "destructive_approval.py")
-    assert "ErasureTargetDescriptor" not in executavel
-    assert "transient_locator" not in executavel
+    """`SNAPSHOT != ErasureTargetDescriptor` — o descritor tem localizador.
+
+    ATUALIZADA NA E4.9.8.3, deliberadamente. A versão anterior proibia o
+    **nome** `ErasureTargetDescriptor` no código executável, o que era
+    exato enquanto não havia conversão alguma. `from_descriptor` precisa
+    do tipo para recusar entrada errada, então a proibição por nome
+    passaria a impedir a própria fronteira que ela protege.
+
+    ```text
+    NAME_MENTIONED != FIELD_REUSED
+    ```
+
+    O que continua provado, e é o que importa: o snapshot **não tem** campo
+    de localizador, e `from_descriptor` **não copia** nenhum dos três
+    campos excluídos.
+    """
+    import dataclasses
+
+    from app.memory.schemas.destructive_approval import SafeTargetSnapshot
+
+    campos = {c.name for c in dataclasses.fields(SafeTargetSnapshot)}
+    for proibido in ("transient_locator", "capability", "resolved_at"):
+        assert proibido not in campos, proibido
+
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    )
+    (metodo,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "from_descriptor"
+    ]
+    corpo = ast.unparse(metodo)
+    for proibido in (
+        "descriptor.transient_locator",
+        "descriptor.capability",
+        "descriptor.resolved_at",
+    ):
+        assert proibido not in corpo, proibido
+
+
+def test_s17_1_o_materializador_copia_campo_a_campo() -> None:
+    """Cópia explícita, nunca reflexão (`E4.9.8.3`).
+
+    ```text
+    EXPLICIT_COPY != AUTOMATIC_PROPAGATION
+    ```
+
+    Com `asdict`, `**` ou reflexão, um campo novo no descritor entraria no
+    snapshot **sozinho**, sem ninguém decidir — e é exatamente assim que
+    `transient_locator` atravessaria a fronteira que a E4.9.7 gastou dois
+    corretivos para estabelecer.
+
+    Esta guarda fixa na AST os sete copiados. Um oitavo campo copiado, ou
+    qualquer forma automática, derruba o teste.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    )
+    (metodo,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "from_descriptor"
+    ]
+    corpo = ast.unparse(metodo)
+    for automatico in ("asdict(", "**descriptor", "getattr(", "vars(", "fields("):
+        assert automatico not in corpo, automatico
+
+    (retorno,) = [no for no in ast.walk(metodo) if isinstance(no, ast.Return)]
+    assert isinstance(retorno.value, ast.Call)
+    copiados = {kw.arg for kw in retorno.value.keywords}
+    assert copiados == {
+        "target_class",
+        "subject_coid",
+        "control_scope",
+        "custody_namespace",
+        "origin",
+        "legacy_protection_state",
+        "version_etag",
+    }
+    for kw in retorno.value.keywords:
+        assert isinstance(kw.value, ast.Attribute), kw.arg
+        assert isinstance(kw.value.value, ast.Name)
+        assert kw.value.value.id == "descriptor"
+        assert kw.value.attr == kw.arg, f"{kw.arg} copia {kw.value.attr}"
 
 
 def test_s18_enums_novos_nao_duplicam_fonte_da_verdade() -> None:

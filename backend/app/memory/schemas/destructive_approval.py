@@ -81,11 +81,13 @@ from app.memory.models.approval_enums import (
 )
 from app.memory.models.erasure_enums import ErasureTargetClass
 from app.memory.models.governance_enums import CognitiveOperation, GovernanceOutcome
+from app.memory.models.target_resolution_enums import LegacyProtectionState
 from app.memory.schemas.erasure_target import (
     CLASSES_DE_CONTEUDO,
     TEXTO_OCULTO,
     ControlScope,
     CustodyNamespace,
+    ErasureTargetDescriptor,
     ReferenceProvenance,
     validar_instante_ciente,
     validar_texto_opaco,
@@ -210,6 +212,26 @@ class SafeTargetSnapshot:
     control_scope: ControlScope
     custody_namespace: CustodyNamespace
     origin: ReferenceProvenance
+    legacy_protection_state: LegacyProtectionState
+    """Proteção de legado apresentada, parte do binding (`E4.9.8.3`).
+
+    Obrigatório e sem default, pelas mesmas razões de
+    `ErasureTargetDescriptor.legacy_protection_state`, e participa da
+    igualdade estrutural: dois snapshots idênticos exceto pela proteção são
+    **diferentes**.
+
+    ```text
+    STRUCTURAL_DISTINGUISHABILITY = IMPLEMENTED_HERE
+    EFFECTIVE_INVALIDATION = DEFERRED_TO_E4_9_9_D
+    ```
+
+    Registro honesto do alcance: esta fatia torna estados opostos
+    distinguíveis e vinculáveis. Comparar o snapshot aprovado com uma
+    re-resolução fresca — e recusar a execução quando divergirem — é da
+    E4.9.9.d. A proposta **armazena e valida** o lote; não compara contra
+    resolução futura, porque não existe resolução futura ainda.
+    """
+
     version_etag: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -228,8 +250,73 @@ class SafeTargetSnapshot:
             raise TypeError("custody_namespace deve ser um CustodyNamespace")
         if not isinstance(self.origin, ReferenceProvenance):
             raise TypeError("origin deve ser um ReferenceProvenance")
+        if not isinstance(self.legacy_protection_state, LegacyProtectionState):
+            raise TypeError(
+                f"legacy_protection_state deve ser um LegacyProtectionState, "
+                f"recebido {type(self.legacy_protection_state).__name__} — "
+                "string equivalente, bool e None não são membros"
+            )
         if self.version_etag is not None:
             validar_texto_opaco("version_etag", self.version_etag)
+
+    @classmethod
+    def from_descriptor(cls, descriptor: ErasureTargetDescriptor) -> "SafeTargetSnapshot":
+        """Materializador canônico do snapshot a partir do descritor.
+
+        ```text
+        SNAPSHOT != DESCRIPTOR
+        LOCATOR_NEVER_CROSSES
+        ```
+
+        Acrescentado pela `E4.9.8.3`. Antes desta fatia não havia nenhuma
+        conversão de produção — medido: **zero** construções de
+        `SafeTargetSnapshot` e **zero** conversões descritor→snapshot fora
+        de teste. Sem um ponto canônico, a cópia dos sete campos ficaria
+        espalhada por cada chamador futuro, e a exclusão do localizador
+        dependeria de cada um lembrar de não copiá-lo.
+
+        Cópia **explícita**, campo a campo. Sem `dataclasses.asdict`, sem
+        `**`, sem reflexão: o que passa é exatamente o que está escrito
+        aqui, e uma guarda estática fixa esta lista na AST.
+
+        Copiados — os sete:
+
+        ```text
+        target_class · subject_coid · control_scope · custody_namespace
+        origin · version_etag · legacy_protection_state
+        ```
+
+        Excluídos — os três, e cada um por uma razão distinta:
+
+        ```text
+        transient_locator  endereça o objeto material; a E4.9.7 gastou dois
+                           corretivos estabelecendo que ele não sobrevive
+                           ao efeito, e um snapshot que circula e é
+                           apresentado o levaria junto
+        capability         é o que a CONTA pode; o snapshot descreve o que
+                           foi APRESENTADO ao usuário, não a autoridade
+        resolved_at        instante da resolução, transitório por natureza;
+                           o instante que importa à aprovação é o da
+                           materialização da proposta
+        ```
+
+        Não valida nem reinterpreta: o descritor já é válido por
+        construção, e o snapshot revalida por `__post_init__`.
+        """
+        if not isinstance(descriptor, ErasureTargetDescriptor):
+            raise TypeError(
+                f"from_descriptor exige ErasureTargetDescriptor, recebido "
+                f"{type(descriptor).__name__}"
+            )
+        return cls(
+            target_class=descriptor.target_class,
+            subject_coid=descriptor.subject_coid,
+            control_scope=descriptor.control_scope,
+            custody_namespace=descriptor.custody_namespace,
+            origin=descriptor.origin,
+            legacy_protection_state=descriptor.legacy_protection_state,
+            version_etag=descriptor.version_etag,
+        )
 
     def __repr__(self) -> str:
         return (
@@ -238,6 +325,7 @@ class SafeTargetSnapshot:
             f"control_scope={self.control_scope!r}, "
             f"custody_namespace={self.custody_namespace!r}, "
             f"origin={self.origin!r}, "
+            f"legacy_protection_state={self.legacy_protection_state.value!r}, "
             f"version_etag={TEXTO_OCULTO if self.version_etag else None!r})"
         )
 

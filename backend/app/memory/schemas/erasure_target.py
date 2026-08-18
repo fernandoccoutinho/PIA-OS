@@ -55,6 +55,7 @@ from urllib.parse import urlsplit
 from app.memory.models.erasure_enums import ErasureTargetClass
 from app.memory.models.target_resolution_enums import (
     ORIGENS_PLURAIS,
+    LegacyProtectionState,
     ReferenceOrigin,
     RefusalDimension,
     TargetResolutionRefusalReason,
@@ -653,6 +654,27 @@ class ErasureTargetDescriptor:
     capability: VerifiedDeletionCapability
     resolved_at: datetime
     origin: ReferenceProvenance
+    legacy_protection_state: LegacyProtectionState
+    """Proteção de legado **apresentada**, parte do binding (`E4.9.8.3`).
+
+    Obrigatório e sem default. Um default faria toda omissão parecer
+    `NOT_PROTECTED` — autoridade fabricada, exatamente o defeito que o A6
+    da E4.9.7.4 custou uma cadeia inteira para fechar.
+
+    ```text
+    OMITTED_LEGACY_PROTECTION_STATE = TypeError
+    DEFAULT_LEGACY_PROTECTION_STATE = FORBIDDEN
+    ```
+
+    Participa da igualdade estrutural: dois descritores idênticos exceto
+    pela proteção são objetos **diferentes**, e é isso que torna a mudança
+    detectável nas duas direções.
+
+    Nunca inferido de idade, pasta, nome, status corrente, validação ou
+    causalidade. Vem da fronteira que observou o alvo; se ela não souber, o
+    caminho é `TargetResolutionRefusalReason.LEGACY_PROTECTION_STATE_UNRESOLVED`.
+    """
+
     transient_locator: str = field(repr=False)
     """Suficiente para um adaptador futuro agir, e nada além.
 
@@ -689,6 +711,12 @@ class ErasureTargetDescriptor:
         validar_instante_ciente("resolved_at", self.resolved_at)
         if not isinstance(self.origin, ReferenceProvenance):
             raise TypeError("origin deve ser um ReferenceProvenance")
+        if not isinstance(self.legacy_protection_state, LegacyProtectionState):
+            raise TypeError(
+                f"legacy_protection_state deve ser um LegacyProtectionState, "
+                f"recebido {type(self.legacy_protection_state).__name__} — "
+                "string equivalente, bool e None não são membros"
+            )
         validar_localizador_sem_expansao_literal("transient_locator", self.transient_locator)
         if self.version_etag is not None:
             validar_texto_opaco("version_etag", self.version_etag)
@@ -706,6 +734,7 @@ class ErasureTargetDescriptor:
             f"subject_coid={self.subject_coid!r}, "
             f"custody_namespace={self.custody_namespace!r}, "
             f"capability={self.capability!r}, "
+            f"legacy_protection_state={self.legacy_protection_state.value!r}, "
             f"resolved_at={self.resolved_at!r}, "
             f"version_etag={TEXTO_OCULTO if self.version_etag else None!r}, "
             f"transient_locator={LOCALIZADOR_OCULTO})"

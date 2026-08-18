@@ -21,6 +21,7 @@ import pytest
 from app.memory.models.erasure_enums import ErasureTargetClass
 from app.memory.models.target_resolution_enums import (
     ORIGENS_PLURAIS,
+    LegacyProtectionState,
     ReferenceOrigin,
     RefusalDimension,
     TargetResolutionRefusalReason,
@@ -112,6 +113,11 @@ def descritor(**overrides: object) -> ErasureTargetDescriptor:
         "capability": capacidade(),
         "resolved_at": AGORA,
         "origin": PROVENIENCIA,
+        # E4.9.8.3 — escolha CONSCIENTE, não conveniência. As fábricas
+        # default declaram NOT_PROTECTED, e os testes nominais u109+
+        # exercitam PROTECTED explicitamente nos dois lados. Nenhum caso
+        # depende do default para provar comportamento de proteção.
+        "legacy_protection_state": LegacyProtectionState.NOT_PROTECTED,
         "transient_locator": LOCALIZADOR,
     }
     base.update(overrides)
@@ -185,6 +191,10 @@ def test_u03_motivos_de_recusa_sao_fechados_e_sem_generico():
         "control_scope_mismatch",
         "deletion_capability_not_verified",
         "provider_namespace_out_of_scope",
+        # E4.9.8.3 — indeterminação da proteção de legado é RECUSA, não
+        # estado: por isso o motivo entra aqui e LegacyProtectionState
+        # continua com exatamente dois membros.
+        "legacy_protection_state_unresolved",
         "stale_resolution",
     ]
     for proibido in ("UNKNOWN", "OTHER", "GENERIC", "FALLBACK", "PARTIAL"):
@@ -324,6 +334,7 @@ def test_u19_invariantes_valem_no_construtor_direto():
             capability=capacidade(),
             resolved_at=AGORA,
             origin=PROVENIENCIA,
+            legacy_protection_state=LegacyProtectionState.NOT_PROTECTED,
             transient_locator=LOCALIZADOR,
         )
 
@@ -1513,3 +1524,178 @@ def test_u118_a_redacao_da_cadeia_83_nao_regrediu():
     _sem_vazamento(d, "Descriptor→capability.operation")
     _sem_vazamento(capacidade(scope=MARCADOR, verified=False), "capability.scope")
     assert "verified=True" in repr(descritor())
+
+
+# ======================================================================
+# E4.9.8.3 — proteção de legado no binding do descritor
+#
+# Lacuna ANTECEDENTE: a E4.9.4 exigia nova aprovação quando muda a
+# proteção de legado, e o runtime não tinha o estado em lugar algum.
+#
+# DOCUMENTED_BINDING != RUNTIME_BINDING
+# ABSENCE_OF_INFORMATION != NOT_PROTECTED
+# ======================================================================
+
+
+def test_u110_o_vocabulario_tem_exatamente_dois_membros():
+    assert [m.value for m in LegacyProtectionState] == ["protected", "not_protected"]
+    for proibido in ("UNKNOWN", "OTHER", "UNSPECIFIED", "DEFAULT", "INHERITED", "AUTO"):
+        assert proibido not in LegacyProtectionState.__members__
+
+
+def test_u111_indeterminacao_e_recusa_e_nao_terceiro_estado():
+    """`PROTECTION_STATE_UNKNOWN = TARGET_RESOLUTION_REFUSAL`.
+
+    Um terceiro membro faria a indeterminação virar aprovação silenciosa —
+    a forma do `verified = True` acidental que a E4.9.7.4 fechou.
+    """
+    assert (
+        TargetResolutionRefusalReason.LEGACY_PROTECTION_STATE_UNRESOLVED.value
+        == "legacy_protection_state_unresolved"
+    )
+    r = recusa(reason=TargetResolutionRefusalReason.LEGACY_PROTECTION_STATE_UNRESOLVED)
+    assert r.reason is TargetResolutionRefusalReason.LEGACY_PROTECTION_STATE_UNRESOLVED
+
+
+def test_u112_a_dimensao_de_recusa_nao_foi_ampliada():
+    """Recuo deliberado: o motivo fechado já identifica a recusa.
+
+    `observed_dimension` descreve **divergência contextual** entre
+    governança, identidade e alvo. Estado de proteção não resolvido não é
+    divergência de contexto — é ausência de fato observável. Ampliar a
+    semântica seria delta público redundante.
+    """
+    assert [d.value for d in RefusalDimension] == [
+        "workspace",
+        "tenant",
+        "control_principal",
+        "provider",
+        "namespace",
+        "reference",
+        "capability",
+        "resolution_freshness",
+    ]
+    assert "LEGACY_PROTECTION" not in RefusalDimension.__members__
+
+
+@pytest.mark.parametrize("estado", list(LegacyProtectionState))
+def test_u113_os_dois_estados_sao_construiveis_no_descritor(estado):
+    assert descritor(legacy_protection_state=estado).legacy_protection_state is estado
+
+
+@pytest.mark.parametrize(
+    "valor",
+    ["protected", "not_protected", "", True, False, None, 0, 1, object()],
+)
+def test_u114_nao_membro_recusado_no_descritor(valor):
+    """String equivalente, `bool` e `None` não são membros."""
+    with pytest.raises(TypeError, match="LegacyProtectionState"):
+        descritor(legacy_protection_state=valor)
+
+
+def test_u115_enum_de_outra_classe_recusado():
+    with pytest.raises(TypeError, match="LegacyProtectionState"):
+        descritor(legacy_protection_state=ReferenceOrigin.PAYLOAD_REF)
+    with pytest.raises(TypeError, match="LegacyProtectionState"):
+        descritor(legacy_protection_state=ErasureTargetClass.PIA_MANAGED_ARTIFACT)
+
+
+def test_u116_campo_obrigatorio_sem_default_no_descritor():
+    """`DEFAULT_LEGACY_PROTECTION_STATE = FORBIDDEN`."""
+    import dataclasses
+    import inspect
+
+    (campo,) = [
+        c
+        for c in dataclasses.fields(ErasureTargetDescriptor)
+        if c.name == "legacy_protection_state"
+    ]
+    assert campo.default is dataclasses.MISSING
+    assert campo.default_factory is dataclasses.MISSING
+    parametro = inspect.signature(ErasureTargetDescriptor).parameters["legacy_protection_state"]
+    assert parametro.default is inspect.Parameter.empty
+    assert parametro.annotation is LegacyProtectionState
+
+
+def test_u117_omissao_e_erro_e_nunca_not_protected():
+    """Um default faria toda omissão parecer `NOT_PROTECTED`."""
+    with pytest.raises(TypeError):
+        _construir(
+            ErasureTargetDescriptor,
+            target_class=ErasureTargetClass.PIA_MANAGED_ARTIFACT,
+            subject_coid=S1,
+            control_scope=escopo(),
+            custody_namespace=custodia(),
+            capability=capacidade(),
+            resolved_at=AGORA,
+            origin=PROVENIENCIA,
+            transient_locator=LOCALIZADOR,
+        )
+
+
+def test_u118_os_dois_estados_sao_estruturalmente_distinguiveis():
+    """`SAME_STATE_REQUIRED = TRUE`, nas duas direções."""
+    protegido = descritor(legacy_protection_state=LegacyProtectionState.PROTECTED)
+    livre = descritor(legacy_protection_state=LegacyProtectionState.NOT_PROTECTED)
+    assert protegido != livre
+    assert protegido == descritor(legacy_protection_state=LegacyProtectionState.PROTECTED)
+    assert livre == descritor(legacy_protection_state=LegacyProtectionState.NOT_PROTECTED)
+
+
+def test_u119_replace_revalida_a_protecao():
+    import dataclasses
+
+    d = descritor(legacy_protection_state=LegacyProtectionState.PROTECTED)
+    trocado = dataclasses.replace(d, legacy_protection_state=LegacyProtectionState.NOT_PROTECTED)
+    assert trocado.legacy_protection_state is LegacyProtectionState.NOT_PROTECTED
+    assert trocado != d
+    with pytest.raises(TypeError, match="LegacyProtectionState"):
+        dataclasses.replace(d, legacy_protection_state="protected")
+
+
+@pytest.mark.parametrize("estado", list(LegacyProtectionState))
+def test_u120_repr_mostra_token_fechado_e_nunca_texto_livre(estado):
+    texto = repr(descritor(legacy_protection_state=estado))
+    assert f"legacy_protection_state={estado.value!r}" in texto
+    assert LOCALIZADOR not in texto
+
+
+def test_u121_protecao_nao_e_legal_hold_nem_versao_nem_causalidade():
+    """Quatro fatos distintos, sem equivalência.
+
+    ```text
+    LEGACY_PROTECTION != LEGAL_HOLD
+    LEGACY_PROTECTION != CANONICAL_VERSION
+    LEGACY_PROTECTION != CAUSAL_DEPENDENCY
+    ```
+
+    Legal hold é imposição externa sobre o titular; proteção de legado é
+    escolha **do** titular.
+    """
+    from app.memory.models.approval_enums import ApprovalBlockerKind
+
+    valores = {m.value for m in LegacyProtectionState}
+    assert valores.isdisjoint({m.value for m in ApprovalBlockerKind})
+    assert "legal_hold" not in valores
+    # versão é campo próprio e independente da proteção
+    d = descritor(legacy_protection_state=LegacyProtectionState.PROTECTED, version_etag="v1")
+    assert d.version_etag == "v1"
+    assert d.legacy_protection_state is LegacyProtectionState.PROTECTED
+
+
+def test_u122_nenhuma_inferencia_a_partir_de_outro_campo():
+    """O estado não é derivado de classe, custódia, origem ou versão."""
+    base = descritor(legacy_protection_state=LegacyProtectionState.PROTECTED)
+    variantes = (
+        descritor(
+            legacy_protection_state=LegacyProtectionState.PROTECTED,
+            custody_namespace=custodia(provider="outro"),
+        ),
+        descritor(legacy_protection_state=LegacyProtectionState.PROTECTED, version_etag="v9"),
+        descritor(
+            legacy_protection_state=LegacyProtectionState.PROTECTED,
+            origin=ReferenceProvenance(ReferenceOrigin.OUTPUT_REFS, 1),
+        ),
+    )
+    for v in variantes:
+        assert v.legacy_protection_state is base.legacy_protection_state

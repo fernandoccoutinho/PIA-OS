@@ -611,7 +611,10 @@ def _fabricas_com_marcador() -> dict[str, object]:
     from datetime import UTC, datetime
 
     from app.memory.models.erasure_enums import ErasureTargetClass
-    from app.memory.models.target_resolution_enums import ReferenceOrigin
+    from app.memory.models.target_resolution_enums import (
+        LegacyProtectionState,
+        ReferenceOrigin,
+    )
     from app.memory.schemas.erasure_target import (
         ControlScope,
         CustodyNamespace,
@@ -638,6 +641,7 @@ def _fabricas_com_marcador() -> dict[str, object]:
             "capability": cap_ok,
             "resolved_at": quando,
             "origin": prov,
+            "legacy_protection_state": LegacyProtectionState.NOT_PROTECTED,
             "transient_locator": "s3://bucket/exact-object",
         }
         base.update(kw)
@@ -873,3 +877,264 @@ def test_s30_nenhuma_fabrica_de_producao_injeta_verificacao() -> None:
         and no.func.id == "VerifiedDeletionCapability"
     ]
     assert chamadas == [], "produção não constrói capacidade em lugar algum"
+
+
+# ======================================================================
+# E4.9.8.3 — guardas da proteção de legado
+# ======================================================================
+
+
+def test_s31_fonte_unica_do_vocabulario_de_protecao() -> None:
+    """Um só `LegacyProtectionState` em todo `app/`.
+
+    Um segundo enum com os mesmos membros criaria duas verdades sobre o
+    que foi apresentado ao usuário, e a divergência apareceria no dia em
+    que a re-resolução comparasse contra a fonte errada.
+    """
+    definicoes: list[str] = []
+    for caminho in _fontes():
+        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+        for no in ast.walk(arvore):
+            if isinstance(no, ast.ClassDef) and no.name == "LegacyProtectionState":
+                definicoes.append(str(caminho.relative_to(APP)))
+    assert definicoes == ["memory/models/target_resolution_enums.py"]
+
+
+def test_s32_o_vocabulario_tem_dois_membros_e_nenhum_generico() -> None:
+    """`ABSENCE_OF_INFORMATION != NOT_PROTECTED`."""
+    arvore = ast.parse(
+        (APP / "memory" / "models" / "target_resolution_enums.py").read_text(encoding="utf-8")
+    )
+    (classe,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.ClassDef) and no.name == "LegacyProtectionState"
+    ]
+    membros = [
+        no.target.id
+        for no in classe.body
+        if isinstance(no, ast.Assign | ast.AnnAssign)
+        and isinstance(getattr(no, "target", None), ast.Name)
+    ]
+    membros += [
+        no.targets[0].id
+        for no in classe.body
+        if isinstance(no, ast.Assign) and isinstance(no.targets[0], ast.Name)
+    ]
+    assert set(membros) == {"PROTECTED", "NOT_PROTECTED"}
+    for proibido in ("UNKNOWN", "OTHER", "UNSPECIFIED", "DEFAULT", "INHERITED", "AUTO"):
+        assert proibido not in membros
+
+
+def test_s33_campo_obrigatorio_e_anotacao_fechada_nas_duas_classes() -> None:
+    """`DEFAULT_LEGACY_PROTECTION_STATE = FORBIDDEN`.
+
+    Reflexão para default — é onde a propriedade vive —, AST para a
+    anotação, porque `str | bool | object | Any` seria erro de contrato
+    estático que a reflexão sozinha não distingue de um enum.
+    """
+    import dataclasses
+    import typing
+
+    from app.memory.models.target_resolution_enums import LegacyProtectionState
+    from app.memory.schemas.destructive_approval import SafeTargetSnapshot
+    from app.memory.schemas.erasure_target import ErasureTargetDescriptor
+
+    for classe in (ErasureTargetDescriptor, SafeTargetSnapshot):
+        (campo,) = [c for c in dataclasses.fields(classe) if c.name == "legacy_protection_state"]
+        assert campo.default is dataclasses.MISSING, classe.__name__
+        assert campo.default_factory is dataclasses.MISSING, classe.__name__
+        assert typing.get_type_hints(classe)["legacy_protection_state"] is (
+            LegacyProtectionState
+        ), classe.__name__
+
+    for arquivo, nome in (
+        ("erasure_target.py", "ErasureTargetDescriptor"),
+        ("destructive_approval.py", "SafeTargetSnapshot"),
+    ):
+        arvore = ast.parse((APP / "memory" / "schemas" / arquivo).read_text(encoding="utf-8"))
+        (classe_ast,) = [
+            no for no in ast.walk(arvore) if isinstance(no, ast.ClassDef) and no.name == nome
+        ]
+        (anotacao,) = [
+            no
+            for no in classe_ast.body
+            if isinstance(no, ast.AnnAssign)
+            and isinstance(no.target, ast.Name)
+            and no.target.id == "legacy_protection_state"
+        ]
+        assert anotacao.value is None, f"{nome}: default proibido"
+        assert isinstance(anotacao.annotation, ast.Name)
+        assert anotacao.annotation.id == "LegacyProtectionState", nome
+
+
+def test_s34_validacao_de_membro_real_nos_dois_construtores() -> None:
+    """Anotação sozinha não recusa nada em runtime — lição do A19/A20."""
+    for arquivo, nome in (
+        ("erasure_target.py", "ErasureTargetDescriptor"),
+        ("destructive_approval.py", "SafeTargetSnapshot"),
+    ):
+        arvore = ast.parse((APP / "memory" / "schemas" / arquivo).read_text(encoding="utf-8"))
+        (classe,) = [
+            no for no in ast.walk(arvore) if isinstance(no, ast.ClassDef) and no.name == nome
+        ]
+        (post_init,) = [
+            no
+            for no in classe.body
+            if isinstance(no, ast.FunctionDef) and no.name == "__post_init__"
+        ]
+        corpo = ast.unparse(post_init)
+        assert "isinstance(self.legacy_protection_state, LegacyProtectionState)" in corpo, nome
+        assert "raise TypeError" in corpo, nome
+
+
+def test_s35_nenhuma_inferencia_de_protecao_no_codigo() -> None:
+    """O estado vem da fronteira; não é derivado de nada.
+
+    Busca por IDENTIFICADOR na AST, não substring — `protection` aparece
+    legitimamente em docstring e nome de campo.
+    """
+    proibidos = {
+        "infer_legacy_protection",
+        "guess_protection",
+        "derive_protection",
+        "is_legacy",
+        "looks_legacy",
+        "default_protection",
+    }
+    for caminho in (
+        APP / "memory" / "schemas" / "erasure_target.py",
+        APP / "memory" / "schemas" / "destructive_approval.py",
+        APP / "memory" / "models" / "target_resolution_enums.py",
+    ):
+        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+        identificadores = {
+            no.name for no in ast.walk(arvore) if isinstance(no, ast.FunctionDef)
+        } | {no.attr for no in ast.walk(arvore) if isinstance(no, ast.Attribute)}
+        assert identificadores.isdisjoint(proibidos), identificadores & proibidos
+
+
+def test_s36_protecao_nao_virou_blocker_nem_dimensao() -> None:
+    """`PROTECTED` não é bloqueio automático nesta fatia.
+
+    E a dimensão de recusa **não** foi ampliada: o motivo fechado já
+    identifica a recusa, e ampliar `observed_dimension` seria delta
+    público redundante.
+    """
+    from app.memory.models.approval_enums import ApprovalBlockerKind
+    from app.memory.models.target_resolution_enums import RefusalDimension
+
+    for membro in ApprovalBlockerKind.__members__:
+        assert "LEGACY" not in membro
+    for membro in RefusalDimension.__members__:
+        assert "LEGACY" not in membro
+    assert len(RefusalDimension) == 8
+
+
+def test_s37_nenhuma_migration_orm_ou_repository_nesta_fatia() -> None:
+    """`PERSISTENCE_DELTA = 0` e `MIGRATION_DELTA = 0`."""
+    versoes = APP.parent / "alembic" / "versions"
+    revisoes = {p.name.split("_")[0] for p in versoes.glob("*.py")}
+    assert "c8a3f5017e94" in revisoes
+    for arquivo in versoes.glob("*.py"):
+        if arquivo.name.startswith("c8a3f5017e94"):
+            continue
+        texto = arquivo.read_text(encoding="utf-8")
+        assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
+
+    for caminho in (
+        APP / "memory" / "schemas" / "erasure_target.py",
+        APP / "memory" / "schemas" / "destructive_approval.py",
+        APP / "memory" / "models" / "target_resolution_enums.py",
+    ):
+        executavel = _executavel(caminho)
+        for proibido in ("mapped_column", "Mapped", "Session", "Repository", "sqlalchemy"):
+            assert proibido not in executavel, f"{caminho.name}: {proibido}"
+
+
+def test_s38_e4_9_9_a_nao_foi_iniciada() -> None:
+    """A E4.9.9.a permanece bloqueada até `PASS_FINAL` independente."""
+    ausentes = (
+        "ApprovalRecord",
+        "ApprovalRecordRepository",
+        "ErasureEffectPort",
+        "RetentionEvaluator",
+        "DestructiveExecutionService",
+    )
+    infratores: list[str] = []
+    for caminho in _fontes():
+        executavel = _executavel(caminho)
+        for simbolo in ausentes:
+            if f"class {simbolo}" in executavel:
+                infratores.append(f"{caminho.name}:{simbolo}")
+    assert infratores == []
+
+
+# --- §7.2: cada guarda consegue falhar -----------------------------------
+
+
+def test_s99_9_a_guarda_de_default_detecta_default_acrescentado() -> None:
+    """Reflexão distingue campo obrigatório de campo com default."""
+    import dataclasses
+    from enum import StrEnum
+
+    class _E(StrEnum):
+        A = "a"
+
+    @dataclasses.dataclass(frozen=True)
+    class _Obrigatorio:
+        estado: _E
+
+    @dataclasses.dataclass(frozen=True)
+    class _ComDefault:
+        estado: _E = _E.A
+
+    def sem_default(classe: type) -> bool:
+        (campo,) = [c for c in dataclasses.fields(classe) if c.name == "estado"]
+        return campo.default is dataclasses.MISSING and campo.default_factory is dataclasses.MISSING
+
+    assert sem_default(_Obrigatorio)
+    assert not sem_default(_ComDefault)
+
+
+def test_s99_10_a_guarda_de_anotacao_detecta_tipo_aberto() -> None:
+    """`str | bool | object | Any` não é anotação fechada."""
+    fechada = "class X:\n    legacy_protection_state: LegacyProtectionState\n"
+    aberta = "class X:\n    legacy_protection_state: object\n"
+    uniao = "class X:\n    legacy_protection_state: str | bool\n"
+
+    def conforme(fonte: str) -> bool:
+        arvore = ast.parse(fonte)
+        (anotacao,) = [
+            no
+            for no in ast.walk(arvore)
+            if isinstance(no, ast.AnnAssign)
+            and isinstance(no.target, ast.Name)
+            and no.target.id == "legacy_protection_state"
+        ]
+        return (
+            isinstance(anotacao.annotation, ast.Name)
+            and anotacao.annotation.id == "LegacyProtectionState"
+        )
+
+    assert conforme(fechada)
+    assert not conforme(aberta)
+    assert not conforme(uniao)
+
+
+def test_s99_11_a_guarda_de_fonte_unica_detecta_enum_duplicado() -> None:
+    """Um segundo enum em outro módulo é detectado pela contagem na AST."""
+    um = "class LegacyProtectionState:\n    pass\n"
+    dois = "class LegacyProtectionState:\n    pass\n\n\nclass Outro:\n    pass\n"
+    tres = "class LegacyProtectionState:\n    pass\n\n\n" "class LegacyProtectionState:\n    pass\n"
+
+    def quantas(fonte: str) -> int:
+        return sum(
+            1
+            for no in ast.walk(ast.parse(fonte))
+            if isinstance(no, ast.ClassDef) and no.name == "LegacyProtectionState"
+        )
+
+    assert quantas(um) == 1
+    assert quantas(dois) == 1
+    assert quantas(tres) == 2

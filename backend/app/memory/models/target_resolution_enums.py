@@ -99,6 +99,23 @@ class TargetResolutionRefusalReason(StrEnum):
     no namespace de outro, ainda que a referência pareça compatível.
     """
 
+    LEGACY_PROTECTION_STATE_UNRESOLVED = "legacy_protection_state_unresolved"
+    """A fronteira não conseguiu determinar se o alvo está protegido.
+
+    ```text
+    PROTECTION_STATE_UNKNOWN = TARGET_RESOLUTION_REFUSAL
+    ABSENCE_OF_INFORMATION != NOT_PROTECTED
+    ```
+
+    Acrescentado pela `E4.9.8.3`. Sem este motivo, uma fronteira que não
+    soubesse o estado teria duas saídas ruins: inventar `NOT_PROTECTED`,
+    que é autoridade fabricada, ou devolver um enum genérico, que não
+    diria o que faltou.
+
+    Indeterminação é **recusa**, não estado. Por isso
+    `LegacyProtectionState` tem só dois membros e nenhum `UNKNOWN`.
+    """
+
     STALE_RESOLUTION = "stale_resolution"
     """A resolução envelheceu ou a versão/etag observada é incompatível.
 
@@ -197,3 +214,73 @@ ORIGENS_PLURAIS = frozenset(
 significaria nada, e aceitá-la deixaria o contrato dizer algo que a E3
 não sustenta.
 """
+
+
+class LegacyProtectionState(StrEnum):
+    """O alvo está protegido como legado? (`E4.9.8.3`)
+
+    ```text
+    LEGACY_PROTECTION_STATE = PRESENTED_AND_BOUND_FACT
+    LEGACY_PROTECTION_STATE != LEGAL_OWNERSHIP_PROOF
+    LEGACY_PROTECTION_STATE != USER_IDENTITY_PROOF
+    LEGACY_PROTECTION_STATE != DELETION_AUTHORITY
+    LEGACY_PROTECTION_STATE != AUTOMATIC_DENIAL
+    LEGACY_PROTECTION_STATE != AUTOMATIC_PERMISSION
+    ```
+
+    **Lacuna antecedente fechada.** A autorização da E4.9.4 §5 exige nova
+    aprovação quando muda "versão, estado ou proteção de legado", e o EDR
+    da mesma fatia põe a proteção na lista de invalidação. O runtime da
+    cadeia 87 não sustentava a decisão: o estado não existia em lugar
+    algum.
+
+    ```text
+    DOCUMENTED_BINDING != RUNTIME_BINDING
+    APPROVAL_WITHOUT_LEGACY_STATE = INCOMPLETE_APPROVAL
+    ```
+
+    ## O que este enum NÃO decide
+
+    Nem `PROTECTED` impede excluir, nem `NOT_PROTECTED` autoriza. A
+    proteção pertence ao usuário, e retirar proteção é decisão distinta de
+    excluir — o PIA não a retira como efeito colateral de uma proposta
+    destrutiva. Regra de produto que imponha desbloqueio separado ou
+    confirmação reforçada exige autorização própria.
+
+    O que a fatia decide é só isto: o estado **apresentado ao usuário**
+    entra no binding, e mudança em **qualquer direção** exige nova
+    aprovação.
+
+    ```text
+    PROTECTED_AT_APPROVAL     + NOT_PROTECTED_AT_EXECUTION = APPROVAL_INVALID
+    NOT_PROTECTED_AT_APPROVAL + PROTECTED_AT_EXECUTION     = APPROVAL_INVALID
+    SAME_STATE_REQUIRED = TRUE
+    ```
+
+    ## Dois membros, e nenhum terceiro
+
+    Sem `UNKNOWN`, `UNSPECIFIED`, `DEFAULT`, `INHERITED`, `AUTO` ou texto
+    livre. Ausência de informação **não** é `NOT_PROTECTED`: quando a
+    fronteira não puder determinar o estado, o caminho é a recusa tipada
+    `TargetResolutionRefusalReason.LEGACY_PROTECTION_STATE_UNRESOLVED`.
+
+    Um terceiro membro faria a indeterminação virar aprovação silenciosa —
+    a mesma forma do `verified = True` acidental que a E4.9.7.4 fechou.
+
+    ## Não confundir com
+
+    ```text
+    LEGACY_PROTECTION != LEGAL_HOLD
+    LEGACY_PROTECTION != CANONICAL_VERSION
+    LEGACY_PROTECTION != CAUSAL_DEPENDENCY
+    ```
+
+    Legal hold é imposição externa sobre o titular; proteção de legado é
+    escolha **do** titular. Versão canônica diz qual conteúdo é o corrente.
+    Dependência causal diz que outro registro depende deste. São quatro
+    fatos distintos, e reaproveitar um pelo outro colapsaria a explicação
+    que o usuário recebe.
+    """
+
+    PROTECTED = "protected"
+    NOT_PROTECTED = "not_protected"

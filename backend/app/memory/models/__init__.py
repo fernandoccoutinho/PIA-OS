@@ -24,7 +24,10 @@ from app.memory.models.retention_enums import (
     RetentionScopeKind,
 )
 from app.memory.models.retention_policy import RetentionPolicy
-from app.memory.models.target_resolution_enums import TargetResolutionRefusalReason
+from app.memory.models.target_resolution_enums import (
+    LegacyProtectionState,
+    TargetResolutionRefusalReason,
+)
 
 __all__ = [
     "AccessibilityPolicy",
@@ -38,6 +41,7 @@ __all__ = [
     "InputChannel",
     "VoiceReviewState",
     "TargetResolutionRefusalReason",
+    "LegacyProtectionState",
     "GovernancePolicy",
     "MemoryDomain",
     "MemoryDomainMembership",

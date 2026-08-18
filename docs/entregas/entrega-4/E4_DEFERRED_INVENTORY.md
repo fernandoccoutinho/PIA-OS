@@ -379,3 +379,43 @@ Continuam deferidos: avaliação, lixeira, seleção por tamanho/data,
 identidade e step-up, envelope e registro de aprovação, orquestrador
 dos cinco estados, resolvedor de alvo, `ArtifactStorage`, conectores,
 parser de texto e voz.
+
+---
+
+## Atualização aditiva — E4.9.8.3 (cadeia 88)
+
+Lacuna **antecedente** fechada: a proteção de legado integrava o binding nos
+documentos da E4.9.4 e não existia no runtime.
+
+```text
+LEGACY_PROTECTION_STATE_IN_DESCRIPTOR = IMPLEMENTED_CANDIDATE
+LEGACY_PROTECTION_STATE_IN_SNAPSHOT   = IMPLEMENTED_CANDIDATE
+LEGACY_PROTECTION_STATE_SOURCE        = ONE
+LEGACY_PROTECTION_DEFAULT             = NONE
+UNKNOWN_AS_NOT_PROTECTED              = FORBIDDEN
+SAFE_TARGET_SNAPSHOT_MATERIALIZER     = IMPLEMENTED_CANDIDATE
+```
+
+Continuam deferidos, e esta fatia **não** os toca:
+
+```text
+LEGACY_PROTECTION_PERSISTENCE   = NONE
+LEGACY_PROTECTION_UI            = NONE
+LEGACY_PROTECTION_AS_BLOCKER    = NOT_MODELED
+EFFECTIVE_APPROVAL_INVALIDATION = DEFERRED_TO_E4_9_9_D
+APPROVAL_PERSISTENCE            = NONE
+ERASURE_EFFECT_PORT             = NONE
+RETENTION_EVALUATOR             = NOT_COMPOSED
+ERASURE_RECORD_RUNTIME_WRITER   = NOT_COMPOSED
+```
+
+```text
+STRUCTURAL_DISTINGUISHABILITY = IMPLEMENTED_HERE
+EFFECTIVE_INVALIDATION        = DEFERRED_TO_E4_9_9_D
+PROTECTED_IS_AUTOMATIC_DENIAL     = FALSE
+PROTECTED_IS_AUTOMATIC_PERMISSION = FALSE
+```
+
+A proteção pertence ao usuário: retirar proteção e excluir são decisões
+distintas, e o PIA não retira proteção como efeito colateral de uma proposta
+destrutiva.

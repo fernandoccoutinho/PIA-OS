@@ -32,7 +32,10 @@ from app.memory.models.governance_enums import (
     CriticalCapability,
     GovernanceOutcome,
 )
-from app.memory.models.target_resolution_enums import ReferenceOrigin
+from app.memory.models.target_resolution_enums import (
+    LegacyProtectionState,
+    ReferenceOrigin,
+)
 from app.memory.schemas.destructive_approval import (
     OPERACAO_DE_GOVERNANCA,
     RESOLUCAO_OCULTA,
@@ -158,6 +161,9 @@ def snapshot(**over: object) -> SafeTargetSnapshot:
         "control_scope": escopo(),
         "custody_namespace": custodia(),
         "origin": ReferenceProvenance(ReferenceOrigin.PAYLOAD_REF),
+        # E4.9.8.3 — ver a nota da fábrica de descritor: escolha
+        # consciente, e os testes nominais exercitam PROTECTED.
+        "legacy_protection_state": LegacyProtectionState.NOT_PROTECTED,
     }
     base.update(over)
     feito = _construir(SafeTargetSnapshot, **base)
@@ -936,6 +942,14 @@ def test_u53_nenhum_campo_de_conteudo_segredo_ou_biometria():
         obj = getattr(modulo, nome)
         if not dataclasses.is_dataclass(obj) or not isinstance(obj, type):
             continue
+        # E4.9.8.3 — filtro por MÓDULO DE ORIGEM, acrescentado aqui.
+        # `SafeTargetSnapshot.from_descriptor` importou
+        # `ErasureTargetDescriptor` para este namespace, e sem o filtro a
+        # guarda passava a inspecionar um contrato de OUTRO módulo, cujo
+        # `transient_locator` é legítimo e já é provado no lugar certo.
+        # Guarda que mede o módulo errado não protege este módulo.
+        if obj.__module__ != modulo.__name__:
+            continue
         campos = {c.name for c in dataclasses.fields(obj)}
         assert campos.isdisjoint(proibidos), f"{nome}: {campos & proibidos}"
 
@@ -1676,3 +1690,215 @@ def test_u104_permite_proposta_continua_estrito_em_runtime(valor):
     chamar = VoiceReviewState.REVIEWED_AND_CONFIRMED.permite_proposta
     with pytest.raises(TypeError, match="InputChannel"):
         chamar(valor)
+
+
+# ======================================================================
+# E4.9.8.3 — proteção de legado no snapshot e materializador canônico
+#
+# STRUCTURAL_DISTINGUISHABILITY = IMPLEMENTED_HERE
+# EFFECTIVE_INVALIDATION = DEFERRED_TO_E4_9_9_D
+# ======================================================================
+
+
+def _descritor(**over: object):
+    """Descritor completo para exercitar `from_descriptor`."""
+    from datetime import UTC, datetime
+
+    from app.memory.schemas.erasure_target import (
+        ErasureTargetDescriptor,
+        VerifiedDeletionCapability,
+    )
+
+    base: dict[str, object] = {
+        "target_class": ErasureTargetClass.PIA_MANAGED_ARTIFACT,
+        "subject_coid": SUJEITO,
+        "control_scope": escopo(),
+        "custody_namespace": custodia(),
+        "capability": VerifiedDeletionCapability("delete_object", "workspace/w1/*", True),
+        "resolved_at": datetime(2026, 8, 18, 9, 0, tzinfo=UTC),
+        "origin": ReferenceProvenance(ReferenceOrigin.PAYLOAD_REF),
+        "legacy_protection_state": LegacyProtectionState.NOT_PROTECTED,
+        "transient_locator": "s3://bucket/objeto-real",
+    }
+    base.update(over)
+    feito = _construir(ErasureTargetDescriptor, **base)
+    return feito
+
+
+@pytest.mark.parametrize("estado", list(LegacyProtectionState))
+def test_u123_os_dois_estados_sao_construiveis_no_snapshot(estado):
+    assert snapshot(legacy_protection_state=estado).legacy_protection_state is estado
+
+
+@pytest.mark.parametrize("valor", ["protected", "not_protected", True, False, None, 0, object()])
+def test_u124_nao_membro_recusado_no_snapshot(valor):
+    with pytest.raises(TypeError, match="LegacyProtectionState"):
+        snapshot(legacy_protection_state=valor)
+
+
+def test_u125_campo_obrigatorio_sem_default_no_snapshot():
+    import dataclasses
+    import inspect
+
+    (campo,) = [
+        c for c in dataclasses.fields(SafeTargetSnapshot) if c.name == "legacy_protection_state"
+    ]
+    assert campo.default is dataclasses.MISSING
+    assert campo.default_factory is dataclasses.MISSING
+    parametro = inspect.signature(SafeTargetSnapshot).parameters["legacy_protection_state"]
+    assert parametro.default is inspect.Parameter.empty
+
+
+def test_u126_omissao_no_snapshot_e_erro():
+    with pytest.raises(TypeError):
+        _construir(
+            SafeTargetSnapshot,
+            target_class=ErasureTargetClass.PIA_MANAGED_ARTIFACT,
+            subject_coid=SUJEITO,
+            control_scope=escopo(),
+            custody_namespace=custodia(),
+            origin=ReferenceProvenance(ReferenceOrigin.PAYLOAD_REF),
+        )
+
+
+def test_u127_snapshots_diferem_apenas_pela_protecao():
+    """Dois snapshots idênticos exceto pela proteção são **diferentes**."""
+    protegido = snapshot(legacy_protection_state=LegacyProtectionState.PROTECTED)
+    livre = snapshot(legacy_protection_state=LegacyProtectionState.NOT_PROTECTED)
+    assert protegido != livre
+    assert protegido == snapshot(legacy_protection_state=LegacyProtectionState.PROTECTED)
+
+
+# --- materializador canônico ---------------------------------------------
+
+
+@pytest.mark.parametrize("estado", list(LegacyProtectionState))
+def test_u128_from_descriptor_copia_a_protecao(estado):
+    d = _descritor(legacy_protection_state=estado)
+    s = SafeTargetSnapshot.from_descriptor(d)
+    assert s.legacy_protection_state is d.legacy_protection_state is estado
+
+
+def test_u129_from_descriptor_copia_os_sete_campos():
+    d = _descritor(version_etag='W/"v7"')
+    s = SafeTargetSnapshot.from_descriptor(d)
+    assert s.target_class is d.target_class
+    assert s.subject_coid == d.subject_coid
+    assert s.control_scope == d.control_scope
+    assert s.custody_namespace == d.custody_namespace
+    assert s.origin == d.origin
+    assert s.legacy_protection_state is d.legacy_protection_state
+    assert s.version_etag == d.version_etag
+
+
+def test_u130_from_descriptor_nao_leva_localizador_capacidade_nem_instante():
+    """`LOCATOR_NEVER_CROSSES`."""
+    import dataclasses
+
+    d = _descritor()
+    s = SafeTargetSnapshot.from_descriptor(d)
+    campos = {c.name for c in dataclasses.fields(s)}
+    for proibido in ("transient_locator", "capability", "resolved_at"):
+        assert proibido not in campos
+    assert d.transient_locator not in repr(s)
+    assert d.transient_locator not in str(s)
+
+
+@pytest.mark.parametrize("valor", ["descritor", None, 42, object(), snapshot()])
+def test_u131_from_descriptor_recusa_tipo_incorreto(valor):
+    with pytest.raises(TypeError, match="ErasureTargetDescriptor"):
+        SafeTargetSnapshot.from_descriptor(valor)
+
+
+def test_u132_from_descriptor_preserva_a_distincao_de_protecao():
+    a = SafeTargetSnapshot.from_descriptor(
+        _descritor(legacy_protection_state=LegacyProtectionState.PROTECTED)
+    )
+    b = SafeTargetSnapshot.from_descriptor(
+        _descritor(legacy_protection_state=LegacyProtectionState.NOT_PROTECTED)
+    )
+    assert a != b
+
+
+# --- proposta: armazena e valida; NÃO compara contra re-resolução --------
+
+
+def test_u133_a_proposta_preserva_estado_e_ordem_do_lote():
+    a = snapshot(subject_coid=SUJEITO, legacy_protection_state=LegacyProtectionState.PROTECTED)
+    b = snapshot(
+        subject_coid=SUJEITO_2,
+        legacy_protection_state=LegacyProtectionState.NOT_PROTECTED,
+    )
+    p = proposta(targets=(b, a), impact=PresentedImpact(2, ImpactVolumeKind.UNKNOWN))
+    assert [t.subject_coid for t in p.targets] == [SUJEITO_2, SUJEITO]
+    assert [t.legacy_protection_state for t in p.targets] == [
+        LegacyProtectionState.NOT_PROTECTED,
+        LegacyProtectionState.PROTECTED,
+    ]
+
+
+def test_u134_lote_misto_com_estados_distintos_e_valido():
+    """`PROTECTED` não é bloqueio nesta fatia."""
+    p = proposta(
+        targets=(
+            snapshot(
+                subject_coid=SUJEITO,
+                legacy_protection_state=LegacyProtectionState.PROTECTED,
+            ),
+            snapshot(
+                subject_coid=SUJEITO_2,
+                legacy_protection_state=LegacyProtectionState.NOT_PROTECTED,
+            ),
+        ),
+        impact=PresentedImpact(2, ImpactVolumeKind.UNKNOWN),
+    )
+    assert p.is_approvable is True
+    assert not p.blockers
+
+
+def test_u135_proposta_com_estado_a_nao_representa_estado_b():
+    a = proposta(targets=(snapshot(legacy_protection_state=LegacyProtectionState.PROTECTED),))
+    b = proposta(targets=(snapshot(legacy_protection_state=LegacyProtectionState.NOT_PROTECTED),))
+    assert a.targets != b.targets
+    assert envelope(proposal=a).proposal.targets != envelope(proposal=b).proposal.targets
+
+
+def test_u136_formar_proposta_nao_muda_a_protecao():
+    s = snapshot(legacy_protection_state=LegacyProtectionState.PROTECTED)
+    p = proposta(targets=(s,))
+    assert p.targets[0].legacy_protection_state is LegacyProtectionState.PROTECTED
+    assert p.targets[0] is s
+
+
+def test_u137_invalidacao_efetiva_e_deferida_e_nao_alegada():
+    """`EFFECTIVE_INVALIDATION = DEFERRED_TO_E4_9_9_D`.
+
+    Esta fatia torna estados opostos **distinguíveis**. Comparar o
+    snapshot aprovado com uma re-resolução fresca, e recusar a execução
+    quando divergirem, é da E4.9.9.d. A proposta armazena e valida; não
+    compara contra resolução futura, porque não existe resolução futura.
+    """
+    p = proposta()
+    for proibido in ("compare_with_fresh", "revalidate", "invalidate", "matches"):
+        assert not hasattr(p, proibido)
+    e = envelope(proposal=p)
+    for proibido in ("compare_with_fresh", "revalidate", "invalidate"):
+        assert not hasattr(e, proibido)
+
+
+# --- paridade texto/voz ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("canal", "revisao"),
+    [
+        (InputChannel.TEXT, VoiceReviewState.NOT_APPLICABLE),
+        (InputChannel.VOICE, VoiceReviewState.REVIEWED_AND_CONFIRMED),
+    ],
+)
+@pytest.mark.parametrize("estado", list(LegacyProtectionState))
+def test_u138_texto_e_voz_com_os_mesmos_estados(canal, revisao, estado):
+    prov = proveniencia(channel=canal, voice_review=revisao)
+    p = proposta(provenance=prov, targets=(snapshot(legacy_protection_state=estado),))
+    assert p.targets[0].legacy_protection_state is estado
+    assert envelope(proposal=p, provenance=prov)
