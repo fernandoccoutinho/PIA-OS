@@ -288,6 +288,31 @@ def validar_localizador_sem_expansao_literal(nome: str, valor: object) -> str:
 REFERENCIA_OCULTA = "<opaque_reference:redacted>"
 """O que `repr()` mostra no lugar da referência opaca."""
 
+TEXTO_OCULTO = "<text:redacted>"
+"""O que `repr()` mostra no lugar de qualquer campo textual livre.
+
+```text
+UNRESTRICTED_PUBLIC_STR = MAY_CONTAIN_SENSITIVE_VALUE
+```
+
+Acrescentado pela `E4.9.7.3`. O inventário da cadeia 82 afirmou que
+**exatamente dois** campos podiam transportar material sensível, e a
+auditoria mediu nove vazamentos: `control_principal_ref`, `provider`,
+`namespace`, `operation` e `scope` aceitavam o mesmo marcador e o
+revelavam em `repr()`, `str()` e dentro das composições.
+
+A regra que passa a valer é a do domínio **executável**, não a do nome:
+enquanto um campo público aceita texto arbitrário, ele pode conter valor
+sensível — e a classificação honesta é essa, salvo se um tipo fechado ou
+uma gramática efetivamente aplicada provar o contrário.
+
+```text
+SEMANTIC_FIELD_NAME != ENFORCED_VALUE_DOMAIN
+TEXT_VALIDATION     != NON_SENSITIVE_VALUE_PROOF
+INVENTORY_OF_NAMES  != CONFIDENTIALITY_PROOF
+```
+"""
+
 
 @dataclass(frozen=True)
 class ReferenceProvenance:
@@ -365,9 +390,20 @@ class ControlScope:
 
     workspace_id: uuid.UUID
     tenant_id: uuid.UUID
-    control_principal_ref: str
+    control_principal_ref: str = field(repr=False)
     """Referência opaca ao principal de controle. Descritiva, como o
-    `actor_ref` da E3: não autentica e não prova identidade."""
+    `actor_ref` da E3: não autentica e não prova identidade.
+
+    ```text
+    UNRESTRICTED_PUBLIC_STR = MAY_CONTAIN_SENSITIVE_VALUE
+    ```
+
+    **Redigido desde a E4.9.7.3.** O EDR da cadeia 82 reconheceu que este
+    campo podia receber algo sensível e afirmou que não era diretamente
+    explorável "porque não entra em recusa". Era falso em runtime: a
+    dataclass o expunha diretamente, e `ErasureTargetReference.__repr__`
+    inclui `control_scope!r`. O valor continua acessível a quem resolve.
+    """
 
     def __post_init__(self) -> None:
         for nome in ("workspace_id", "tenant_id"):
@@ -375,6 +411,17 @@ class ControlScope:
             if not isinstance(valor, uuid.UUID):
                 raise TypeError(f"{nome} deve ser UUID, recebido {type(valor).__name__}")
         validar_texto_opaco("control_principal_ref", self.control_principal_ref)
+
+    def __repr__(self) -> str:
+        """Identidade contextual visível; o texto livre, não."""
+        return (
+            f"ControlScope(workspace_id={self.workspace_id!r}, "
+            f"tenant_id={self.tenant_id!r}, "
+            f"control_principal_ref={TEXTO_OCULTO})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 @dataclass(frozen=True)
@@ -397,12 +444,28 @@ class CustodyNamespace:
     Nenhum provedor é padrão. `PROVIDER_NEUTRALITY_PRESERVED`.
     """
 
-    provider: str
-    namespace: str
+    provider: str = field(repr=False)
+    namespace: str = field(repr=False)
+    """Ambos são texto arbitrário — logo, `MAY_CONTAIN_SENSITIVE_VALUE`.
+
+    **Redigidos desde a E4.9.7.3.** Congelá-los num enum resolveria o
+    vazamento e quebraria `PROVIDER_NEUTRALITY_PRESERVED`, que o §3.3 do
+    corretivo proíbe: um provedor real não pode virar vocabulário
+    fechado. Impor gramática de "identificador, não URL" seria inventar
+    uma regra que nenhum contrato sustenta — há provedores cujo namespace
+    legítimo é uma URI. Resta redigir a representação e manter o valor
+    acessível.
+    """
 
     def __post_init__(self) -> None:
         validar_texto_opaco("provider", self.provider)
         validar_texto_opaco("namespace", self.namespace)
+
+    def __repr__(self) -> str:
+        return f"CustodyNamespace(provider={TEXTO_OCULTO}, namespace={TEXTO_OCULTO})"
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 @dataclass(frozen=True)
@@ -423,15 +486,34 @@ class VerifiedDeletionCapability:
     `DELETION_CAPABILITY_NOT_VERIFIED` em vez de sumir.
     """
 
-    operation: str
-    scope: str
-    verified: bool
+    operation: str = field(repr=False)
+    scope: str = field(repr=False)
+    verified: bool = True
+    """`operation` e `scope` são texto arbitrário e ficam redigidos.
+
+    **E4.9.7.3.** `scope` **continua podendo representar conjunto** —
+    `workspace/w1/*` é caso legítimo, porque capacidade descreve o que a
+    conta pode, não um objeto. Redigir a representação não restringe o
+    domínio: só impede que o valor escape por `repr`.
+
+    `verified` é `bool` e permanece visível: não é texto e não transporta
+    conteúdo.
+    """
 
     def __post_init__(self) -> None:
         validar_texto_opaco("operation", self.operation)
         validar_texto_opaco("scope", self.scope)
         if not isinstance(self.verified, bool):
             raise TypeError(f"verified deve ser bool, recebido {type(self.verified).__name__}")
+
+    def __repr__(self) -> str:
+        return (
+            f"VerifiedDeletionCapability(operation={TEXTO_OCULTO}, "
+            f"scope={TEXTO_OCULTO}, verified={self.verified!r})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 @dataclass(frozen=True)
@@ -556,7 +638,7 @@ class ErasureTargetDescriptor:
     `repr=False` no campo, mais `__repr__` próprio: nenhuma
     representação textual deste objeto o revela.
     """
-    version_etag: str | None = field(default=None)
+    version_etag: str | None = field(default=None, repr=False)
     """Detecta resolução obsoleta quando o provedor oferece versão."""
 
     def __post_init__(self) -> None:
@@ -601,9 +683,10 @@ class ErasureTargetDescriptor:
         return (
             f"ErasureTargetDescriptor(target_class={self.target_class.value!r}, "
             f"subject_coid={self.subject_coid!r}, "
-            f"provider={self.custody_namespace.provider!r}, "
-            f"namespace={self.custody_namespace.namespace!r}, "
+            f"custody_namespace={self.custody_namespace!r}, "
+            f"capability={self.capability!r}, "
             f"resolved_at={self.resolved_at!r}, "
+            f"version_etag={TEXTO_OCULTO if self.version_etag else None!r}, "
             f"transient_locator={LOCALIZADOR_OCULTO})"
         )
 

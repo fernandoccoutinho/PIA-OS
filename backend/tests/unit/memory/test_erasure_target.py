@@ -1212,3 +1212,161 @@ def test_u92_proveniencia_exige_o_enum_fechado_de_origem(valor):
     """
     with pytest.raises(TypeError, match="ReferenceOrigin"):
         _construir(ReferenceProvenance, origin=valor)
+
+
+# ======================================================================
+# E4.9.7.3 — inventário textual e confidencialidade composta
+#
+# As nove evidências do terceiro reprodutor viram regressão aqui.
+# A5: o inventário da cadeia 82 declarou "exatamente dois" campos
+# sensíveis; cinco outros aceitavam o mesmo marcador e o revelavam.
+#
+# UNRESTRICTED_PUBLIC_STR = MAY_CONTAIN_SENSITIVE_VALUE
+# DIRECT_REDACTION != COMPOSITE_REDACTION
+# ======================================================================
+
+
+MARCADOR = "https://user:password@example.invalid/object?token=E4973_SECRET"
+
+
+def _sem_vazamento(objeto: object, canal: str) -> None:
+    assert MARCADOR not in repr(objeto), f"{canal}: repr"
+    assert MARCADOR not in str(objeto), f"{canal}: str"
+    assert MARCADOR not in f"{objeto}", f"{canal}: f-string"
+
+
+# --- canais diretos -------------------------------------------------------
+
+
+def test_u93_control_principal_sensivel_nao_vaza_direto():
+    """O canal que o EDR da cadeia 82 chamou de não explorável.
+
+    Era explorável: a dataclass o expunha diretamente.
+    """
+    _sem_vazamento(escopo(control_principal_ref=MARCADOR), "ControlScope")
+
+
+def test_u94_provider_e_namespace_sensiveis_nao_vazam_direto():
+    _sem_vazamento(custodia(provider=MARCADOR), "CustodyNamespace.provider")
+    _sem_vazamento(custodia(namespace=MARCADOR), "CustodyNamespace.namespace")
+
+
+def test_u95_operation_e_scope_sensiveis_nao_vazam_direto():
+    _sem_vazamento(capacidade(operation=MARCADOR), "capability.operation")
+    _sem_vazamento(capacidade(scope=MARCADOR), "capability.scope")
+
+
+def test_u96_version_etag_sensivel_nao_vaza():
+    _sem_vazamento(descritor(version_etag=MARCADOR), "descriptor.version_etag")
+
+
+# --- composições ----------------------------------------------------------
+
+
+def test_u97_principal_sensivel_aninhado_na_referencia_nao_vaza():
+    """`DIRECT_REDACTION != COMPOSITE_REDACTION`."""
+    r = referencia(control_scope=escopo(control_principal_ref=MARCADOR))
+    _sem_vazamento(r, "Reference→control_scope")
+
+
+def test_u98_namespace_sensivel_aninhado_na_referencia_nao_vaza():
+    r = referencia(expected_namespace=custodia(namespace=MARCADOR))
+    _sem_vazamento(r, "Reference→expected_namespace")
+
+
+@pytest.mark.parametrize("campo", ["provider", "namespace"])
+def test_u99_custodia_sensivel_aninhada_no_descritor_nao_vaza(campo):
+    d = descritor(custody_namespace=custodia(**{campo: MARCADOR}))
+    _sem_vazamento(d, f"Descriptor→custody_namespace.{campo}")
+
+
+@pytest.mark.parametrize("campo", ["operation", "scope"])
+def test_u100_capacidade_sensivel_aninhada_no_descritor_nao_vaza(campo):
+    d = descritor(capability=capacidade(**{campo: MARCADOR}))
+    _sem_vazamento(d, f"Descriptor→capability.{campo}")
+
+
+def test_u101_principal_sensivel_aninhado_no_descritor_nao_vaza():
+    d = descritor(control_scope=escopo(control_principal_ref=MARCADOR))
+    _sem_vazamento(d, "Descriptor→control_scope")
+
+
+def test_u102_recusa_nao_expoe_nenhum_canal_textual():
+    """A recusa não tem campo textual — nem próprio, nem composto."""
+    import dataclasses
+
+    campos = {c.name: c.type for c in dataclasses.fields(TargetResolutionRefusal)}
+    assert not any(tipo is str for tipo in campos.values())
+    _sem_vazamento(recusa(), "TargetResolutionRefusal")
+
+
+# --- acesso, imutabilidade e igualdade preservados ------------------------
+
+
+def test_u103_os_valores_continuam_acessiveis_a_quem_resolve():
+    """Redigir a representação não pode inutilizar o contrato."""
+    assert escopo(control_principal_ref=MARCADOR).control_principal_ref == MARCADOR
+    assert custodia(provider=MARCADOR).provider == MARCADOR
+    assert custodia(namespace=MARCADOR).namespace == MARCADOR
+    assert capacidade(operation=MARCADOR).operation == MARCADOR
+    assert capacidade(scope=MARCADOR).scope == MARCADOR
+    assert descritor(version_etag=MARCADOR).version_etag == MARCADOR
+
+
+def test_u104_igualdade_preservada_sem_normalizacao():
+    """`repr=False` não altera `__eq__` nem o valor guardado."""
+    assert custodia(provider=MARCADOR) == custodia(provider=MARCADOR)
+    assert custodia(provider=MARCADOR) != custodia(provider="pia-storage")
+    assert escopo(control_principal_ref="ação").control_principal_ref == "ação"
+
+
+def test_u105_os_campos_livres_continuam_congelados():
+    for alvo, campo in (
+        (escopo(), "control_principal_ref"),
+        (custodia(), "provider"),
+        (custodia(), "namespace"),
+        (capacidade(), "operation"),
+        (capacidade(), "scope"),
+    ):
+        with pytest.raises(FrozenInstanceError):
+            _atribuir_campo(alvo, campo, "outro")
+
+
+# --- o que NÃO pode ter mudado -------------------------------------------
+
+
+def test_u106_scope_continua_podendo_representar_conjunto():
+    """Redigir a representação não restringe o domínio.
+
+    `capability.scope` descreve o que a conta pode — legitimamente um
+    conjunto. Confundir isso com alvo exato inverteria o contrato.
+    """
+    c = capacidade(scope="workspace/w1/*")
+    assert c.scope == "workspace/w1/*"
+    assert descritor(capability=c).capability.scope == "workspace/w1/*"
+
+
+def test_u107_nenhum_provedor_foi_congelado_em_enum():
+    """`PROVIDER_NEUTRALITY_PRESERVED`.
+
+    Fechar `provider` num vocabulário resolveria o vazamento e quebraria
+    a neutralidade que o Master exige.
+    """
+    for provedor in ("pia-storage", "s3", "gcs", "provedor-novo-qualquer", "ação"):
+        assert custodia(provider=provedor).provider == provedor
+
+
+def test_u108_a_representacao_continua_util():
+    """Redação não pode virar apagamento — o que não é texto livre fica.
+
+    Sem isto, `repr` deixaria de servir para depurar e a redação seria
+    trocada por comodidade na primeira sessão difícil.
+    """
+    d = descritor()
+    assert "pia_managed_artifact" in repr(d)
+    assert str(S1) in repr(d)
+    assert "2026" in repr(d)
+    assert "verified=True" in repr(d)
+    r = referencia()
+    assert str(S1) in repr(r)
+    assert "payload_ref" in repr(r)

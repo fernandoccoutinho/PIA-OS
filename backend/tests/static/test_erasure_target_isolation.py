@@ -23,6 +23,8 @@ muda a contagem de um módulo congelado por vizinhança.
 import ast
 import pathlib
 
+import pytest
+
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 
 NOVOS_MODULOS = {
@@ -550,33 +552,194 @@ def test_s24_inventario_dos_campos_textuais_publicos() -> None:
     }
 
 
-def test_s25_os_dois_campos_sensiveis_sao_redigidos_na_representacao() -> None:
-    """`REQUIRED_SENSITIVE_INPUT = REDACTED_FROM_REPR_AND_STR`.
+MARCADOR_SENSIVEL = "https://user:password@example.invalid/object?token=S25_SECRET"
 
-    `opaque_reference` e `transient_locator` são os dois únicos campos
-    que podem transportar material sensível. Ambos têm `repr=False` na
-    dataclass e `__repr__`/`__str__` próprios — duas camadas, porque um
-    argumento é fácil de apagar sem perceber.
+CAMPOS_TEXTUAIS_LIVRES: tuple[tuple[str, str], ...] = (
+    ("ControlScope", "control_principal_ref"),
+    ("CustodyNamespace", "provider"),
+    ("CustodyNamespace", "namespace"),
+    ("VerifiedDeletionCapability", "operation"),
+    ("VerifiedDeletionCapability", "scope"),
+    ("ErasureTargetReference", "opaque_reference"),
+    ("ErasureTargetDescriptor", "transient_locator"),
+    ("ErasureTargetDescriptor", "version_etag"),
+)
+"""Todo campo `str` público que aceita texto arbitrário.
+
+Se um destes deixar de ser livre — por tipo fechado ou gramática aplicada —
+mova-o daqui e prove a rejeição. Enquanto aceitar texto arbitrário, vale
+`UNRESTRICTED_PUBLIC_STR = MAY_CONTAIN_SENSITIVE_VALUE`.
+"""
+
+
+def _fabricas_com_marcador() -> dict[str, object]:
+    """Um objeto por canal, com o marcador sensível naquele campo."""
+    import uuid
+    from datetime import UTC, datetime
+
+    from app.memory.models.erasure_enums import ErasureTargetClass
+    from app.memory.models.target_resolution_enums import ReferenceOrigin
+    from app.memory.schemas.erasure_target import (
+        ControlScope,
+        CustodyNamespace,
+        ErasureTargetDescriptor,
+        ErasureTargetReference,
+        ReferenceProvenance,
+        VerifiedDeletionCapability,
+    )
+
+    w, n, s = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    prov = ReferenceProvenance(ReferenceOrigin.PAYLOAD_REF)
+    escopo_ok = ControlScope(w, n, "principal:controle-1")
+    custodia_ok = CustodyNamespace("pia-storage", "workspace/w1")
+    cap_ok = VerifiedDeletionCapability("delete_object", "workspace/w1/*", True)
+    quando = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    M = MARCADOR_SENSIVEL
+
+    def descritor(**kw: object) -> ErasureTargetDescriptor:
+        base: dict[str, object] = {
+            "target_class": ErasureTargetClass.PIA_MANAGED_ARTIFACT,
+            "subject_coid": s,
+            "control_scope": escopo_ok,
+            "custody_namespace": custodia_ok,
+            "capability": cap_ok,
+            "resolved_at": quando,
+            "origin": prov,
+            "transient_locator": "s3://bucket/exact-object",
+        }
+        base.update(kw)
+        construtor: object = ErasureTargetDescriptor
+        assert callable(construtor)
+        return construtor(**base)
+
+    def referencia(**kw: object) -> ErasureTargetReference:
+        base: dict[str, object] = {
+            "subject_coid": s,
+            "opaque_reference": "payload://safe",
+            "origin": prov,
+            "control_scope": escopo_ok,
+        }
+        base.update(kw)
+        construtor: object = ErasureTargetReference
+        assert callable(construtor)
+        return construtor(**base)
+
+    escopo_sensivel = ControlScope(w, n, M)
+    custodia_provider = CustodyNamespace(M, "workspace/w1")
+    custodia_namespace = CustodyNamespace("pia-storage", M)
+
+    return {
+        # diretos
+        "ControlScope.control_principal_ref": escopo_sensivel,
+        "CustodyNamespace.provider": custodia_provider,
+        "CustodyNamespace.namespace": custodia_namespace,
+        "VerifiedDeletionCapability.operation": VerifiedDeletionCapability(
+            M, "workspace/w1/*", True
+        ),
+        "VerifiedDeletionCapability.scope": VerifiedDeletionCapability("delete_object", M, True),
+        "ErasureTargetReference.opaque_reference": referencia(opaque_reference=M),
+        "ErasureTargetDescriptor.version_etag": descritor(version_etag=M),
+        # compostos — uma classe interna segura não prova a externa
+        "Reference→control_scope": referencia(control_scope=escopo_sensivel),
+        "Reference→expected_namespace": referencia(expected_namespace=custodia_namespace),
+        "Descriptor→control_scope": descritor(control_scope=escopo_sensivel),
+        "Descriptor→custody_namespace.provider": descritor(custody_namespace=custodia_provider),
+        "Descriptor→custody_namespace.namespace": descritor(custody_namespace=custodia_namespace),
+        "Descriptor→capability.operation": descritor(
+            capability=VerifiedDeletionCapability(M, "workspace/w1/*", True)
+        ),
+        "Descriptor→capability.scope": descritor(
+            capability=VerifiedDeletionCapability("delete_object", M, True)
+        ),
+    }
+
+
+def test_s25_nenhum_canal_textual_revela_marcador_sensivel() -> None:
+    """SUBSTITUI a guarda da cadeia 82, que fixava "exatamente dois".
+
+    ```text
+    UNRESTRICTED_PUBLIC_STR = MAY_CONTAIN_SENSITIVE_VALUE
+    DIRECT_REDACTION != COMPOSITE_REDACTION
+    INVENTORY_OF_NAMES != CONFIDENTIALITY_PROOF
+    ```
+
+    A versão anterior contava nomes e protegia dois campos, e passava
+    **porque não exercitava os demais** com o mesmo marcador. Esta
+    exercita cada canal livre, direto e composto, com o valor sensível
+    real — que é a única forma de a guarda poder falhar.
+
+    `transient_locator` não aparece na lista de fábricas porque o
+    validador de expansão literal já **rejeita** a URL com userinfo e
+    query: rejeição também é fechamento, e `u53`/`u55` cobrem esse caso.
+    """
+    for canal, objeto in _fabricas_com_marcador().items():
+        assert MARCADOR_SENSIVEL not in repr(objeto), f"{canal}: repr"
+        assert MARCADOR_SENSIVEL not in str(objeto), f"{canal}: str"
+        assert MARCADOR_SENSIVEL not in f"{objeto}", f"{canal}: f-string"
+        assert MARCADOR_SENSIVEL not in "{}".format(objeto), f"{canal}: format"  # noqa: UP032
+
+
+def test_s25_1_todo_campo_textual_livre_esta_coberto() -> None:
+    """A lista de canais é derivada por reflexão, não escrita à mão.
+
+    Um campo `str` novo em qualquer contrato da fatia derruba esta guarda
+    até ser classificado e coberto — que é exatamente o que faltou na
+    cadeia 82.
     """
     import dataclasses
 
-    from app.memory.schemas.erasure_target import (
-        ErasureTargetDescriptor,
-        ErasureTargetReference,
-    )
+    from app.memory.schemas import erasure_target
 
-    esperado = {
-        ErasureTargetReference: "opaque_reference",
-        ErasureTargetDescriptor: "transient_locator",
-    }
-    for classe, campo in esperado.items():
-        (sensivel,) = [c for c in dataclasses.fields(classe) if c.name == campo]
-        assert sensivel.repr is False, classe.__name__
-        assert {"__repr__", "__str__"} <= set(vars(classe)), classe.__name__
+    descobertos: set[tuple[str, str]] = set()
+    for nome in dir(erasure_target):
+        obj = getattr(erasure_target, nome)
+        if not dataclasses.is_dataclass(obj) or not isinstance(obj, type):
+            continue
+        for campo in dataclasses.fields(obj):
+            if campo.type is str or campo.type == (str | None):
+                descobertos.add((obj.__name__, campo.name))
 
-    fonte = (APP / "memory" / "schemas" / "erasure_target.py").read_text(encoding="utf-8")
-    assert "REFERENCIA_OCULTA" in fonte
-    assert "LOCALIZADOR_OCULTO" in fonte
+    assert descobertos == set(CAMPOS_TEXTUAIS_LIVRES)
+
+
+def test_s25_2_os_campos_livres_continuam_acessiveis_e_imutaveis() -> None:
+    """Redigir a representação não pode inutilizar nem normalizar o valor."""
+    from dataclasses import FrozenInstanceError
+
+    from app.memory.schemas.erasure_target import ControlScope, CustodyNamespace
+
+    objetos = _fabricas_com_marcador()
+    escopo = objetos["ControlScope.control_principal_ref"]
+    assert isinstance(escopo, ControlScope)
+    assert escopo.control_principal_ref == MARCADOR_SENSIVEL
+
+    custodia = objetos["CustodyNamespace.provider"]
+    assert isinstance(custodia, CustodyNamespace)
+    assert custodia.provider == MARCADOR_SENSIVEL
+    assert custodia == CustodyNamespace(MARCADOR_SENSIVEL, "workspace/w1")
+
+    with pytest.raises(FrozenInstanceError):
+        escopo.control_principal_ref = "outro"
+
+
+def test_s25_3_a_redacao_tem_duas_camadas_em_cada_classe() -> None:
+    """`repr=False` no campo E `__repr__` próprio na classe.
+
+    Uma camada só é frágil: um argumento é fácil de apagar sem perceber.
+    """
+    import dataclasses
+
+    from app.memory.schemas import erasure_target
+
+    por_classe: dict[str, set[str]] = {}
+    for classe, campo in CAMPOS_TEXTUAIS_LIVRES:
+        por_classe.setdefault(classe, set()).add(campo)
+
+    for nome, campos in por_classe.items():
+        classe = getattr(erasure_target, nome)
+        assert {"__repr__", "__str__"} <= set(vars(classe)), nome
+        ocultos = {c.name for c in dataclasses.fields(classe) if c.repr is False}
+        assert campos <= ocultos, f"{nome}: {campos - ocultos}"
 
 
 def test_s26_o_vocabulario_de_origem_veio_do_repositorio_real() -> None:
