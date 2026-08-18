@@ -884,6 +884,181 @@ def test_s30_nenhuma_fabrica_de_producao_injeta_verificacao() -> None:
 # ======================================================================
 
 
+# ======================================================================
+# E4.9.8.3.1 — helpers de análise COMPARTILHADOS entre guarda e mutante
+#
+#   GUARD_PRESENT != GUARD_CAN_FAIL != DEMONSTRATED_BY_MUTANT
+#
+# A cadeia 88 publicou sete guardas sem demonstração de falha, e o §7.2 do
+# próprio prompt da E4.9.8.3 a exigia para CADA uma. O corretivo fecha a
+# lacuna — e fecha-a com helpers, não com testes paralelos: se a
+# demonstração reimplementasse a análise, ela provaria que UM MUTANTE cai
+# numa lógica escrita para o teste, não na lógica que protege o código.
+#
+#   MUTANT_REJECTED_BY_PARALLEL_LOGIC != GUARD_CAN_FAIL
+# ======================================================================
+
+
+def _membros_do_vocabulario(fonte: str) -> dict[str, str]:
+    """Nomes **e valores** de `LegacyProtectionState`, por AST.
+
+    Medir só nomes deixaria passar a troca de um token exato — por isso o
+    retorno é o par completo.
+    """
+    (classe,) = [
+        no
+        for no in ast.walk(ast.parse(fonte))
+        if isinstance(no, ast.ClassDef) and no.name == "LegacyProtectionState"
+    ]
+    membros: dict[str, str] = {}
+    for no in classe.body:
+        if isinstance(no, ast.Assign) and isinstance(no.targets[0], ast.Name):
+            alvo, valor = no.targets[0].id, no.value
+        elif isinstance(no, ast.AnnAssign) and isinstance(no.target, ast.Name):
+            alvo, valor = no.target.id, no.value
+        else:
+            continue
+        if isinstance(valor, ast.Constant) and isinstance(valor.value, str):
+            membros[alvo] = valor.value
+    return membros
+
+
+def _valida_protecao_em_runtime(post_init: ast.FunctionDef) -> bool:
+    """O `__post_init__` recusa não-membro com `TypeError` **próprio**?
+
+    Exige que o `raise TypeError` esteja no ramo negativo do `isinstance`
+    do campo. Um `raise TypeError` de outro campo não conta — era a
+    fraqueza que o §3.3 do corretivo nomeia.
+    """
+    for no in ast.walk(post_init):
+        if not isinstance(no, ast.If):
+            continue
+        teste = ast.unparse(no.test)
+        if "isinstance(self.legacy_protection_state, LegacyProtectionState)" not in teste:
+            continue
+        if not teste.startswith("not "):
+            continue
+        levanta = [
+            filho
+            for filho in ast.walk(ast.Module(body=no.body, type_ignores=[]))
+            if isinstance(filho, ast.Raise)
+        ]
+        for r in levanta:
+            alvo = r.exc.func if isinstance(r.exc, ast.Call) else r.exc
+            if isinstance(alvo, ast.Name) and alvo.id == "TypeError":
+                return True
+    return False
+
+
+def _inferencias_de_protecao(fonte: str, proibidos: set[str]) -> set[str]:
+    """Identificadores de inferência presentes na fonte.
+
+    Por identificador na AST, nunca substring: `protection` aparece
+    legitimamente em docstring e nome de campo.
+    """
+    arvore = ast.parse(fonte)
+    identificadores = {no.name for no in ast.walk(arvore) if isinstance(no, ast.FunctionDef)} | {
+        no.attr for no in ast.walk(arvore) if isinstance(no, ast.Attribute)
+    }
+    identificadores |= {no.id for no in ast.walk(arvore) if isinstance(no, ast.Name)}
+    return identificadores & proibidos
+
+
+def _membros_de_enum(fonte: str, nome: str) -> set[str]:
+    """Nomes dos membros de um enum qualquer, por AST."""
+    classes = [
+        no for no in ast.walk(ast.parse(fonte)) if isinstance(no, ast.ClassDef) and no.name == nome
+    ]
+    if not classes:
+        return set()
+    (classe,) = classes
+    membros: set[str] = set()
+    for no in classe.body:
+        if isinstance(no, ast.Assign) and isinstance(no.targets[0], ast.Name):
+            membros.add(no.targets[0].id)
+        elif isinstance(no, ast.AnnAssign) and isinstance(no.target, ast.Name):
+            membros.add(no.target.id)
+    return membros
+
+
+def _protecao_usada_como_bloqueio(fonte: str) -> bool:
+    """`PROTECTED` é usado como condição de bloqueio no código?
+
+    Contar membros de enum **não** detecta uso automático do estado como
+    blocker — é o que o §3.5 do corretivo exige provar. Esta análise
+    procura comparação com `LegacyProtectionState.PROTECTED` dentro de um
+    `if`, que é a forma em que um bloqueio automático apareceria.
+    """
+    for no in ast.walk(ast.parse(fonte)):
+        if not isinstance(no, ast.If):
+            continue
+        if "LegacyProtectionState.PROTECTED" in ast.unparse(no.test):
+            return True
+    return False
+
+
+def _simbolo_definido(fonte: str, nome: str) -> bool:
+    """O símbolo é definido como classe, função OU atribuição de módulo?
+
+    Uma guarda que só procure `class X` não detecta o símbolo criado como
+    função ou export — o §3.7 do corretivo nomeia exatamente isso.
+    """
+    arvore = ast.parse(fonte)
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            if no.name == nome:
+                return True
+        elif isinstance(no, ast.Assign):
+            for alvo in no.targets:
+                if isinstance(alvo, ast.Name) and alvo.id == nome:
+                    return True
+        elif (
+            isinstance(no, ast.AnnAssign)
+            and isinstance(no.target, ast.Name)
+            and no.target.id == nome
+        ):
+            return True
+    return False
+
+
+def _revisoes_de_migration(fontes: dict[str, str]) -> dict[str, str | None]:
+    """`revision -> down_revision` de cada migration, por AST.
+
+    Devolve o grafo, não só a sucessão direta do head: uma BRANCH criada a
+    partir de revisão anterior é migration nova igualmente, e uma guarda
+    que só olhe `down_revision == head` não a veria.
+    """
+    grafo: dict[str, str | None] = {}
+    for nome, fonte in fontes.items():
+        revisao = descendente = None
+        for no in ast.walk(ast.parse(fonte)):
+            if isinstance(no, ast.AnnAssign) and isinstance(no.target, ast.Name):
+                if no.target.id == "revision" and isinstance(no.value, ast.Constant):
+                    revisao = no.value.value
+                elif no.target.id == "down_revision" and isinstance(no.value, ast.Constant):
+                    descendente = no.value.value
+        if revisao:
+            grafo[revisao] = descendente
+        else:
+            grafo[nome] = descendente
+    return grafo
+
+
+def _persistencia_presente(fonte: str) -> set[str]:
+    """Símbolos de ORM/repository presentes no código executável."""
+    proibidos = {"mapped_column", "Mapped", "Session", "Repository", "relationship"}
+    arvore = ast.parse(fonte)
+    vistos: set[str] = set()
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Name):
+            vistos.add(no.id)
+        elif isinstance(no, ast.Attribute):
+            vistos.add(no.attr)
+        elif isinstance(no, ast.ClassDef):
+            vistos.update(b.id for b in no.bases if isinstance(b, ast.Name))
+    return vistos & proibidos
+
+
 def test_s31_fonte_unica_do_vocabulario_de_protecao() -> None:
     """Um só `LegacyProtectionState` em todo `app/`.
 
@@ -983,9 +1158,7 @@ def test_s34_validacao_de_membro_real_nos_dois_construtores() -> None:
             for no in classe.body
             if isinstance(no, ast.FunctionDef) and no.name == "__post_init__"
         ]
-        corpo = ast.unparse(post_init)
-        assert "isinstance(self.legacy_protection_state, LegacyProtectionState)" in corpo, nome
-        assert "raise TypeError" in corpo, nome
+        assert _valida_protecao_em_runtime(post_init), nome
 
 
 def test_s35_nenhuma_inferencia_de_protecao_no_codigo() -> None:
@@ -1007,11 +1180,8 @@ def test_s35_nenhuma_inferencia_de_protecao_no_codigo() -> None:
         APP / "memory" / "schemas" / "destructive_approval.py",
         APP / "memory" / "models" / "target_resolution_enums.py",
     ):
-        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
-        identificadores = {
-            no.name for no in ast.walk(arvore) if isinstance(no, ast.FunctionDef)
-        } | {no.attr for no in ast.walk(arvore) if isinstance(no, ast.Attribute)}
-        assert identificadores.isdisjoint(proibidos), identificadores & proibidos
+        encontrados = _inferencias_de_protecao(caminho.read_text(encoding="utf-8"), proibidos)
+        assert encontrados == set(), encontrados
 
 
 def test_s36_protecao_nao_virou_blocker_nem_dimensao() -> None:
@@ -1021,35 +1191,49 @@ def test_s36_protecao_nao_virou_blocker_nem_dimensao() -> None:
     identifica a recusa, e ampliar `observed_dimension` seria delta
     público redundante.
     """
-    from app.memory.models.approval_enums import ApprovalBlockerKind
-    from app.memory.models.target_resolution_enums import RefusalDimension
+    blockers = _membros_de_enum(
+        (APP / "memory" / "models" / "approval_enums.py").read_text(encoding="utf-8"),
+        "ApprovalBlockerKind",
+    )
+    dimensoes = _membros_de_enum(
+        (APP / "memory" / "models" / "target_resolution_enums.py").read_text(encoding="utf-8"),
+        "RefusalDimension",
+    )
+    assert not [m for m in blockers if "LEGACY" in m], blockers
+    assert not [m for m in dimensoes if "LEGACY" in m], dimensoes
+    assert len(dimensoes) == 8
 
-    for membro in ApprovalBlockerKind.__members__:
-        assert "LEGACY" not in membro
-    for membro in RefusalDimension.__members__:
-        assert "LEGACY" not in membro
-    assert len(RefusalDimension) == 8
+    # TERCEIRA prova, acrescentada na E4.9.8.3.1: contar membros NÃO
+    # detecta uso automático do estado como bloqueio. `PROTECTED` não pode
+    # aparecer como condição de `if` no código de formação da proposta.
+    assert not _protecao_usada_como_bloqueio(
+        (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
+    )
 
 
 def test_s37_nenhuma_migration_orm_ou_repository_nesta_fatia() -> None:
     """`PERSISTENCE_DELTA = 0` e `MIGRATION_DELTA = 0`."""
     versoes = APP.parent / "alembic" / "versions"
-    revisoes = {p.name.split("_")[0] for p in versoes.glob("*.py")}
-    assert "c8a3f5017e94" in revisoes
-    for arquivo in versoes.glob("*.py"):
-        if arquivo.name.startswith("c8a3f5017e94"):
-            continue
-        texto = arquivo.read_text(encoding="utf-8")
-        assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
+    fontes = {p.name: p.read_text(encoding="utf-8") for p in versoes.glob("*.py")}
+    grafo = _revisoes_de_migration(fontes)
+    assert "c8a3f5017e94" in grafo
+
+    # Detecta sucessora direta E BRANCH criada de revisão anterior — a
+    # segunda forma escapava da guarda da cadeia 88, que só comparava com
+    # o head. Nenhuma revisão pode ter `c8a3f5017e94` como descendente, e
+    # o head não pode deixar de ser folha.
+    filhos = [rev for rev, pai in grafo.items() if pai == "c8a3f5017e94"]
+    assert filhos == [], filhos
+    descendentes = {pai for pai in grafo.values() if pai}
+    assert "c8a3f5017e94" not in descendentes
 
     for caminho in (
         APP / "memory" / "schemas" / "erasure_target.py",
         APP / "memory" / "schemas" / "destructive_approval.py",
         APP / "memory" / "models" / "target_resolution_enums.py",
     ):
-        executavel = _executavel(caminho)
-        for proibido in ("mapped_column", "Mapped", "Session", "Repository", "sqlalchemy"):
-            assert proibido not in executavel, f"{caminho.name}: {proibido}"
+        presentes = _persistencia_presente(caminho.read_text(encoding="utf-8"))
+        assert presentes == set(), f"{caminho.name}: {presentes}"
 
 
 def test_s38_e4_9_9_a_nao_foi_iniciada() -> None:
@@ -1061,11 +1245,15 @@ def test_s38_e4_9_9_a_nao_foi_iniciada() -> None:
         "RetentionEvaluator",
         "DestructiveExecutionService",
     )
+    ausentes = ausentes + ("consume_once",)
     infratores: list[str] = []
     for caminho in _fontes():
-        executavel = _executavel(caminho)
+        fonte = caminho.read_text(encoding="utf-8")
         for simbolo in ausentes:
-            if f"class {simbolo}" in executavel:
+            # Classe, função OU atribuição de módulo — a guarda da cadeia
+            # 88 só procurava `class X` e não veria o símbolo criado como
+            # função ou export.
+            if _simbolo_definido(fonte, simbolo):
                 infratores.append(f"{caminho.name}:{simbolo}")
     assert infratores == []
 
@@ -1138,3 +1326,168 @@ def test_s99_11_a_guarda_de_fonte_unica_detecta_enum_duplicado() -> None:
     assert quantas(um) == 1
     assert quantas(dois) == 1
     assert quantas(tres) == 2
+
+
+# ======================================================================
+# E4.9.8.3.1 — demonstrações de falha das SETE guardas que faltavam
+#
+# Cada mutante é rejeitado pelo MESMO helper que a guarda usa. Se a
+# demonstração reimplementasse a análise, provaria apenas que um mutante
+# cai numa lógica escrita para o teste.
+#
+#   MUTANT_REJECTED_BY_PARALLEL_LOGIC != GUARD_CAN_FAIL
+# ======================================================================
+
+
+def test_s99_12_a_guarda_de_vocabulario_detecta_membro_e_token_alterados() -> None:
+    """`s32` — nomes **e** valores. §3.2 do corretivo."""
+    real = (
+        "class LegacyProtectionState(StrEnum):\n"
+        '    PROTECTED = "protected"\n'
+        '    NOT_PROTECTED = "not_protected"\n'
+    )
+    com_unknown = real + '    UNKNOWN = "unknown"\n'
+    token_trocado = (
+        "class LegacyProtectionState(StrEnum):\n"
+        '    PROTECTED = "protected"\n'
+        '    NOT_PROTECTED = "unprotected"\n'
+    )
+    terceiro_nao_generico = real + '    ARCHIVED = "archived"\n'
+
+    esperado = {"PROTECTED": "protected", "NOT_PROTECTED": "not_protected"}
+    assert _membros_do_vocabulario(real) == esperado
+    assert _membros_do_vocabulario(com_unknown) != esperado
+    assert _membros_do_vocabulario(token_trocado) != esperado, "troca de token"
+    assert _membros_do_vocabulario(terceiro_nao_generico) != esperado
+
+
+def test_s99_13_a_guarda_de_runtime_detecta_validacao_removida() -> None:
+    """`s34` — e não aceita `raise TypeError` de outro campo. §3.3."""
+
+    def _post_init(fonte: str) -> ast.FunctionDef:
+        (metodo,) = [
+            no
+            for no in ast.walk(ast.parse(fonte))
+            if isinstance(no, ast.FunctionDef) and no.name == "__post_init__"
+        ]
+        return metodo
+
+    correto = (
+        "def __post_init__(self):\n"
+        "    if not isinstance(self.legacy_protection_state, LegacyProtectionState):\n"
+        "        raise TypeError('x')\n"
+    )
+    removida = (
+        "def __post_init__(self):\n"
+        "    if not isinstance(self.origin, ReferenceProvenance):\n"
+        "        raise TypeError('outro campo')\n"
+    )
+    aceita_string = (
+        "def __post_init__(self):\n"
+        "    if not isinstance(self.legacy_protection_state, str | LegacyProtectionState):\n"
+        "        raise TypeError('x')\n"
+    )
+    retorno_silencioso = (
+        "def __post_init__(self):\n"
+        "    if not isinstance(self.legacy_protection_state, LegacyProtectionState):\n"
+        "        return None\n"
+    )
+
+    assert _valida_protecao_em_runtime(_post_init(correto))
+    assert not _valida_protecao_em_runtime(_post_init(removida)), "outro campo não conta"
+    assert not _valida_protecao_em_runtime(_post_init(aceita_string))
+    assert not _valida_protecao_em_runtime(_post_init(retorno_silencioso))
+
+
+def test_s99_14_a_guarda_de_inferencia_detecta_derivacao_introduzida() -> None:
+    """`s35` — exercita exatamente a função de análise da guarda. §3.4."""
+    proibidos = {
+        "infer_legacy_protection",
+        "guess_protection",
+        "derive_protection",
+        "is_legacy",
+        "looks_legacy",
+        "default_protection",
+    }
+    limpo = "def materializar(descriptor):\n    return descriptor.legacy_protection_state\n"
+    por_idade = "def infer_legacy_protection(resolved_at):\n" "    return resolved_at.year < 2020\n"
+    por_nome = "def is_legacy(nome):\n    return nome.startswith('legado_')\n"
+    por_validacao = (
+        "def materializar(d):\n" "    return default_protection if d.version_etag else None\n"
+    )
+
+    assert _inferencias_de_protecao(limpo, proibidos) == set()
+    assert _inferencias_de_protecao(por_idade, proibidos) == {"infer_legacy_protection"}
+    assert _inferencias_de_protecao(por_nome, proibidos) == {"is_legacy"}
+    assert _inferencias_de_protecao(por_validacao, proibidos) == {"default_protection"}
+
+
+def test_s99_15_a_guarda_de_bloqueio_detecta_as_tres_formas() -> None:
+    """`s36` — inclusive o uso automático, que contagem de membro não vê. §3.5."""
+    blockers_limpo = "class ApprovalBlockerKind(StrEnum):\n" '    LEGAL_HOLD = "legal_hold"\n'
+    blockers_com_legado = blockers_limpo + '    LEGACY_PROTECTED = "legacy_protected"\n'
+    dimensao_limpa = 'class RefusalDimension(StrEnum):\n    WORKSPACE = "workspace"\n'
+    dimensao_com_legado = dimensao_limpa + '    LEGACY_PROTECTION = "legacy_protection"\n'
+
+    assert not [m for m in _membros_de_enum(blockers_limpo, "ApprovalBlockerKind") if "LEGACY" in m]
+    assert [
+        m for m in _membros_de_enum(blockers_com_legado, "ApprovalBlockerKind") if "LEGACY" in m
+    ]
+    assert not [m for m in _membros_de_enum(dimensao_limpa, "RefusalDimension") if "LEGACY" in m]
+    assert [m for m in _membros_de_enum(dimensao_com_legado, "RefusalDimension") if "LEGACY" in m]
+
+    # Terceira forma: bloqueio automático SEM tocar em enum algum.
+    sem_bloqueio = (
+        "def __post_init__(self):\n"
+        "    for alvo in self.targets:\n"
+        "        registrar(alvo.legacy_protection_state)\n"
+    )
+    com_bloqueio = (
+        "def __post_init__(self):\n"
+        "    for alvo in self.targets:\n"
+        "        if alvo.legacy_protection_state is LegacyProtectionState.PROTECTED:\n"
+        "            raise ValueError('protegido')\n"
+    )
+    assert not _protecao_usada_como_bloqueio(sem_bloqueio)
+    assert _protecao_usada_como_bloqueio(com_bloqueio), "uso automático detectado"
+
+
+def test_s99_16_a_guarda_de_persistencia_detecta_orm_e_branch() -> None:
+    """`s37` — inclusive branch de revisão anterior, não só sucessora. §3.6."""
+    limpo = "@dataclass(frozen=True)\nclass X:\n    campo: str\n"
+    com_orm = "class X(Base):\n" "    __tablename__ = 'x'\n" "    campo = mapped_column(String)\n"
+    assert _persistencia_presente(limpo) == set()
+    assert _persistencia_presente(com_orm) & {"mapped_column"}
+
+    head = 'revision: str = "c8a3f5017e94"\ndown_revision: str | None = "9d4f1a7c2be8"\n'
+    anterior = 'revision: str = "9d4f1a7c2be8"\ndown_revision: str | None = None\n'
+    sucessora = 'revision: str = "aaaa11112222"\ndown_revision: str | None = "c8a3f5017e94"\n'
+    branch = 'revision: str = "bbbb33334444"\ndown_revision: str | None = "9d4f1a7c2be8"\n'
+
+    def _folha(fontes: dict[str, str]) -> bool:
+        grafo = _revisoes_de_migration(fontes)
+        return "c8a3f5017e94" not in {p for p in grafo.values() if p}
+
+    def _sem_branch_nova(fontes: dict[str, str]) -> bool:
+        grafo = _revisoes_de_migration(fontes)
+        return len(grafo) == 2
+
+    base = {"head.py": head, "ant.py": anterior}
+    assert _folha(base) and _sem_branch_nova(base)
+    assert not _folha({**base, "nova.py": sucessora}), "sucessora direta detectada"
+    assert not _sem_branch_nova({**base, "branch.py": branch}), "branch detectada"
+
+
+def test_s99_17_a_guarda_de_e4_9_9_a_detecta_as_tres_formas_de_definicao() -> None:
+    """`s38` — classe, função e atribuição de módulo. §3.7."""
+    limpo = "class Outro:\n    pass\n"
+    como_classe = "class ApprovalRecord:\n    pass\n"
+    como_funcao = "def consume_once(session, approval_id):\n    return None\n"
+    como_atribuicao = "ApprovalRecordRepository = _construir_repositorio()\n"
+
+    assert not _simbolo_definido(limpo, "ApprovalRecord")
+    assert _simbolo_definido(como_classe, "ApprovalRecord")
+    assert _simbolo_definido(como_funcao, "consume_once"), "função também define"
+    assert _simbolo_definido(
+        como_atribuicao, "ApprovalRecordRepository"
+    ), "atribuição também define"

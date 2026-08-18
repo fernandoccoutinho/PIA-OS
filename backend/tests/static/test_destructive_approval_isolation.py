@@ -382,6 +382,58 @@ def test_s16_a_resolucao_de_governanca_nao_e_delegada_no_repr() -> None:
     assert "self.governance_resolution." not in corpo
 
 
+AUTORIZADOS_NO_SNAPSHOT = {
+    "target_class",
+    "subject_coid",
+    "control_scope",
+    "custody_namespace",
+    "origin",
+    "legacy_protection_state",
+    "version_etag",
+}
+
+PROPAGACAO_AUTOMATICA = ("asdict(", "**descriptor", "getattr(", "vars(", "fields(")
+
+
+def _copia_do_materializador(fonte: str) -> tuple[set[str], set[str], bool]:
+    """`(copiados, atributos_de_origem, usa_propagacao_automatica)`.
+
+    Helper COMPARTILHADO entre `s17_1` e a demonstração `s99_18`
+    (`E4.9.8.3.1`). Se a demonstração reimplementasse esta análise, provaria
+    apenas que um mutante cai numa lógica escrita para o teste.
+
+    ```text
+    MUTANT_REJECTED_BY_PARALLEL_LOGIC != GUARD_CAN_FAIL
+    ```
+    """
+    (metodo,) = [
+        no
+        for no in ast.walk(ast.parse(fonte))
+        if isinstance(no, ast.FunctionDef) and no.name == "from_descriptor"
+    ]
+    corpo = ast.unparse(metodo)
+    automatica = any(forma in corpo for forma in PROPAGACAO_AUTOMATICA)
+
+    (retorno,) = [no for no in ast.walk(metodo) if isinstance(no, ast.Return)]
+    if not isinstance(retorno.value, ast.Call):
+        return set(), set(), automatica
+
+    copiados: set[str] = set()
+    origens: set[str] = set()
+    for kw in retorno.value.keywords:
+        if kw.arg is None:
+            automatica = True
+            continue
+        copiados.add(kw.arg)
+        if (
+            isinstance(kw.value, ast.Attribute)
+            and isinstance(kw.value.value, ast.Name)
+            and kw.value.value.id == "descriptor"
+        ):
+            origens.add(kw.value.attr)
+    return copiados, origens, automatica
+
+
 def test_s17_o_snapshot_nao_reutiliza_o_descritor() -> None:
     """`SNAPSHOT != ErasureTargetDescriptor` — o descritor tem localizador.
 
@@ -439,35 +491,13 @@ def test_s17_1_o_materializador_copia_campo_a_campo() -> None:
     Esta guarda fixa na AST os sete copiados. Um oitavo campo copiado, ou
     qualquer forma automática, derruba o teste.
     """
-    arvore = ast.parse(
+    copiados, origens, automatica = _copia_do_materializador(
         (APP / "memory" / "schemas" / "destructive_approval.py").read_text(encoding="utf-8")
     )
-    (metodo,) = [
-        no
-        for no in ast.walk(arvore)
-        if isinstance(no, ast.FunctionDef) and no.name == "from_descriptor"
-    ]
-    corpo = ast.unparse(metodo)
-    for automatico in ("asdict(", "**descriptor", "getattr(", "vars(", "fields("):
-        assert automatico not in corpo, automatico
-
-    (retorno,) = [no for no in ast.walk(metodo) if isinstance(no, ast.Return)]
-    assert isinstance(retorno.value, ast.Call)
-    copiados = {kw.arg for kw in retorno.value.keywords}
-    assert copiados == {
-        "target_class",
-        "subject_coid",
-        "control_scope",
-        "custody_namespace",
-        "origin",
-        "legacy_protection_state",
-        "version_etag",
-    }
-    for kw in retorno.value.keywords:
-        assert isinstance(kw.value, ast.Attribute), kw.arg
-        assert isinstance(kw.value.value, ast.Name)
-        assert kw.value.value.id == "descriptor"
-        assert kw.value.attr == kw.arg, f"{kw.arg} copia {kw.value.attr}"
+    assert not automatica, "propagação automática"
+    assert copiados == AUTORIZADOS_NO_SNAPSHOT, copiados
+    assert origens == AUTORIZADOS_NO_SNAPSHOT, origens
+    assert origens.isdisjoint({"transient_locator", "capability", "resolved_at"})
 
 
 def test_s18_enums_novos_nao_duplicam_fonte_da_verdade() -> None:
@@ -826,3 +856,50 @@ def test_s99_8_a_guarda_de_delegacao_distingue_identificador_de_substring() -> N
     assert "role" not in identificadores(inocente)
     assert "acl" not in identificadores(inocente)
     assert "role_id" in identificadores(culpado)
+
+
+def test_s99_18_a_guarda_do_materializador_detecta_as_tres_alteracoes() -> None:
+    """`s17_1` — copiar excluído, omitir autorizado, propagar automático.
+
+    §3.1 do corretivo da E4.9.8.3.1. A cadeia 88 publicou `s17_1` sem
+    demonstração de falha; sem ela, "a guarda existe" e "a guarda pega o
+    defeito" eram a mesma afirmação sem prova.
+    """
+    correto = (
+        "def from_descriptor(cls, descriptor):\n"
+        "    return cls(\n"
+        "        target_class=descriptor.target_class,\n"
+        "        subject_coid=descriptor.subject_coid,\n"
+        "        control_scope=descriptor.control_scope,\n"
+        "        custody_namespace=descriptor.custody_namespace,\n"
+        "        origin=descriptor.origin,\n"
+        "        legacy_protection_state=descriptor.legacy_protection_state,\n"
+        "        version_etag=descriptor.version_etag,\n"
+        "    )\n"
+    )
+    copia_localizador = correto.replace(
+        "        version_etag=descriptor.version_etag,\n",
+        "        version_etag=descriptor.transient_locator,\n",
+    )
+    omite_protecao = correto.replace(
+        "        legacy_protection_state=descriptor.legacy_protection_state,\n", ""
+    )
+    propagacao = (
+        "def from_descriptor(cls, descriptor):\n"
+        "    return cls(**dataclasses.asdict(descriptor))\n"
+    )
+
+    copiados, origens, automatica = _copia_do_materializador(correto)
+    assert not automatica
+    assert copiados == AUTORIZADOS_NO_SNAPSHOT
+    assert origens == AUTORIZADOS_NO_SNAPSHOT
+
+    _, origens_mut, _ = _copia_do_materializador(copia_localizador)
+    assert "transient_locator" in origens_mut, "campo excluído copiado"
+    assert origens_mut != AUTORIZADOS_NO_SNAPSHOT
+
+    copiados_mut, _, _ = _copia_do_materializador(omite_protecao)
+    assert copiados_mut != AUTORIZADOS_NO_SNAPSHOT, "campo autorizado omitido"
+
+    _, _, automatica_mut = _copia_do_materializador(propagacao)
+    assert automatica_mut, "propagação automática detectada"
