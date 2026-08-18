@@ -343,23 +343,23 @@ def test_i20_limite_declarado_o_banco_nao_verifica_a_forma_das_regras():
     """Honestidade sobre o alcance real da constraint.
 
     O banco garante que `rules` é JSON válido e não nulo. A **forma**
-    das regras é garantia do tipo, na serialização — e um INSERT bruto
-    com JSON estruturalmente válido mas semanticamente inválido entra.
-    A desserialização tipada é quem o recusa depois.
+    das regras é garantia do tipo — e um INSERT bruto com JSON
+    estruturalmente válido mas semanticamente inválido entra. A
+    reconstrução tipada é quem o recusa.
 
-    Documentar isso é melhor do que afirmar uma constraint que o banco
-    não tem.
+    Atualizado pela E4.9.6.1: a recusa passou a ocorrer **na própria
+    leitura**, dentro de `RetentionRulesType.process_result_value`, e
+    não mais só quando alguém pedisse `typed_rules`. A linha inválida
+    deixou de ser observável como objeto — que é mais estrito, não
+    menos.
     """
     import json
 
     with engine.begin() as conn:
         _insert_raw(conn, policy_key="ret.bruta", rules=json.dumps([{"lixo": True}]))
 
-    with UnitOfWork() as uow:
-        lida = RetentionPolicyRepository(uow.session).get_version("ret.bruta", 1)
-        assert lida is not None
-        with pytest.raises(KeyError):
-            _ = lida.typed_rules
+    with pytest.raises(KeyError), UnitOfWork() as uow:
+        RetentionPolicyRepository(uow.session).get_version("ret.bruta", 1)
 
 
 # --- Round trip da migration --------------------------------------------
@@ -412,3 +412,168 @@ def test_i22_nenhum_erasure_record_criado_por_esta_fatia():
     _publicar()
     with engine.connect() as conn:
         assert conn.execute(sa.text("SELECT count(*) FROM erasure_records")).scalar() == 0
+
+
+# ======================================================================
+# E4.9.6.1 — corretivo, contra PostgreSQL real
+# ======================================================================
+
+
+def test_i23_chave_com_controle_recusada_antes_do_banco():
+    """Achado A1: a fronteira tipada recusa antes de chegar à persistência."""
+    with pytest.raises(ValueError, match="caracteres de controle"), UnitOfWork() as uow:
+        RetentionPolicyRepository(uow.session).add_policy(
+            policy_key="ret\nembedded",
+            version=1,
+            governance_policy_key="gov\tkey",
+            rules=(regra(),),
+        )
+
+    with engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT count(*) FROM retention_policies")).scalar() == 0
+
+
+def test_i24_leitura_de_policy_commitada_e_profundamente_imutavel():
+    """Achado A2, no caminho real: publicar, commitar, reler, tentar mutar."""
+    pid = _publicar()
+
+    with UnitOfWork() as uow:
+        lida = RetentionPolicyRepository(uow.session).get_by_id(pid)
+        assert lida is not None
+        assert isinstance(lida.rules, tuple)
+        antes = lida.rules[0].minimum_age_days
+
+        with pytest.raises(TypeError):
+            lida.rules[0]["minimum_age_days"] = 0  # type: ignore[index]
+        with pytest.raises(TypeError):
+            lida.rules[0] = regra(rule_id="outra")  # type: ignore[index]
+
+        assert lida.rules[0].minimum_age_days == antes
+
+
+def test_i25_duas_leituras_na_mesma_sessao_nao_divergem():
+    """A superfície pública não pode divergir do banco dentro da sessão.
+
+    Era o risco real do A2: hoje não há avaliador; amanhã, um avaliador
+    na mesma sessão poderia ler uma policy diferente da persistida.
+    """
+    pid = _publicar()
+
+    with UnitOfWork() as uow:
+        repo = RetentionPolicyRepository(uow.session)
+        primeira = repo.get_by_id(pid)
+        assert primeira is not None
+        with pytest.raises(TypeError):
+            primeira.rules[0]["minimum_age_days"] = 0  # type: ignore[index]
+
+        segunda = repo.get_version("ret.default", 1)
+        assert segunda is not None
+        assert segunda.rules[0].minimum_age_days == 30
+        assert primeira.rules[0].minimum_age_days == 30
+
+
+def test_i26_nova_sessao_ve_os_bytes_persistidos_originais():
+    pid = _publicar()
+    with UnitOfWork() as uow:
+        lida = RetentionPolicyRepository(uow.session).get_by_id(pid)
+        assert lida is not None
+
+    with engine.connect() as conn:
+        bruto = conn.execute(
+            sa.text("SELECT rules FROM retention_policies WHERE id = :i"), {"i": pid}
+        ).scalar_one()
+    assert bruto[0]["minimum_age_days"] == 30
+    assert bruto[0]["rule_id"] == "ret-001"
+
+
+def test_i27_metodos_herdados_nao_dao_escape_mutavel():
+    """`get_by_id`, `get_by_id_or_raise`, `list`, `paginate`, `refresh`.
+
+    O congelamento vive na fronteira do ORM, então **todo** método
+    herdado de `BaseRepository` devolve a estrutura já imutável — sem
+    que nenhuma assinatura precisasse mudar.
+    """
+    pid = _publicar()
+
+    with UnitOfWork() as uow:
+        repo = RetentionPolicyRepository(uow.session)
+        superficies = [
+            repo.get_by_id(pid),
+            repo.get_by_id_or_raise(pid),
+            repo.list()[0],
+            repo.paginate(page=1, page_size=10).items[0],
+            repo.refresh(repo.get_by_id_or_raise(pid)),
+            repo.get_version("ret.default", 1),
+            repo.list_versions("ret.default")[0],
+            repo.effective_version_at("ret.default", AGORA),
+        ]
+        for superficie in superficies:
+            assert superficie is not None
+            assert isinstance(superficie.rules, tuple)
+            with pytest.raises(TypeError):
+                superficie.rules[0]["minimum_age_days"] = 0  # type: ignore[index]
+
+
+def test_i28_publicacao_devolve_superficie_imutavel_e_preserva_id():
+    """A escrita também não devolve superfície mutável (§4.3)."""
+    with UnitOfWork() as uow:
+        gravada = RetentionPolicyRepository(uow.session).add_policy(
+            policy_key="ret.escrita",
+            version=1,
+            governance_policy_key="gov.default",
+            rules=(regra(),),
+        )
+        assert gravada.id is not None
+        assert isinstance(gravada.rules, tuple)
+        with pytest.raises(TypeError):
+            gravada.rules[0]["minimum_age_days"] = 0  # type: ignore[index]
+        uow.commit()
+
+
+def test_i29_migration_head_e_schema_identicos_a_cadeia_76():
+    """`MIGRATION_DELTA = 0`, `DATABASE_SCHEMA_DELTA = 0`."""
+    assert migrations.head_revision() == "c8a3f5017e94"
+
+    with engine.connect() as conn:
+        tipo = conn.execute(
+            sa.text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name='retention_policies' AND column_name='rules'"
+            )
+        ).scalar()
+        checks = conn.execute(
+            sa.text(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid='retention_policies'::regclass AND contype='c'"
+            )
+        ).scalar()
+        gatilhos = (
+            conn.execute(
+                sa.text(
+                    "SELECT tgname FROM pg_trigger "
+                    "WHERE tgrelid='retention_policies'::regclass AND NOT tgisinternal"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert tipo == "jsonb"
+    assert checks == 4
+    assert gatilhos == ["trg_retention_policies_append_only"]
+
+
+def test_i30_trigger_e_colisao_de_versao_seguem_valendo():
+    """O corretivo não afrouxou nada da cadeia 76."""
+    _publicar()
+
+    with pytest.raises(RetentionPolicyVersionExistsError), UnitOfWork() as uow:
+        RetentionPolicyRepository(uow.session).add_policy(
+            policy_key="ret.default",
+            version=1,
+            governance_policy_key="gov.default",
+            rules=(regra(),),
+        )
+
+    with pytest.raises(sa.exc.DatabaseError) as info, engine.begin() as conn:
+        conn.execute(sa.text("UPDATE retention_policies SET version = 99"))
+    assert "append-only" in str(info.value)

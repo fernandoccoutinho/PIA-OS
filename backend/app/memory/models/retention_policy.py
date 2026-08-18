@@ -34,34 +34,104 @@ Publicar uma policy é **configurar uma regra futura**, não rodá-la.
 Nenhum avaliador foi composto; nada consulta esta tabela para agir.
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sqlalchemy import CheckConstraint, DateTime, Integer, String, UniqueConstraint, event
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine.interfaces import Dialect
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.types import JSON, TypeEngine
+from sqlalchemy.types import JSON, TypeDecorator, TypeEngine
 
+from app.memory.schemas.retention import RetentionRule
 from app.models.base_model import BaseModel
 
-if TYPE_CHECKING:  # pragma: no cover - somente para tipagem
-    from app.memory.schemas.retention import RetentionRule
 
-_RULES_JSON: TypeEngine[Any] = JSON().with_variant(JSONB(), "postgresql")  # type: ignore[no-untyped-call]
-"""JSONB no PostgreSQL, JSON genérico nos demais.
+class RetentionRulesType(TypeDecorator[tuple["RetentionRule", ...]]):
+    """A **fronteira de congelamento** das regras (`E4.9.6.1`).
 
-Mesmo precedente de `GovernancePolicy` e `AccessibilityPolicy`: o JSON
-é **meio de transporte para o disco**, não contrato de domínio. Nada é
-lido de volta sem passar pelo desserializador tipado, que reconstrói
-pelo construtor de `RetentionRule` e reaplica todos os invariantes.
+    ```text
+    PERSISTENT IMMUTABILITY != DEEP READ IMMUTABILITY
+    BOTH ARE REQUIRED
+    ```
 
-Limite declarado honestamente: o banco garante que a coluna é JSON
-válido e não vazio. A **forma** das regras é garantia do tipo, não da
-constraint — e afirmar o contrário seria alegar verificação que o
-banco não faz.
-"""
+    A E4.9.6 protegeu a persistência em três camadas — mapper event,
+    repositório e trigger — e mesmo assim a auditoria reproduziu:
+
+    ```python
+    policy.rules[0]["minimum_age_days"] = 0   # aceito em memória
+    policy.typed_rules                        # passa a divergir do banco
+    ```
+
+    Nenhuma das três camadas dispara, porque **nada foi persistido**. O
+    objeto na identity map passou a mostrar algo que o banco não tem, e
+    duas leituras na mesma sessão podiam divergir.
+
+    Este `TypeDecorator` fecha o buraco no lugar certo: o atributo
+    `rules` **é** `tuple[RetentionRule, ...]` em memória, e vira JSON
+    apenas ao ir para o disco. Não há `list[dict]` pública em momento
+    algum, e todo método herdado de `BaseRepository` — `get_by_id`,
+    `list`, `paginate`, `refresh` — passa a devolver a estrutura já
+    congelada, sem que nenhuma assinatura precise mudar.
+
+    A alternativa considerada era uma `RetentionPolicyView` com
+    confinamento total do ORM, e ela foi rejeitada: exigiria
+    sobrescrever sete métodos herdados com tipo de retorno incompatível
+    com `BaseRepository[ModelType]`, o que só fecharia no mypy com
+    `type: ignore` novo — vedado pela Stop Condition 8 do corretivo — ou
+    alterando `BaseRepository`, vedado pela Stop Condition 3.
+
+    A coluna física continua `rules`, com o mesmo tipo no banco:
+    `MIGRATION_DELTA = 0`.
+    """
+
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
+        """JSONB no PostgreSQL, JSON genérico nos demais.
+
+        Idêntico ao que a migration `c8a3f5017e94` criou — o tipo no
+        banco não muda, só a representação em memória.
+        """
+        if dialect.name == "postgresql":
+            # `JSONB` é untyped nos stubs do SQLAlchemy. A supressão é a
+            # MESMA que a cadeia 76 já carregava nesta linha de tipo, na
+            # constante `_RULES_JSON` que este decorador substituiu — não
+            # é supressão nova, e a contagem no arquivo continua 1.
+            return dialect.type_descriptor(JSONB())  # type: ignore[no-untyped-call]
+        return dialect.type_descriptor(JSON())
+
+    def process_bind_param(
+        self, value: "tuple[RetentionRule, ...] | None", dialect: Dialect
+    ) -> list[dict[str, Any]] | None:
+        """Regras tipadas → JSON canônico, na ida para o disco."""
+        if value is None:
+            return None
+        return RetentionPolicy.serialize_rules(tuple(value))
+
+    def process_result_value(
+        self, value: object, dialect: Dialect
+    ) -> "tuple[RetentionRule, ...] | None":
+        """JSON → regras tipadas, na volta do disco.
+
+        Reconstrói **pelo construtor**, que reaplica todos os
+        invariantes. Uma linha gravada por SQL bruto com JSON
+        semanticamente inválido falha aqui, na leitura — limite já
+        declarado pela E4.9.6 e inalterado por este corretivo.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("coluna `rules` deve conter uma lista JSON de regras")
+        return RetentionPolicy.deserialize_rules(value)
+
 
 MAX_KEY_LENGTH = 256
-"""Teto das identidades lógicas, alinhado ao limite da E4.9.5."""
+"""Teto das identidades lógicas, alinhado ao limite da E4.9.5.
+
+Reexportado de `schemas.retention` para o modelo — o valor é o mesmo, e
+o validador compartilhado vive junto do contrato tipado.
+"""
 
 
 class RetentionPolicy(BaseModel):
@@ -90,8 +160,15 @@ class RetentionPolicy(BaseModel):
     versionamento que a E4.3 estabeleceu.
     """
 
-    rules: Mapped[list[dict[str, Any]]] = mapped_column(_RULES_JSON, nullable=False)
-    """Regras serializadas de forma **determinística**, nunca vazias.
+    rules: Mapped[tuple["RetentionRule", ...]] = mapped_column(RetentionRulesType(), nullable=False)
+    """Regras **tipadas e profundamente imutáveis** em memória.
+
+    `tuple` de `RetentionRule` congeladas, cada uma com `domain_ids`
+    em `frozenset`. Não existe `list[dict]` pública: mutação aninhada
+    falha antes de alterar o valor observado, e duas leituras na mesma
+    sessão não podem divergir.
+
+    Serializadas de forma **determinística**, nunca vazias.
 
     Sem `default`: uma policy publicada sem regra não expressa retenção
     alguma, e ausência de policy já representa ausência de regra
@@ -196,7 +273,6 @@ class RetentionPolicy(BaseModel):
             RetentionExpiryAction,
             RetentionScopeKind,
         )
-        from app.memory.schemas.retention import RetentionRule
 
         if not payload:
             raise ValueError("payload de regras vazio — versão inválida")
@@ -224,8 +300,14 @@ class RetentionPolicy(BaseModel):
 
     @property
     def typed_rules(self) -> "tuple[RetentionRule, ...]":
-        """Regras desta versão, já tipadas."""
-        return RetentionPolicy.deserialize_rules(self.rules or [])
+        """Regras desta versão, já tipadas.
+
+        Desde a E4.9.6.1 é a **mesma** estrutura de `rules`: o
+        congelamento passou para a fronteira do ORM, e não há mais uma
+        representação mutável da qual esta divergiria. Mantido porque
+        nomeia a intenção no ponto de leitura.
+        """
+        return self.rules
 
 
 @event.listens_for(RetentionPolicy, "before_update")

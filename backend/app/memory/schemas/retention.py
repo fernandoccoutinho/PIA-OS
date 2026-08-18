@@ -39,6 +39,42 @@ Um identificador de regra não precisa de mais que isso, e um campo sem
 teto vira, com o tempo, o lugar onde alguém escreve uma explicação.
 """
 
+MAX_KEY_LENGTH = 256
+"""Teto de `policy_key` e `governance_policy_key`, medido em caracteres."""
+
+
+def validar_identificador_opaco(nome: str, valor: object, tamanho: int) -> str:
+    """Contrato único de identificador opaco (`E4.9.6.1`).
+
+    ```text
+    VALIDATED OPAQUE KEY != NORMALIZED KEY
+    ```
+
+    Recusa tipo errado, vazio, branco, **todo** C0 (`U+0000..U+001F`) e
+    DEL (`U+007F`), e excesso de tamanho. Devolve o valor **original**:
+    sem `strip`, sem normalização Unicode, sem `casefold`.
+
+    Não normalizar é parte do contrato, não descuido. Um identificador
+    que o sistema altera em silêncio deixa de ser a identidade que o
+    chamador declarou, e a policy publicada passaria a responder por
+    uma chave que ninguém escreveu.
+
+    A E4.9.6 validava controle apenas em `rule_id`, e a auditoria
+    reproduziu o buraco: `strip()` sozinho aceita `"ret\nembedded"`,
+    porque há conteúdo não branco em volta da quebra. Uma chave assim
+    se apresenta de uma forma em log, de outra em exportação e de uma
+    terceira numa interface.
+    """
+    if not isinstance(valor, str):
+        raise TypeError(f"{nome} deve ser str, recebido {type(valor).__name__}")
+    if not valor.strip():
+        raise ValueError(f"{nome} não pode ser vazio ou apenas espaços")
+    if any(ord(c) < 32 or ord(c) == 127 for c in valor):
+        raise ValueError(f"{nome} não pode conter caracteres de controle (C0 ou DEL)")
+    if len(valor) > tamanho:
+        raise ValueError(f"{nome} excede {tamanho} caracteres")
+    return valor
+
 
 def _inteiro_real(nome: str, valor: object) -> int:
     """Exige `int` verdadeiro — `bool` é recusado.
@@ -100,14 +136,7 @@ class RetentionRule:
 
     def __post_init__(self) -> None:
         """Impõe os invariantes em **toda** construção pública."""
-        if not isinstance(self.rule_id, str):
-            raise TypeError(f"rule_id deve ser str, recebido {type(self.rule_id).__name__}")
-        if not self.rule_id.strip():
-            raise ValueError("rule_id não pode ser vazio ou apenas espaços")
-        if any(ord(c) < 32 or ord(c) == 127 for c in self.rule_id):
-            raise ValueError("rule_id não pode conter caracteres de controle")
-        if len(self.rule_id) > MAX_RULE_ID_LENGTH:
-            raise ValueError(f"rule_id excede {MAX_RULE_ID_LENGTH} caracteres")
+        validar_identificador_opaco("rule_id", self.rule_id, MAX_RULE_ID_LENGTH)
 
         if not isinstance(self.scope_kind, RetentionScopeKind):
             raise TypeError("scope_kind deve ser um RetentionScopeKind")

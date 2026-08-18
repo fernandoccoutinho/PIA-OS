@@ -211,3 +211,102 @@ def test_s11_o_repositorio_nao_conhece_patrimonio_nem_efeito() -> None:
         "httpx",
     ):
         assert termo not in texto, termo
+
+
+# ======================================================================
+# E4.9.6.1 — guardas do corretivo
+# ======================================================================
+
+
+def test_s12_nenhuma_migration_nova() -> None:
+    """`MIGRATION_DELTA = 0` — o corretivo é tipado, não de schema."""
+    versoes = APP.parent / "alembic" / "versions"
+    revisoes = {p.name.split("_")[0] for p in versoes.glob("*.py")}
+    assert "c8a3f5017e94" in revisoes
+    # Nenhuma revisão declara `c8a3f5017e94` como pai: ele é o head.
+    for arquivo in versoes.glob("*.py"):
+        texto = arquivo.read_text(encoding="utf-8")
+        if arquivo.name.startswith("c8a3f5017e94"):
+            continue
+        assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
+
+
+def test_s13_base_repository_e_policies_antigas_intocadas() -> None:
+    """Stop Condition 3 do corretivo: nada disso podia mudar.
+
+    Prova estrutural, não de conteúdo: `BaseRepository` continua sem
+    conhecer retenção, e as policies antigas continuam expondo o JSON
+    da forma como sempre expuseram — o corretivo é confinado à E4.9.6.
+    """
+    base_repo = (APP / "repositories" / "base_repository.py").read_text(encoding="utf-8")
+    assert "Retention" not in base_repo
+
+    for antiga in ("governance_policy.py", "accessibility_policy.py"):
+        texto = (APP / "memory" / "models" / antiga).read_text(encoding="utf-8")
+        assert "RetentionRulesType" not in texto, antiga
+        assert "TypeDecorator" not in texto, antiga
+
+
+def test_s14_o_congelamento_vive_na_fronteira_do_orm() -> None:
+    """A estratégia adotada, provada estruturalmente.
+
+    `rules` é anotada como `tuple[RetentionRule, ...]`, e o
+    `TypeDecorator` é quem converte para JSON no bind. Se alguém um dia
+    trocar a coluna de volta para `list[dict]`, este teste cai.
+    """
+    from app.memory.models.retention_policy import RetentionPolicy, RetentionRulesType
+
+    coluna = RetentionPolicy.__table__.c.rules
+    assert isinstance(coluna.type, RetentionRulesType)
+
+    fonte = (APP / "memory" / "models" / "retention_policy.py").read_text(encoding="utf-8")
+    assert 'Mapped[tuple["RetentionRule", ...]]' in fonte
+    assert "Mapped[list[dict[str, Any]]]" not in fonte
+
+
+def test_s15_validador_opaco_e_compartilhado_e_nao_normaliza() -> None:
+    """`VALIDATED OPAQUE KEY != NORMALIZED KEY`."""
+    # Pelo código EXECUTÁVEL: a docstring do validador explica por que
+    # não normaliza, e uma busca no texto bruto acusaria a explicação.
+    executavel = _executavel(APP / "memory" / "schemas" / "retention.py")
+    corpo = executavel[executavel.index("def validar_identificador_opaco") :]
+    corpo = corpo[: corpo.index("\n@dataclass")]
+    for proibido in ("casefold", "normalize", "unicodedata", "lower()", "upper()"):
+        assert proibido not in corpo, proibido
+    # `strip()` só aparece na CHECAGEM de branco, nunca no valor devolvido.
+    assert "return valor" in corpo
+    assert "return valor.strip()" not in corpo
+
+    # Duas CHAMADAS no repositório — uma por chave. Contadas na AST, não
+    # por substring: o import é multilinha e não repete o parêntese.
+    arvore = ast.parse(
+        (APP / "memory" / "repositories" / "retention_policy_repository.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    chamadas = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Name)
+        and no.func.id == "validar_identificador_opaco"
+    ]
+    campos = {no.args[0].value for no in chamadas if isinstance(no.args[0], ast.Constant)}
+    assert campos == {"policy_key", "governance_policy_key"}
+
+
+def test_s16_nenhum_avaliador_ou_escritor_apareceu_no_corretivo() -> None:
+    """Reafirmação: o corretivo não abriu caminho novo."""
+    infratores: list[str] = []
+    for arquivo in _fontes():
+        if arquivo in PERMITIDOS:
+            continue
+        if NOVOS_MODULOS & _modulos_importados(arquivo):
+            infratores.append(str(arquivo.relative_to(APP)))
+    assert infratores == []
+
+    for modulo in NOVOS_MODULOS:
+        caminho = APP.parent / (modulo.replace(".", "/") + ".py")
+        executavel = _executavel(caminho)
+        for termo in ("ErasureRecordRepository", "append_observed", "evaluate", "assess("):
+            assert termo not in executavel, f"{modulo}: {termo}"

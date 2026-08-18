@@ -41,7 +41,11 @@ from app.memory.errors.exceptions import (
     RetentionPolicyVersionExistsError,
 )
 from app.memory.models.retention_policy import RetentionPolicy
-from app.memory.schemas.retention import RetentionRule
+from app.memory.schemas.retention import (
+    MAX_KEY_LENGTH,
+    RetentionRule,
+    validar_identificador_opaco,
+)
 from app.repositories.base_repository import BaseRepository
 from app.repositories.exceptions import PersistenceError
 
@@ -83,10 +87,8 @@ class RetentionPolicyRepository(BaseRepository[RetentionPolicy]):
         Levanta `RetentionPolicyVersionExistsError` (`PIA-8042`) se a
         versão já existir — nunca atualiza a linha existente.
         """
-        if not isinstance(policy_key, str) or not policy_key.strip():
-            raise ValueError("policy_key não pode ser vazio ou apenas espaços")
-        if not isinstance(governance_policy_key, str) or not governance_policy_key.strip():
-            raise ValueError("governance_policy_key não pode ser vazio ou apenas espaços")
+        validar_identificador_opaco("policy_key", policy_key, MAX_KEY_LENGTH)
+        validar_identificador_opaco("governance_policy_key", governance_policy_key, MAX_KEY_LENGTH)
         if isinstance(version, bool) or not isinstance(version, int):
             raise TypeError(f"version deve ser int, recebido {type(version).__name__}")
         if version < 1:
@@ -108,11 +110,16 @@ class RetentionPolicyRepository(BaseRepository[RetentionPolicy]):
         ):
             raise ValueError("effective_until deve ser posterior a effective_from")
 
+        # `rules` recebe a tupla TIPADA: a serialização canônica passou
+        # para `RetentionRulesType.process_bind_param` (E4.9.6.1), de
+        # modo que não existe `list[dict]` mutável em nenhum momento —
+        # nem na escrita, nem na leitura.
+        RetentionPolicy.serialize_rules(rules)
         entity = RetentionPolicy(
             policy_key=policy_key,
             version=version,
             governance_policy_key=governance_policy_key,
-            rules=RetentionPolicy.serialize_rules(rules),
+            rules=rules,
             effective_from=effective_from,
             effective_until=effective_until,
         )

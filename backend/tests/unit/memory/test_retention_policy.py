@@ -238,13 +238,19 @@ def test_u24_desserializacao_recusa_duplicata():
 
 
 def test_u25_typed_rules_expoe_as_regras():
+    """Atualizado pela E4.9.6.1: `rules` recebe e devolve a tupla TIPADA.
+
+    A serialização canônica passou para o `TypeDecorator`, na ida para o
+    disco. Não existe mais `list[dict]` em memória — nem na escrita.
+    """
     p = RetentionPolicy(
         policy_key="ret.default",
         version=1,
         governance_policy_key="gov.default",
-        rules=RetentionPolicy.serialize_rules((regra(),)),
+        rules=(regra(),),
     )
     assert p.typed_rules[0].rule_id == "ret-001"
+    assert p.typed_rules is p.rules
 
 
 # --- Repositório: validação de entrada ----------------------------------
@@ -431,3 +437,200 @@ def test_u39_violacao_nao_unique_sobe_sem_traducao():
             governance_policy_key="gov.default",
             rules=(regra(),),
         )
+
+
+# ======================================================================
+# E4.9.6.1 — corretivo A1: validação de identificador opaco
+#
+# Todos os casos abaixo FALHAM na cadeia 76 e passam a partir da 77:
+# o `add_policy` daquela cadeia verificava apenas `strip()`, e `\n`,
+# `\t`, NUL e DEL têm conteúdo não branco ao redor.
+# ======================================================================
+
+
+CONTROLES = ["x\ntexto", "x\rtexto", "x\ttexto", "x\x00texto", "x\x7ftexto", "\x1ftexto"]
+
+
+@pytest.mark.parametrize("valor", CONTROLES)
+@pytest.mark.parametrize("campo", ["policy_key", "governance_policy_key"])
+def test_u40_controle_recusado_nos_dois_campos(campo, valor):
+    """Reprodução do achado A1 da auditoria da cadeia 76."""
+    base: dict[str, object] = {
+        "policy_key": "ret.default",
+        "version": 1,
+        "governance_policy_key": "gov.default",
+        "rules": (regra(),),
+    }
+    base[campo] = valor
+    with pytest.raises(ValueError, match="caracteres de controle"):
+        _repo().add_policy(**base)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("campo", ["policy_key", "governance_policy_key"])
+def test_u41_limite_de_256_caracteres(campo):
+    """256 aceita, 257 recusa — nos dois campos."""
+    from unittest.mock import patch
+
+    base: dict[str, object] = {
+        "policy_key": "ret.default",
+        "version": 1,
+        "governance_policy_key": "gov.default",
+        "rules": (regra(),),
+    }
+
+    aceita = dict(base, **{campo: "k" * 256})
+    with patch.object(RetentionPolicyRepository, "add", side_effect=lambda e: e):
+        gravada = _repo().add_policy(**aceita)  # type: ignore[arg-type]
+    assert len(getattr(gravada, campo)) == 256
+
+    with pytest.raises(ValueError, match="excede 256"):
+        _repo().add_policy(**dict(base, **{campo: "k" * 257}))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("campo", ["policy_key", "governance_policy_key"])
+def test_u42_tipo_errado_recusado_por_typeerror(campo):
+    """`TypeError` e `ValueError` permanecem diagnósticos distintos."""
+    base: dict[str, object] = {
+        "policy_key": "ret.default",
+        "version": 1,
+        "governance_policy_key": "gov.default",
+        "rules": (regra(),),
+    }
+    with pytest.raises(TypeError):
+        _repo().add_policy(**dict(base, **{campo: 123}))  # type: ignore[arg-type]
+
+
+def test_u43_chave_valida_permanece_byte_a_byte_inalterada():
+    """`VALIDATED OPAQUE KEY != NORMALIZED KEY`.
+
+    Sem `strip`, sem normalização Unicode, sem `casefold`. Uma chave
+    que o sistema altera em silêncio deixa de ser a identidade que o
+    chamador declarou.
+    """
+    from unittest.mock import patch
+
+    chave = "  Ret.Café_ÑÃO-01  "
+    with patch.object(RetentionPolicyRepository, "add", side_effect=lambda e: e):
+        gravada = _repo().add_policy(
+            policy_key=chave,
+            version=1,
+            governance_policy_key=chave,
+            rules=(regra(),),
+        )
+    assert gravada.policy_key == chave
+    assert gravada.governance_policy_key == chave
+
+
+def test_u44_validador_compartilhado_tem_um_contrato_so():
+    """`rule_id` e as chaves passam pelo MESMO validador."""
+    from app.memory.schemas.retention import validar_identificador_opaco
+
+    assert validar_identificador_opaco("x", "válido", 256) == "válido"
+    with pytest.raises(ValueError):
+        validar_identificador_opaco("x", "a\nb", 256)
+    with pytest.raises(ValueError):
+        validar_identificador_opaco("x", "   ", 256)
+    with pytest.raises(TypeError):
+        validar_identificador_opaco("x", 1, 256)
+
+
+# ======================================================================
+# E4.9.6.1 — corretivo A2: imutabilidade profunda de leitura
+# ======================================================================
+
+
+def test_u45_rules_e_tupla_tipada_nao_lista_de_dicts():
+    """Reprodução do achado A2: não existe mais `list[dict]` pública."""
+    p = RetentionPolicy(
+        policy_key="ret.default",
+        version=1,
+        governance_policy_key="gov.default",
+        rules=(regra(),),
+    )
+    assert isinstance(p.rules, tuple)
+    assert all(isinstance(r, RetentionRule) for r in p.rules)
+
+
+def test_u46_mutacao_aninhada_recusada():
+    """O caso exato que a auditoria reproduziu na cadeia 76."""
+    p = RetentionPolicy(
+        policy_key="ret.default",
+        version=1,
+        governance_policy_key="gov.default",
+        rules=(regra(),),
+    )
+    antes = p.rules[0].minimum_age_days
+
+    with pytest.raises(TypeError):
+        p.rules[0]["minimum_age_days"] = 0  # type: ignore[index]
+    with pytest.raises(FrozenInstanceError):
+        p.rules[0].minimum_age_days = 0  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        p.rules[0] = regra(rule_id="outra")  # type: ignore[index]
+
+    assert p.rules[0].minimum_age_days == antes
+
+
+def test_u47_domain_ids_tambem_e_imutavel():
+    p = RetentionPolicy(
+        policy_key="ret.default",
+        version=1,
+        governance_policy_key="gov.default",
+        rules=(
+            regra(
+                rule_id="d",
+                scope_kind=RetentionScopeKind.MEMORY_DOMAIN_SET,
+                domain_ids={D1},
+            ),
+        ),
+    )
+    dominios = p.rules[0].domain_ids
+    assert isinstance(dominios, frozenset)
+    with pytest.raises(AttributeError):
+        dominios.add(D2)  # type: ignore[attr-defined]
+
+
+def test_u48_type_decorator_faz_o_round_trip_canonico():
+    """`typed -> persisted -> typed` determinístico, sem sessão."""
+    from sqlalchemy.dialects import postgresql
+
+    from app.memory.models.retention_policy import RetentionRulesType
+
+    tipo = RetentionRulesType()
+    dialeto = postgresql.dialect()
+    originais = (regra(rule_id="b"), regra(rule_id="a"))
+
+    persistido = tipo.process_bind_param(originais, dialeto)
+    assert isinstance(persistido, list)
+    assert [linha["rule_id"] for linha in persistido] == ["a", "b"]
+
+    voltou = tipo.process_result_value(persistido, dialeto)
+    assert voltou is not None
+    assert set(voltou) == set(originais)
+    assert isinstance(voltou, tuple)
+
+
+def test_u49_type_decorator_trata_nulo_e_forma_invalida():
+    from sqlalchemy.dialects import postgresql
+
+    from app.memory.models.retention_policy import RetentionRulesType
+
+    tipo = RetentionRulesType()
+    dialeto = postgresql.dialect()
+    assert tipo.process_bind_param(None, dialeto) is None
+    assert tipo.process_result_value(None, dialeto) is None
+    with pytest.raises(ValueError, match="lista JSON"):
+        tipo.process_result_value({"nao": "lista"}, dialeto)
+
+
+def test_u50_type_decorator_usa_jsonb_no_postgres_e_json_nos_demais():
+    """`MIGRATION_DELTA = 0`: o tipo no banco é o mesmo da cadeia 76."""
+    from sqlalchemy.dialects import postgresql, sqlite
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy.types import JSON
+
+    from app.memory.models.retention_policy import RetentionRulesType
+
+    tipo = RetentionRulesType()
+    assert isinstance(tipo.load_dialect_impl(postgresql.dialect()), JSONB)
+    assert isinstance(tipo.load_dialect_impl(sqlite.dialect()), JSON)
