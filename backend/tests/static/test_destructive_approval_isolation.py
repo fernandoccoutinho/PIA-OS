@@ -230,9 +230,13 @@ def test_s11_nenhuma_migration_nova() -> None:
     revisoes = {p.name.split("_")[0] for p in versoes.glob("*.py")}
     assert "c8a3f5017e94" in revisoes
     for arquivo in versoes.glob("*.py"):
-        # E4.9.9.a: `a1f7c2d40e93` é a sucessora AUTORIZADA do head
+        # E4.9.9.a: `a1f7c2d40e93` é a sucessora AUTORIZADA do head;
+        # E4.9.9.d acrescenta `d5b31f7a08c4`, que converte
+        # governance_rule_id para texto opaco. Nenhuma das duas
+        # pertence a ESTA fatia, e é isso que a guarda mede.
+        # E4.9.9.a: sucessora anterior do head
         # anterior. A guarda continua provando que nenhuma OUTRA nasceu.
-        if arquivo.name.startswith(("c8a3f5017e94", "a1f7c2d40e93")):
+        if arquivo.name.startswith(("c8a3f5017e94", "a1f7c2d40e93", "d5b31f7a08c4")):
             continue
         texto = arquivo.read_text(encoding="utf-8")
         assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
@@ -258,12 +262,30 @@ def test_s12_nenhum_consumidor_de_producao_fora_dos_exports() -> None:
         # inerte — nenhum consumidor DESTRUTIVO apareceu.
         APP / "memory" / "schemas" / "erasure_effect.py",
     }
+    # ATUALIZADA NA E4.9.9.d: a composição final é o primeiro consumidor
+    # DESTRUTIVO autorizado — era exatamente para isto que a E4.9.8
+    # criou estes contratos. A guarda passou a exigir que ele seja o
+    # ÚNICO, o que é mais forte do que apenas adicioná-lo a `permitidos`.
+    # DOIS consumidores autorizados, com papéis distintos — e é a
+    # distinção que a guarda preserva:
+    #
+    # ```text
+    # schemas/destructive_execution.py   contratos INERTES da composição
+    # services/destructive_execution_service.py   a composição EXECUTÁVEL
+    # ```
+    #
+    # Um terceiro é recusado. Comparar CONJUNTOS, e não listas, porque a
+    # ordem de varredura do sistema de arquivos não é contrato.
+    esperados = {
+        "memory/schemas/destructive_execution.py",
+        "memory/services/destructive_execution_service.py",
+    }
     infratores = [
         str(p.relative_to(APP))
         for p in _fontes()
         if p not in permitidos and MODULOS_NOVOS & _modulos_importados(p)
     ]
-    assert infratores == []
+    assert set(infratores) == esperados, infratores
 
 
 def test_s13_o_efeito_continua_sem_existir() -> None:

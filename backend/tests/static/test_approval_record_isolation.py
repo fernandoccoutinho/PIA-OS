@@ -124,11 +124,24 @@ def test_s05_nenhuma_supressao_de_tipo_nova() -> None:
 
 
 def test_s06_nenhum_consumidor_de_producao_fora_do_repositorio() -> None:
-    """Contrato sem consumidor destrutivo é o estado correto da fatia."""
+    """EXATAMENTE um consumidor de produção, e ele é a composição final.
+
+    ATUALIZADA NA E4.9.9.d. A composição final é o consumidor
+    # AUTORIZADO, e a guarda ficou MAIS FORTE, não mais frouxa: antes
+    # exigia ZERO consumidores; agora exige EXATAMENTE UM, e nomeia
+    # qual. Um segundo consumidor passaria na versão antiga se ela
+    # tivesse sido apenas relaxada com um `permitidos`.
+    #
+    # ```text
+    # AUTHORIZED_CONSUMER = destructive_execution_service.py
+    # SECOND_CONSUMER = FORBIDDEN
+    # ```
+    """
     permitidos = {
         APP / "memory" / "models" / "__init__.py",
         APP / "memory" / "repositories" / "approval_record_repository.py",
     } | set(NOVOS)
+    esperado = APP / "memory" / "services" / "destructive_execution_service.py"
     modulos = {
         "app.memory.models.approval_record",
         "app.memory.repositories.approval_record_repository",
@@ -146,7 +159,7 @@ def test_s06_nenhum_consumidor_de_producao_fora_do_repositorio() -> None:
                 importados.update(a.name for a in no.names)
         if modulos & importados:
             infratores.append(str(caminho.relative_to(APP)))
-    assert infratores == []
+    assert infratores == [str(esperado.relative_to(APP))], infratores
 
 
 def test_s07_o_instante_decisorio_e_do_banco() -> None:
@@ -274,32 +287,81 @@ def test_s12_uma_unica_migration_sucessora_do_head_anterior() -> None:
 
     filhos_do_head_anterior = [r for r, p in grafo.items() if p == "c8a3f5017e94"]
     assert filhos_do_head_anterior == ["a1f7c2d40e93"]
+    # E4.9.9.d: a migration textual de `governance_rule_id` é a ÚNICA
+    # sucessora autorizada de `a1f7c2d40e93`. A guarda ganhou um degrau:
+    # antes só media a folha, agora também prova que nenhuma BRANCH
+    # nasceu da revisão desta fatia.
+    netos = [r for r, p in grafo.items() if p == "a1f7c2d40e93"]
+    assert netos == ["d5b31f7a08c4"], netos
     pais = {p for p in grafo.values() if p}
     folhas = [r for r in grafo if r not in pais]
-    assert folhas == ["a1f7c2d40e93"], folhas
+    assert folhas == ["d5b31f7a08c4"], folhas
 
 
-def test_s13_e4_9_9_b_c_d_nao_foram_iniciadas() -> None:
-    """Nem símbolo, nem stub, nem contrato antecipado."""
-    # ATUALIZADA NA E4.9.9.b: `ErasureEffectPort` e `ObservedAttemptResult`
-    # saíram porque a fatia `b` os autorizou e materializou como contratos
-    # inertes. As capacidades de `c` e `d` PERMANECEM ausentes.
-    ausentes = (
-        "RetentionEvaluator",
-        "DestructiveExecutionService",
-        "comparar_com_snapshot",
-    )
-    infratores: list[str] = []
-    for caminho in _fontes():
+def _classes_com_metodo(fontes, metodo: str) -> list[str]:
+    """Classes de produção que IMPLEMENTAM o método — nunca o `Protocol`.
+
+    ```text
+    DECLARED_BOUNDARY != CONCRETE_ADAPTER
+    ```
+
+    Um `Protocol` declara a fronteira e tem corpo `...`; um adaptador a
+    implementa. A distinção é medida na AST pelo corpo do método, não
+    pelo nome do arquivo.
+    """
+    encontradas: list[str] = []
+    for caminho in fontes:
         arvore = ast.parse(caminho.read_text(encoding="utf-8"))
         for no in ast.walk(arvore):
-            if isinstance(no, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-                if no.name in ausentes:
-                    infratores.append(f"{caminho.name}:{no.name}")
-            elif isinstance(no, ast.Assign):
-                for alvo in no.targets:
-                    if isinstance(alvo, ast.Name) and alvo.id in ausentes:
-                        infratores.append(f"{caminho.name}:{alvo.id}")
+            if not isinstance(no, ast.ClassDef):
+                continue
+            protocolo = any(
+                isinstance(base, ast.Name) and base.id == "Protocol" for base in no.bases
+            )
+            if protocolo:
+                continue
+            for membro in no.body:
+                if not isinstance(membro, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                if membro.name != metodo:
+                    continue
+                corpo = [
+                    linha
+                    for linha in membro.body
+                    if not (isinstance(linha, ast.Expr) and isinstance(linha.value, ast.Constant))
+                ]
+                substancial = not (
+                    len(corpo) == 1
+                    and isinstance(corpo[0], ast.Expr)
+                    and isinstance(corpo[0].value, ast.Constant)
+                    and corpo[0].value.value is Ellipsis
+                )
+                if substancial:
+                    encontradas.append(f"{caminho.name}:{no.name}")
+    return encontradas
+
+
+def test_s13_nenhum_adaptador_concreto_de_efeito_ou_resolucao() -> None:
+    """RENOMEADA NA E4.9.9.d — `GUARD_NAME != GUARD_MEASUREMENT`.
+
+    O nome antigo prometia que as fatias `b`, `c` e `d` não tinham
+    começado. As três foram autorizadas e implementadas, e manter o nome
+    faria a guarda prometer uma ausência que deixou de existir.
+
+    O que **permanece** ausente é a capacidade material, e é isso que a
+    guarda passou a medir:
+
+    ```text
+    ERASURE_EFFECT_ADAPTER = NONE
+    TARGET_RESOLVER_ADAPTER = NONE
+    PRODUCTION_DELETION_AVAILABLE = FALSE
+    ```
+
+    Medir adaptador concreto é mais forte do que medir nome de classe:
+    um adaptador chamado qualquer outra coisa passaria na versão antiga.
+    """
+    infratores = _classes_com_metodo(_fontes(), "attempt_effect")
+    infratores += _classes_com_metodo(_fontes(), "resolve_target")
     assert infratores == []
 
 

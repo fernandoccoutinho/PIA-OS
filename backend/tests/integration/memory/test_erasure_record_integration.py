@@ -64,7 +64,7 @@ def entrada(**overrides: object) -> ErasureRecordAppend:
         "governance_policy_id": uuid.uuid4(),
         "governance_policy_key": "gov.erasure",
         "governance_policy_version": 3,
-        "governance_rule_id": uuid.uuid4(),
+        "governance_rule_id": "rule-1",
         "governance_resolution_ref": "res:7c2a",
         "approval_ref": "appr:2b19",
         "executor_ref": "exec:local-artifact-store",
@@ -89,7 +89,7 @@ def _insert_raw(conn, **overrides: object) -> uuid.UUID:
         "governance_policy_id": uuid.uuid4(),
         "governance_policy_key": "gov.erasure",
         "governance_policy_version": 1,
-        "governance_rule_id": uuid.uuid4(),
+        "governance_rule_id": "rule-raw",
         "governance_resolution_ref": "res:raw",
         "approval_ref": "appr:raw",
         "executor_ref": "exec:raw",
@@ -463,8 +463,8 @@ def test_i21_round_trip_da_migration():
 
 def test_i22_single_head():
     # Atualizado pela E4.9.6 — head único, agora `c8a3f5017e94`.
-    assert migrations.head_revision() == "a1f7c2d40e93"
-    assert migrations.current_revision() == "a1f7c2d40e93"
+    assert migrations.head_revision() == "d5b31f7a08c4"
+    assert migrations.current_revision() == "d5b31f7a08c4"
 
 
 # --- Guardas do §15.3 ----------------------------------------------------

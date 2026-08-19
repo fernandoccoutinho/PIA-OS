@@ -95,13 +95,37 @@ def _fontes() -> list[pathlib.Path]:
 def test_s01_nenhum_service_ou_manager_importa_a_primitiva() -> None:
     """Nenhum escritor runtime existe — e não pode passar a existir
     por acréscimo silencioso na próxima fatia."""
+    # ATUALIZADA NA E4.9.9.d. A composição final é o consumidor
+    # AUTORIZADO, e a guarda ficou MAIS FORTE, não mais frouxa: antes
+    # exigia ZERO consumidores; agora exige EXATAMENTE UM, e nomeia
+    # qual. Um segundo consumidor passaria na versão antiga se ela
+    # tivesse sido apenas relaxada com um `permitidos`.
+    #
+    # ```text
+    # AUTHORIZED_CONSUMER = destructive_execution_service.py
+    # SECOND_CONSUMER = FORBIDDEN
+    # ```
+    # DOIS consumidores autorizados, com papéis distintos — e é a
+    # distinção que a guarda preserva:
+    #
+    # ```text
+    # schemas/destructive_execution.py   contratos INERTES da composição
+    # services/destructive_execution_service.py   a composição EXECUTÁVEL
+    # ```
+    #
+    # Um terceiro é recusado. Comparar CONJUNTOS, e não listas, porque a
+    # ordem de varredura do sistema de arquivos não é contrato.
+    esperados = {
+        "memory/schemas/destructive_execution.py",
+        "memory/services/destructive_execution_service.py",
+    }
     infratores: list[str] = []
     for arquivo in _fontes():
         if arquivo in PERMITIDOS:
             continue
         if NOVOS_MODULOS & _modulos_importados(arquivo):
             infratores.append(str(arquivo.relative_to(APP)))
-    assert infratores == [], f"importam a primitiva sem autorização: {infratores}"
+    assert set(infratores) == esperados, infratores
 
 
 def test_s02_nenhum_service_menciona_erasure_record() -> None:
@@ -112,12 +136,16 @@ def test_s02_nenhum_service_menciona_erasure_record() -> None:
     """
     servicos = [p for p in (APP / "memory" / "services").rglob("*.py")]
     servicos += [p for p in (APP / "cognitive" / "services").rglob("*.py")]
+    # ATUALIZADA NA E4.9.9.d: um serviço — e SÓ um — passa a mencionar a
+    # primitiva. A busca textual continua existindo porque `importlib` e
+    # referência por string escapariam da AST.
+    esperado = APP / "memory" / "services" / "destructive_execution_service.py"
     infratores = [
         str(p.relative_to(APP))
         for p in servicos
         if "__pycache__" not in p.parts and "ErasureRecord" in p.read_text(encoding="utf-8")
     ]
-    assert infratores == []
+    assert infratores == [str(esperado.relative_to(APP))], infratores
 
 
 def test_s03_nenhuma_rota_ou_api_expoe_a_primitiva() -> None:
@@ -182,6 +210,49 @@ def test_s07_a_primitiva_nao_menciona_efeito_destrutivo() -> None:
             assert termo not in texto, f"{modulo} menciona {termo}"
 
 
+def _classes_com_metodo(fontes, metodo: str) -> list[str]:
+    """Classes de produção que IMPLEMENTAM o método — nunca o `Protocol`.
+
+    ```text
+    DECLARED_BOUNDARY != CONCRETE_ADAPTER
+    ```
+
+    Um `Protocol` declara a fronteira e tem corpo `...`; um adaptador a
+    implementa. A distinção é medida na AST pelo corpo do método, não
+    pelo nome do arquivo.
+    """
+    encontradas: list[str] = []
+    for caminho in fontes:
+        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+        for no in ast.walk(arvore):
+            if not isinstance(no, ast.ClassDef):
+                continue
+            protocolo = any(
+                isinstance(base, ast.Name) and base.id == "Protocol" for base in no.bases
+            )
+            if protocolo:
+                continue
+            for membro in no.body:
+                if not isinstance(membro, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                if membro.name != metodo:
+                    continue
+                corpo = [
+                    linha
+                    for linha in membro.body
+                    if not (isinstance(linha, ast.Expr) and isinstance(linha.value, ast.Constant))
+                ]
+                substancial = not (
+                    len(corpo) == 1
+                    and isinstance(corpo[0], ast.Expr)
+                    and isinstance(corpo[0].value, ast.Constant)
+                    and corpo[0].value.value is Ellipsis
+                )
+                if substancial:
+                    encontradas.append(f"{caminho.name}:{no.name}")
+    return encontradas
+
+
 def test_s08_target_resolver_effect_approval_e_retention_continuam_ausentes() -> None:
     """A fatia não antecipou nenhuma das fundações seguintes."""
     # Atualizado pela E4.9.6: `RetentionPolicy` saiu da lista porque
@@ -218,15 +289,18 @@ def test_s08_target_resolver_effect_approval_e_retention_continuam_ausentes() ->
     # ATUALIZADA NA E4.9.9.b: o PORT e o resultado tipado são autorizados
     # e inertes. O que continua ausente, e é o que importa, é o
     # EXECUTOR — nenhuma classe compõe efeito com recibo.
-    ausentes = ("DestructiveExecutionService",)
-    encontrados: list[str] = []
-    for arquivo in _fontes():
-        texto = arquivo.read_text(encoding="utf-8")
-        for termo in ausentes:
-            # `class X` ou `X = ` seriam definição; menção em docstring
-            # é legítima e existe de propósito nos contratos.
-            if f"class {termo}" in texto:
-                encontrados.append(f"{arquivo.relative_to(APP)}:{termo}")
+    # ATUALIZADA NA E4.9.9.d: `DestructiveExecutionService` saiu da lista
+    # porque a fatia o autorizou e materializou — a guarda fez de novo
+    # exatamente o que devia, acusando a chegada da fatia seguinte.
+    #
+    # O que PERMANECE ausente é a capacidade material, e a guarda passou
+    # a medi-la em vez de medir um nome:
+    #
+    # ```text
+    # ERASURE_EFFECT_ADAPTER = NONE
+    # PRODUCTION_DELETION_AVAILABLE = FALSE
+    # ```
+    encontrados = _classes_com_metodo(_fontes(), "attempt_effect")
     assert encontrados == []
 
 

@@ -476,3 +476,73 @@ Falha **controlada e tipada**. A alternativa — devolver um objeto
 tolerante — transformaria linha corrompida em aprovação utilizável, que é
 exatamente o que a revalidação existe para impedir.
 """
+
+
+PIA_8047_DESTRUCTIVE_EXECUTION_UNKNOWN_MATERIAL_STATE = ErrorCode(
+    code="PIA-8047",
+    default_message="destructive_execution_unknown_material_state",
+    category=ErrorCategory.SYSTEM,
+    http_status=500,
+    severity=ErrorSeverity.CRITICAL,
+)
+"""A porta de efeito levantou exceção — o estado material é ambíguo
+(`E4.9.9.d`).
+
+```text
+EXCEPTION != OBSERVED_OUTCOME
+TIMEOUT   != PROOF_OF_NO_EFFECT
+EFFECT_EXCEPTION -> UNKNOWN_STATE, NEVER_INVENTED_RECEIPT
+```
+
+`CRITICAL` porque nenhum desfecho pode ser inferido: não se sabe se o
+objeto foi apagado, parcialmente apagado ou intocado. Fabricar
+`FAILED` seria afirmar ausência de efeito sem observação, e fabricar
+`SUCCEEDED` seria pior. A aprovação **permanece consumida** — o
+contrato é at-most-once, e reabri-la autorizaria uma segunda tentativa
+sobre estado desconhecido.
+"""
+
+PIA_8048_DESTRUCTIVE_EXECUTION_ADAPTER_CONTRACT_VIOLATION = ErrorCode(
+    code="PIA-8048",
+    default_message="destructive_execution_adapter_contract_violation",
+    category=ErrorCategory.SYSTEM,
+    http_status=500,
+    severity=ErrorSeverity.CRITICAL,
+)
+"""O resultado devolvido pela porta não corresponde ao que foi pedido
+(`E4.9.9.d`).
+
+```text
+RETURNED_RESULT != FACT_UNTIL_BOUND_TO_THE_REQUEST
+```
+
+Código **distinto** de `PIA-8047`, e a distinção é material: lá a porta
+falhou, aqui ela respondeu sobre outra aprovação, outro sujeito ou
+outra classe. As duas deixam o estado desconhecido e interrompem o
+lote, mas confundi-las apagaria a diferença entre um adaptador
+indisponível e um adaptador incoerente — que exigem investigações
+opostas.
+"""
+
+
+PIA_8049_ERASURE_RECEIPT_NOT_PERSISTED = ErrorCode(
+    code="PIA-8049",
+    default_message="erasure_receipt_not_persisted",
+    category=ErrorCategory.SYSTEM,
+    http_status=500,
+    severity=ErrorSeverity.CRITICAL,
+)
+"""Efeito observado, recibo **não** persistido (`E4.9.9.d`).
+
+```text
+OBSERVED_EFFECT_WITHOUT_RECEIPT = KNOWN_MATERIAL_STATE, MISSING_EVIDENCE
+```
+
+Terceira condição, e distinta das outras duas: em `PIA-8047` o estado
+material é desconhecido; em `PIA-8048` o adaptador respondeu sobre outra
+coisa; aqui o desfecho **foi observado** e o commit do recibo falhou.
+
+Nem alegar recibo, nem desfazer ficticiamente o efeito. O apagamento
+ocorreu e a evidência não ficou — é exatamente isso que o erro diz, e
+por isso ele carrega o desfecho observado sem inventá-lo.
+"""

@@ -576,7 +576,9 @@ def test_ri24_migration_head_is_unchanged_and_single():
     # `retention_policies`, segunda fatia de runtime da E4.9. O head
     # continua ÚNICO — o que este guarda protege é a ausência de
     # branching, não a imobilidade.
-    assert tuple(heads) == ("a1f7c2d40e93",), f"migration head mudou: {heads}"
+    # E4.9.9.d: head atualizado para `d5b31f7a08c4` (governance_rule_id
+    # textual). A guarda continua medindo head ÚNICO.
+    assert tuple(heads) == ("d5b31f7a08c4",), f"migration head mudou: {heads}"
 
 
 def test_ri25_no_new_memory_table_was_introduced():

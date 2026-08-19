@@ -37,8 +37,14 @@ from app.memory.errors.codes import (
     PIA_8044_APPROVAL_RECORD_NOT_USABLE,
     PIA_8045_APPROVAL_RECORD_IMMUTABLE,
     PIA_8046_APPROVAL_RECORD_PERSISTED_ROW_INVALID,
+    PIA_8047_DESTRUCTIVE_EXECUTION_UNKNOWN_MATERIAL_STATE,
+    PIA_8048_DESTRUCTIVE_EXECUTION_ADAPTER_CONTRACT_VIOLATION,
+    PIA_8049_ERASURE_RECEIPT_NOT_PERSISTED,
 )
 from app.memory.models.approval_lifecycle_enums import ApprovalUsageRefusalReason
+from app.memory.models.destructive_execution_enums import AdapterContractViolation
+from app.memory.models.erasure_enums import ErasureOutcome
+from app.memory.schemas.destructive_execution import PartialExecutionEvidence
 
 
 class MemoryDomainNotFoundError(PIAOSException):
@@ -454,4 +460,137 @@ class ApprovalRecordPersistedRowInvalidError(PIAOSException):
                 f"'{campo}': {causa}"
             ),
             detail={"approval_id": str(approval_id), "field": campo, "cause": causa},
+        )
+
+
+class DestructiveExecutionUnknownMaterialStateError(PIAOSException):
+    """A porta de efeito falhou e o estado material ficou ambíguo (`E4.9.9.d`).
+
+    ```text
+    EFFECT_EXCEPTION -> UNKNOWN_STATE, NEVER_INVENTED_RECEIPT
+    CRASH_DURING_EFFECT_MAY_LEAVE_UNKNOWN_STATE = DECLARED
+    ```
+
+    Exceção, e não valor de retorno, porque um desfecho ignorável faria o
+    caso mais grave passar como rotina. Carrega a evidência do que já era
+    fato antes da ambiguidade — nunca uma inferência sobre o alvo em que
+    ela ocorreu.
+
+    A aprovação **permanece consumida**: o contrato é at-most-once, e
+    reabri-la autorizaria segunda tentativa sobre estado desconhecido.
+    """
+
+    error_code = PIA_8047_DESTRUCTIVE_EXECUTION_UNKNOWN_MATERIAL_STATE
+
+    def __init__(self, evidence: "PartialExecutionEvidence") -> None:
+        if not isinstance(evidence, PartialExecutionEvidence):
+            raise TypeError(
+                "a evidência parcial é obrigatória e tipada — sem ela, o "
+                "chamador não sabe o que já era fato quando o estado ficou ambíguo"
+            )
+        self.evidence = evidence
+        super().__init__(
+            message=(
+                f"Estado material desconhecido na posição {evidence.failed_position} "
+                f"do lote da aprovação {evidence.approval_id} — a porta de efeito "
+                "levantou exceção e nenhum desfecho pode ser inferido."
+            ),
+            detail={
+                "approval_id": str(evidence.approval_id),
+                "failed_position": evidence.failed_position,
+                "subject_coid": str(evidence.subject_coid),
+                "attempts_observed": evidence.attempts_observed,
+                "receipts_persisted": evidence.receipts_persisted,
+                "targets_not_attempted": evidence.targets_not_attempted,
+            },
+        )
+
+
+class DestructiveExecutionAdapterContractViolationError(PIAOSException):
+    """O resultado da porta não corresponde ao pedido (`E4.9.9.d`).
+
+    ```text
+    RETURNED_RESULT != FACT_UNTIL_BOUND_TO_THE_REQUEST
+    ```
+
+    Distinta de `DestructiveExecutionUnknownMaterialStateError`: lá a
+    porta falhou, aqui ela respondeu sobre outra aprovação, outro sujeito
+    ou outra classe. Registrar o recibo mesmo assim gravaria o apagamento
+    de um objeto a partir da observação de outro.
+    """
+
+    error_code = PIA_8048_DESTRUCTIVE_EXECUTION_ADAPTER_CONTRACT_VIOLATION
+
+    def __init__(
+        self,
+        violation: AdapterContractViolation,
+        evidence: "PartialExecutionEvidence",
+    ) -> None:
+        if not isinstance(violation, AdapterContractViolation):
+            raise TypeError(
+                "violation deve ser um AdapterContractViolation — texto livre "
+                "não distingue as três incoerências possíveis"
+            )
+        if not isinstance(evidence, PartialExecutionEvidence):
+            raise TypeError("a evidência parcial é obrigatória e tipada")
+        self.violation = violation
+        self.evidence = evidence
+        super().__init__(
+            message=(
+                f"Adaptador de efeito devolveu resultado incoerente "
+                f"('{violation.value}') na posição {evidence.failed_position} do "
+                f"lote da aprovação {evidence.approval_id}."
+            ),
+            detail={
+                "approval_id": str(evidence.approval_id),
+                "violation": violation.value,
+                "failed_position": evidence.failed_position,
+                "subject_coid": str(evidence.subject_coid),
+                "attempts_observed": evidence.attempts_observed,
+                "receipts_persisted": evidence.receipts_persisted,
+            },
+        )
+
+
+class ErasureReceiptNotPersistedError(PIAOSException):
+    """O efeito foi observado e o recibo não commitou (`E4.9.9.d`).
+
+    ```text
+    NEVER_CLAIM_A_RECEIPT_THAT_DID_NOT_COMMIT
+    NEVER_UNDO_AN_OBSERVED_EFFECT_ON_PAPER
+    ```
+
+    O desfecho observado entra na mensagem porque é **fato**: a tentativa
+    material ocorreu e alguém a observou. O que não ocorreu foi a
+    gravação do recibo, e nenhum `TargetAttempted` é construído — o
+    resultado agregado só lista recibos cujo commit próprio terminou.
+    """
+
+    error_code = PIA_8049_ERASURE_RECEIPT_NOT_PERSISTED
+
+    def __init__(
+        self,
+        outcome: ErasureOutcome,
+        evidence: "PartialExecutionEvidence",
+    ) -> None:
+        if not isinstance(outcome, ErasureOutcome):
+            raise TypeError("outcome deve ser um ErasureOutcome — a fonte única é a da E4.9.5")
+        if not isinstance(evidence, PartialExecutionEvidence):
+            raise TypeError("a evidência parcial é obrigatória e tipada")
+        self.outcome = outcome
+        self.evidence = evidence
+        super().__init__(
+            message=(
+                f"Efeito observado ('{outcome.value}') na posição "
+                f"{evidence.failed_position} do lote da aprovação "
+                f"{evidence.approval_id}, mas o recibo não foi persistido."
+            ),
+            detail={
+                "approval_id": str(evidence.approval_id),
+                "observed_outcome": outcome.value,
+                "failed_position": evidence.failed_position,
+                "subject_coid": str(evidence.subject_coid),
+                "attempts_observed": evidence.attempts_observed,
+                "receipts_persisted": evidence.receipts_persisted,
+            },
         )

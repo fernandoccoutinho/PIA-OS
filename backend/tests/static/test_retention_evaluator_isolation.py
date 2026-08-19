@@ -240,18 +240,39 @@ def test_s11_o_prazo_efetivo_e_o_maximo_e_nao_o_minimo() -> None:
     assert "min" not in chamadas
 
 
-def test_s12_e4_9_9_d_nao_foi_iniciada() -> None:
-    ausentes = ("DestructiveExecutionService", "comparar_com_snapshot")
-    infratores: list[str] = []
-    for caminho in _fontes():
-        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
-        for no in ast.walk(arvore):
-            if (
-                isinstance(no, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-                and no.name in ausentes
-            ):
-                infratores.append(f"{caminho.name}:{no.name}")
-    assert infratores == []
+def test_s12_a_avaliacao_de_retencao_nao_e_autoridade_de_exclusao() -> None:
+    """RENOMEADA NA E4.9.9.d, e a medição ficou MAIS FORTE.
+
+    O nome antigo prometia que a fatia `d` não tinha começado. Ela
+    começou, foi autorizada, e o que precisa continuar verdadeiro é
+    outra coisa:
+
+    ```text
+    RETENTION_ASSESSMENT != DELETION_AUTHORITY
+    LEGACY_PROTECTION = USER_BINDING, NOT AUTOMATIC_EFFECT
+    ```
+
+    A composição destrutiva **não** importa o avaliador. Acoplá-lo ao
+    executor o transformaria numa segunda autorização, e a autoridade
+    continua sendo a aprovação humana. A guarda mede exatamente esse
+    não-acoplamento, que o nome antigo nem chegava a mencionar.
+    """
+    servico = APP / "memory" / "services" / "destructive_execution_service.py"
+    assert servico.is_file(), "a composição final da E4.9 não está onde a guarda a procura"
+
+    importados: set[str] = set()
+    chamados: set[str] = set()
+    for no in ast.walk(ast.parse(servico.read_text(encoding="utf-8"))):
+        if isinstance(no, ast.ImportFrom) and no.module:
+            importados.add(no.module)
+        elif isinstance(no, ast.Call):
+            alvo = no.func
+            nome = alvo.id if isinstance(alvo, ast.Name) else getattr(alvo, "attr", None)
+            if nome:
+                chamados.add(nome)
+
+    assert "app.memory.services.retention_evaluator" not in importados
+    assert "avaliar_retencao" not in chamados
 
 
 def test_s13_e3_intocada_pelos_modulos_novos() -> None:

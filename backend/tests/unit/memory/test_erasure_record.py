@@ -37,7 +37,9 @@ def entrada(**overrides: object) -> ErasureRecordAppend:
         "governance_policy_id": uuid.uuid4(),
         "governance_policy_key": "gov.erasure",
         "governance_policy_version": 3,
-        "governance_rule_id": uuid.uuid4(),
+        # E4.9.9.d: OPAQUE_RULE_REFERENCE != UUID. A fonte real é
+        # `GovernanceResolution.matched_rule_id`, que é `str`.
+        "governance_rule_id": "rule-1",
         "governance_resolution_ref": "res:7c2a",
         "approval_ref": "appr:2b19",
         "executor_ref": "exec:local-artifact-store",
@@ -309,7 +311,7 @@ def test_u26_view_e_congelada_e_nao_expoe_campo_extra():
         governance_policy_id=uuid.uuid4(),
         governance_policy_key="gov.erasure",
         governance_policy_version=1,
-        governance_rule_id=uuid.uuid4(),
+        governance_rule_id="rule-1",
         governance_resolution_ref="res:1",
         approval_ref="appr:1",
         executor_ref="exec:1",

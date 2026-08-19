@@ -196,9 +196,13 @@ def test_s07_nenhuma_migration_nova() -> None:
     revisoes = {p.name.split("_")[0] for p in versoes.glob("*.py")}
     assert "c8a3f5017e94" in revisoes
     for arquivo in versoes.glob("*.py"):
-        # E4.9.9.a: `a1f7c2d40e93` é a sucessora AUTORIZADA do head
+        # E4.9.9.a: `a1f7c2d40e93` é a sucessora AUTORIZADA do head;
+        # E4.9.9.d acrescenta `d5b31f7a08c4`, que converte
+        # governance_rule_id para texto opaco. Nenhuma das duas
+        # pertence a ESTA fatia, e é isso que a guarda mede.
+        # E4.9.9.a: sucessora anterior do head
         # anterior. A guarda continua provando que nenhuma OUTRA nasceu.
-        if arquivo.name.startswith(("c8a3f5017e94", "a1f7c2d40e93")):
+        if arquivo.name.startswith(("c8a3f5017e94", "a1f7c2d40e93", "d5b31f7a08c4")):
             continue
         texto = arquivo.read_text(encoding="utf-8")
         assert 'down_revision: str | None = "c8a3f5017e94"' not in texto, arquivo.name
@@ -280,12 +284,26 @@ def test_s10_nenhum_consumidor_runtime_da_porta_apareceu() -> None:
         APP / "memory" / "ports" / "erasure_target.py",
         APP / "memory" / "ports" / "__init__.py",
     }
+    # ATUALIZADA NA E4.9.9.d, e a metade que importa MUDOU DE FORMA em
+    # vez de ser afrouxada. A porta deixou de ter zero consumidores
+    # porque a composição final foi autorizada a consumi-la — e a guarda
+    # passou a exigir que ele seja o ÚNICO:
+    #
+    # ```text
+    # RESOLVER_PORT_CONSUMERS = {destructive_execution_service.py}
+    # RESOLVER_ADAPTER = NONE
+    # ```
+    #
+    # A ausência de ADAPTADOR — que é o que esta guarda sempre protegeu —
+    # continua provada, agora por `test_s13` do isolamento da aprovação,
+    # que mede classe concreta com `resolve_target` de corpo vivo.
+    esperado = "memory/services/destructive_execution_service.py"
     consumidores_da_porta = [
         str(p.relative_to(APP))
         for p in _fontes()
         if p not in permitidos_porta and porta & _modulos_importados(p)
     ]
-    assert consumidores_da_porta == []
+    assert consumidores_da_porta == [esperado], consumidores_da_porta
 
     permitidos_vo = set(CAMINHOS_NOVOS) | {
         APP / "memory" / "ports" / "__init__.py",
@@ -315,6 +333,11 @@ def test_s10_nenhum_consumidor_runtime_da_porta_apareceu() -> None:
         # A metade que importa continua intacta acima:
         # `ErasureTargetResolverPort` segue com ZERO consumidores.
         APP / "memory" / "services" / "retention_evaluator.py",
+        # Consumidores AUTORIZADOS pela E4.9.9.d: os contratos da
+        # composição reutilizam `ErasureTargetReference` e os
+        # validadores, e o serviço re-resolve pela porta.
+        APP / "memory" / "schemas" / "destructive_execution.py",
+        APP / "memory" / "services" / "destructive_execution_service.py",
     }
     consumidores_dos_vo = [
         str(p.relative_to(APP))
@@ -1277,8 +1300,13 @@ def test_s37_nenhuma_migration_orm_ou_repository_nesta_fatia() -> None:
     # o head atual é folha — só o alvo do "nenhuma" mudou.
     filhos = [rev for rev, pai in grafo.items() if pai == "c8a3f5017e94"]
     assert filhos == ["a1f7c2d40e93"], filhos
+    # ATUALIZADO PELA E4.9.9.d: a conversão textual de `governance_rule_id`
+    # é a sucessora AUTORIZADA. O "nenhuma outra" desceu um degrau e
+    # continua sendo medido — nada nasceu da revisão nova.
     netos = [rev for rev, pai in grafo.items() if pai == "a1f7c2d40e93"]
-    assert netos == [], netos
+    assert netos == ["d5b31f7a08c4"], netos
+    bisnetos = [rev for rev, pai in grafo.items() if pai == "d5b31f7a08c4"]
+    assert bisnetos == [], bisnetos
 
     for caminho in (
         APP / "memory" / "schemas" / "erasure_target.py",
@@ -1289,7 +1317,7 @@ def test_s37_nenhuma_migration_orm_ou_repository_nesta_fatia() -> None:
         assert presentes == set(), f"{caminho.name}: {presentes}"
 
 
-def test_s38_e4_9_9_b_c_d_nao_foram_iniciadas() -> None:
+def test_s38_nenhum_adaptador_concreto_de_resolucao_ou_efeito() -> None:
     """As fatias b, c e d continuam sem símbolo, stub ou contrato.
 
     RENOMEADA NA E4.9.9.a: enquanto a fatia `a` estava bloqueada, o nome
@@ -1313,20 +1341,38 @@ def test_s38_e4_9_9_b_c_d_nao_foram_iniciadas() -> None:
     # DestructiveExecutionService  = ABSENT   (E4.9.9.d)
     # ```
     # ATUALIZADA NA E4.9.9.b, mesma razão de `test_approval_record_isolation`.
-    ausentes = (
-        "RetentionEvaluator",
-        "DestructiveExecutionService",
-        "comparar_com_snapshot",
-    )
+    # RENOMEADA DE NOVO NA E4.9.9.d, pela terceira vez e pela mesma
+    # razão: as fatias `b`, `c` e `d` foram todas autorizadas e
+    # implementadas, e um nome que promete a ausência delas passou a
+    # mentir.
+    #
+    # ```text
+    # GUARD_NAME != GUARD_MEASUREMENT  ->  renomear, não afrouxar
+    # ```
+    #
+    # O que permanece ausente, e é o que sempre importou, é a capacidade
+    # de agir sobre matéria: nenhuma classe de produção implementa
+    # `resolve_target` nem `attempt_effect` com corpo vivo.
     infratores: list[str] = []
     for caminho in _fontes():
-        fonte = caminho.read_text(encoding="utf-8")
-        for simbolo in ausentes:
-            # Classe, função OU atribuição de módulo — a guarda da cadeia
-            # 88 só procurava `class X` e não veria o símbolo criado como
-            # função ou export.
-            if _simbolo_definido(fonte, simbolo):
-                infratores.append(f"{caminho.name}:{simbolo}")
+        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+        for no in ast.walk(arvore):
+            if not isinstance(no, ast.ClassDef):
+                continue
+            if any(isinstance(base, ast.Name) and base.id == "Protocol" for base in no.bases):
+                continue
+            for membro in no.body:
+                if not isinstance(membro, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                if membro.name not in ("resolve_target", "attempt_effect"):
+                    continue
+                corpo = [
+                    linha
+                    for linha in membro.body
+                    if not (isinstance(linha, ast.Expr) and isinstance(linha.value, ast.Constant))
+                ]
+                if corpo:
+                    infratores.append(f"{caminho.name}:{no.name}.{membro.name}")
     assert infratores == []
 
 

@@ -140,7 +140,10 @@ def test_s04_nenhuma_persistencia_orm_ou_migration() -> None:
             grafo[revisao] = pai
     pais = {p for p in grafo.values() if p}
     folhas = sorted(r for r in grafo if r not in pais)
-    assert folhas == ["a1f7c2d40e93"], folhas
+    # E4.9.9.d: a migration textual de `governance_rule_id` é a sucessora
+    # AUTORIZADA. Ela não pertence a ESTA fatia, e a guarda continua
+    # medindo head ÚNICO — só o alvo do "único" mudou.
+    assert folhas == ["d5b31f7a08c4"], folhas
 
 
 def test_s05_nenhuma_re_resolucao_nem_comparacao_de_snapshot() -> None:
@@ -191,12 +194,36 @@ def test_s07_nenhum_consumidor_de_producao_fora_dos_exports() -> None:
         APP / "memory" / "schemas" / "__init__.py",
         APP / "memory" / "ports" / "__init__.py",
     }
+    # ATUALIZADA NA E4.9.9.d. A composição final é o consumidor
+    # AUTORIZADO, e a guarda ficou MAIS FORTE, não mais frouxa: antes
+    # exigia ZERO consumidores; agora exige EXATAMENTE UM, e nomeia
+    # qual. Um segundo consumidor passaria na versão antiga se ela
+    # tivesse sido apenas relaxada com um `permitidos`.
+    #
+    # ```text
+    # AUTHORIZED_CONSUMER = destructive_execution_service.py
+    # SECOND_CONSUMER = FORBIDDEN
+    # ```
+    # DOIS consumidores autorizados, com papéis distintos — e é a
+    # distinção que a guarda preserva:
+    #
+    # ```text
+    # schemas/destructive_execution.py   contratos INERTES da composição
+    # services/destructive_execution_service.py   a composição EXECUTÁVEL
+    # ```
+    #
+    # Um terceiro é recusado. Comparar CONJUNTOS, e não listas, porque a
+    # ordem de varredura do sistema de arquivos não é contrato.
+    esperados = {
+        "memory/schemas/destructive_execution.py",
+        "memory/services/destructive_execution_service.py",
+    }
     infratores = [
         str(p.relative_to(APP))
         for p in _fontes()
         if p not in permitidos and modulos & _importados(p)
     ]
-    assert infratores == []
+    assert set(infratores) == esperados, infratores
 
 
 def test_s08_a_porta_de_efeito_e_separada_da_de_resolucao() -> None:
@@ -284,22 +311,62 @@ def test_s11_nenhuma_traducao_de_capacidade_para_operacao() -> None:
         assert forma not in executavel, forma
 
 
-def test_s12_e4_9_9_c_e_d_nao_foram_iniciadas() -> None:
-    ausentes = (
-        "RetentionEvaluator",
-        "DestructiveExecutionService",
-        "comparar_com_snapshot",
-    )
-    infratores: list[str] = []
-    for caminho in _fontes():
+def _classes_com_metodo(fontes, metodo: str) -> list[str]:
+    """Classes de produção que IMPLEMENTAM o método — nunca o `Protocol`.
+
+    ```text
+    DECLARED_BOUNDARY != CONCRETE_ADAPTER
+    ```
+
+    Um `Protocol` declara a fronteira e tem corpo `...`; um adaptador a
+    implementa. A distinção é medida na AST pelo corpo do método, não
+    pelo nome do arquivo.
+    """
+    encontradas: list[str] = []
+    for caminho in fontes:
         arvore = ast.parse(caminho.read_text(encoding="utf-8"))
         for no in ast.walk(arvore):
-            if (
-                isinstance(no, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-                and no.name in ausentes
-            ):
-                infratores.append(f"{caminho.name}:{no.name}")
-    assert infratores == []
+            if not isinstance(no, ast.ClassDef):
+                continue
+            protocolo = any(
+                isinstance(base, ast.Name) and base.id == "Protocol" for base in no.bases
+            )
+            if protocolo:
+                continue
+            for membro in no.body:
+                if not isinstance(membro, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                if membro.name != metodo:
+                    continue
+                corpo = [
+                    linha
+                    for linha in membro.body
+                    if not (isinstance(linha, ast.Expr) and isinstance(linha.value, ast.Constant))
+                ]
+                substancial = not (
+                    len(corpo) == 1
+                    and isinstance(corpo[0], ast.Expr)
+                    and isinstance(corpo[0].value, ast.Constant)
+                    and corpo[0].value.value is Ellipsis
+                )
+                if substancial:
+                    encontradas.append(f"{caminho.name}:{no.name}")
+    return encontradas
+
+
+def test_s12_a_porta_continua_sem_adaptador_concreto() -> None:
+    """RENOMEADA NA E4.9.9.d — ver `test_s13` do isolamento da aprovação.
+
+    ```text
+    EFFECT_PORT = DECLARED_BOUNDARY
+    EFFECT_ADAPTER = NONE
+    ```
+
+    A E4.9.9.d compõe a porta; ela não a implementa. O adaptador
+    continua sendo obrigação de uma autorização futura, e os únicos
+    `attempt_effect` com corpo vivem em `tests/`.
+    """
+    assert _classes_com_metodo(_fontes(), "attempt_effect") == []
 
 
 def test_s13_e3_intocada_pelos_modulos_novos() -> None:

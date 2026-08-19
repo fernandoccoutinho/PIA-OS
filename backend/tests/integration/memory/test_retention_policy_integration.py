@@ -147,8 +147,8 @@ def test_i02_nenhuma_foreign_key():
 
 
 def test_i03_migration_head_e_down_revision():
-    assert migrations.head_revision() == "a1f7c2d40e93"
-    assert migrations.current_revision() == "a1f7c2d40e93"
+    assert migrations.head_revision() == "d5b31f7a08c4"
+    assert migrations.current_revision() == "d5b31f7a08c4"
 
 
 # --- Publicação e consulta ----------------------------------------------
@@ -557,7 +557,7 @@ def test_i28_publicacao_devolve_superficie_imutavel_e_preserva_id():
 
 def test_i29_migration_head_e_schema_identicos_a_cadeia_76():
     """`MIGRATION_DELTA = 0`, `DATABASE_SCHEMA_DELTA = 0`."""
-    assert migrations.head_revision() == "a1f7c2d40e93"
+    assert migrations.head_revision() == "d5b31f7a08c4"
 
     with engine.connect() as conn:
         tipo = conn.execute(
@@ -756,7 +756,7 @@ def test_i39_schema_e_migration_head_identicos_a_cadeia_77():
     """`MIGRATION_DELTA = 0` e `DATABASE_SCHEMA_DELTA = 0`."""
     with engine.connect() as conn:
         head = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert head == "a1f7c2d40e93"
+        assert head == "d5b31f7a08c4"
 
         tipo = conn.execute(
             sa.text(
@@ -948,7 +948,7 @@ def test_i48_trigger_colisao_e_schema_permanecem_inalterados():
 
     with engine.connect() as conn:
         assert conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "a1f7c2d40e93"
+            "d5b31f7a08c4"
         )
         assert (
             conn.execute(

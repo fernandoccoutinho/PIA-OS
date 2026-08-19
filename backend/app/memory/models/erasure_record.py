@@ -196,8 +196,26 @@ class ErasureRecord(BaseModel):
     governance_policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
     """Versão da governança que efetivamente avaliou a operação."""
 
-    governance_rule_id: Mapped[uuid.UUID] = mapped_column(Uuid(), nullable=False)
-    """Regra específica dentro da versão citada."""
+    governance_rule_id: Mapped[str] = mapped_column(String(MAX_IDENTIFIER_LENGTH), nullable=False)
+    """Regra específica dentro da versão citada — **texto opaco**.
+
+    ```text
+    OPAQUE_RULE_REFERENCE != UUID
+    FABRICATED_RULE_IDENTITY = FORBIDDEN
+    ```
+
+    **Era `Uuid()` até a E4.9.9.d, e a correção foi medida, não estética.**
+    A fonte deste valor é `GovernanceResolution.matched_rule_id`, que é
+    `str | None` desde a E4.3 e recebe valores como `"rule-1"` em todo o
+    projeto. A coluna exigia `UUID`, e as três saídas possíveis eram
+    converter, sortear ou derivar por hash — as três inventam uma
+    identidade de regra que não existe.
+
+    A quarta saída é esta: o recibo cita a regra **como a governança a
+    nomeia**. Alinhar o recibo ao contrato canônico preserva a citação
+    byte a byte; alinhar a governança ao recibo quebraria a E4.3, que
+    esta fatia não pode tocar.
+    """
 
     governance_resolution_ref: Mapped[str] = mapped_column(
         String(MAX_IDENTIFIER_LENGTH), nullable=False
@@ -265,6 +283,10 @@ class ErasureRecord(BaseModel):
             name="ck_erasure_records_governance_policy_key_not_blank",
         ),
         CheckConstraint(
+            "length(btrim(governance_rule_id)) > 0",
+            name="ck_erasure_records_governance_rule_id_not_blank",
+        ),
+        CheckConstraint(
             "length(btrim(governance_resolution_ref)) > 0",
             name="ck_erasure_records_governance_resolution_ref_not_blank",
         ),
@@ -314,7 +336,7 @@ class ErasureRecord(BaseModel):
         Index("ix_erasure_records_approval_ref", "approval_ref"),
         Index("ix_erasure_records_attempted_at_id", "attempted_at", "id"),
     )
-    """Treze `CHECK` e dois índices.
+    """Catorze `CHECK` e dois índices.
 
     Dois deles — `outcome_vocabulary` e `target_class_vocabulary` —
     vão **além** do padrão herdado do projeto, e a razão foi medida:

@@ -699,7 +699,18 @@ def test_i29_nonce_e_unico_no_banco():
 
 
 def test_i30_downgrade_e_upgrade_nao_deixam_artefato_orfao():
-    migrations.downgrade("-1")
+    # CORRIGIDO NA E4.9.9.d: o passo era RELATIVO (`-1`) e passou a
+    # remover a migration errada assim que uma sucessora nasceu — o
+    # mesmo defeito que a própria E4.9.9.a corrigiu em `i21`, e que
+    # sobreviveu aqui.
+    #
+    # ```text
+    # RELATIVE_STEP != NAMED_TARGET
+    # ```
+    #
+    # O alvo passa a ser EXPLÍCITO: a revisão anterior à desta tabela.
+    # Uma guarda cujo alvo se move sozinho mede outra coisa a cada fatia.
+    migrations.downgrade("c8a3f5017e94")
     with engine.connect() as conn:
         gatilhos = [
             r[0]

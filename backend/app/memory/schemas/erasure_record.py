@@ -89,7 +89,19 @@ class ErasureRecordAppend(BaseModel):
     governance_policy_id: uuid.UUID
     governance_policy_key: str
     governance_policy_version: int
-    governance_rule_id: uuid.UUID
+    governance_rule_id: str
+    """Identificador **textual opaco** da regra (`E4.9.9.d`).
+
+    ```text
+    OPAQUE_RULE_REFERENCE != UUID
+    ```
+
+    Ver `ErasureRecord.governance_rule_id`: a fonte é
+    `GovernanceResolution.matched_rule_id`, que é `str`. Exigir `UUID`
+    aqui tornava o mapeamento fiel do recibo impossível sem fabricar
+    identidade.
+    """
+
     governance_resolution_ref: str
     approval_ref: str
     executor_ref: str
@@ -104,6 +116,7 @@ class ErasureRecordAppend(BaseModel):
         "subject_identifier",
         "scope_token",
         "governance_policy_key",
+        "governance_rule_id",
         "governance_resolution_ref",
         "approval_ref",
         "executor_ref",
@@ -191,7 +204,7 @@ class ErasureRecordView(BaseModel):
     governance_policy_id: uuid.UUID
     governance_policy_key: str
     governance_policy_version: int
-    governance_rule_id: uuid.UUID
+    governance_rule_id: str
     governance_resolution_ref: str
     approval_ref: str
     executor_ref: str

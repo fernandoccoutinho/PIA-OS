@@ -30,6 +30,12 @@ guia de início rápido.
 - [Deploy](docs/backend/deployment.md)
 - [Testes](docs/backend/testing.md)
 
+## Entregas
+
+- [E4.9.9.d — Composição Final da E4.9](docs/entregas/entrega-4/E4_9_9_D_DESTRUCTIVE_EXECUTION_COMPOSITION.md)
+  — `DestructiveExecutionService`, alinhamento textual do identificador
+  de regra do recibo e validação prática em sandbox.
+
 ## Diagramas
 
 Cada diagrama tem uma versão Mermaid (revisável em texto/PR) e uma
