@@ -49,7 +49,12 @@ from datetime import datetime, timedelta
 from app.memory.models.retention_assessment_enums import RetentionAssessmentDecision
 from app.memory.models.retention_enums import RetentionAnchor, RetentionScopeKind
 from app.memory.models.target_resolution_enums import LegacyProtectionState
-from app.memory.schemas.retention import RetentionRule
+from app.memory.schemas.retention import (
+    MAX_RULE_ID_LENGTH,
+    RetentionRule,
+    validar_identificador_opaco,
+    validar_regras_retencao,
+)
 
 
 def _validar_instante(nome: str, valor: object) -> datetime:
@@ -158,6 +163,19 @@ class RetentionAssessment:
         ):
             if not isinstance(valor, tuple):
                 raise TypeError(f"{nome} deve ser tuple — list perderia imutabilidade")
+        for nome, valor in (
+            ("applicable_rule_ids", self.applicable_rule_ids),
+            ("due_rule_ids", self.due_rule_ids),
+        ):
+            # MESMO contrato opaco de `rule_id` — não um paralelo mais frouxo.
+            for indice, item in enumerate(valor):
+                validar_identificador_opaco(f"{nome}[{indice}]", item, MAX_RULE_ID_LENGTH)
+            if len(set(valor)) != len(valor):
+                raise ValueError(
+                    f"{nome} contém identificador duplicado — citar a mesma regra "
+                    "duas vezes não a torna mais fundamentada"
+                )
+
         if not set(self.due_rule_ids) <= set(self.applicable_rule_ids):
             raise ValueError(
                 "due_rule_ids contém regra que não é aplicável — uma regra não "
@@ -168,16 +186,94 @@ class RetentionAssessment:
         if self.next_due_at is not None:
             _validar_instante("next_due_at", self.next_due_at)
 
-        if self.decision is RetentionAssessmentDecision.NOT_YET_DUE:
-            if self.next_due_at is None or self.next_due_at != self.effective_due_at:
+        self._exigir_matriz_da_decisao()
+
+    def _exigir_matriz_da_decisao(self) -> None:
+        """A matriz das cinco decisões, imposta no construtor **público**.
+
+        ```text
+        CORRECT_FACTORY_OUTPUT != SAFE_PUBLIC_RESULT_CONSTRUCTOR
+        PUBLIC_RESULT_CONSTRUCTOR_ENFORCES_DECISION_MATRIX
+        ```
+
+        A E4.9.9.c publicou este contrato com invariante que vivia só na
+        função de avaliação: o construtor direto aceitava
+        `ASSESS_AND_INFORM` sem fundamento algum, `OUT_OF_SCOPE` **com**
+        fundamento, e prazo no lado temporal errado. Objetos assim
+        pareciam resultados válidos.
+
+        É a nona vez que o projeto aplica a lição de que invariante em
+        fábrica é contornável pelo construtor direto.
+        """
+        decisao = self.decision
+        sem_fundamento = (
+            RetentionAssessmentDecision.POLICY_NOT_EFFECTIVE,
+            RetentionAssessmentDecision.OUT_OF_SCOPE,
+        )
+
+        if decisao in sem_fundamento:
+            # Nenhuma regra vigente alcançou o candidato — não há o que citar.
+            if self.applicable_rule_ids or self.due_rule_ids:
+                raise ValueError(f"{decisao.value} não cita regra — nenhuma alcançou o candidato")
+            if self.effective_due_at is not None or self.next_due_at is not None:
+                raise ValueError(
+                    f"{decisao.value} não carrega prazo — sem regra aplicável não "
+                    "existe vencimento a informar"
+                )
+            return
+
+        # As três restantes exigem fundamento e prazo efetivo.
+        if not self.applicable_rule_ids:
+            raise ValueError(
+                f"{decisao.value} exige applicable_rule_ids — uma decisão de "
+                "retenção sem fundamento citável é impossível de contestar"
+            )
+        if self.effective_due_at is None:
+            raise ValueError(
+                f"{decisao.value} exige effective_due_at — houve regra aplicável, "
+                "logo existe prazo efetivo"
+            )
+
+        if decisao is RetentionAssessmentDecision.PRESERVE_LEGACY_PROTECTED:
+            # SEM relação temporal: item protegido pode estar antes OU depois
+            # do prazo, e a proteção vale nos dois casos.
+            if self.next_due_at is not None:
+                raise ValueError(
+                    "preserve_legacy_protected não carrega next_due_at — a "
+                    "proteção não expira com o prazo"
+                )
+            return
+
+        if decisao is RetentionAssessmentDecision.NOT_YET_DUE:
+            if self.next_due_at != self.effective_due_at:
                 raise ValueError(
                     "not_yet_due exige next_due_at igual a effective_due_at — "
                     "quem ainda não venceu precisa saber quando vence"
                 )
-        elif self.next_due_at is not None:
+            if self.effective_due_at <= self.evaluated_at:
+                raise ValueError(
+                    "not_yet_due exige effective_due_at posterior a evaluated_at — "
+                    "prazo no passado é vencimento, não espera"
+                )
+            return
+
+        if decisao is not RetentionAssessmentDecision.ASSESS_AND_INFORM:
+            raise ValueError(  # pragma: no cover — as cinco estão cobertas acima
+                f"decisão {decisao.value} não tem forma declarada na matriz"
+            )
+
+        if self.next_due_at is not None:
+            raise ValueError("assess_and_inform não carrega next_due_at — já venceu")
+        if self.effective_due_at > self.evaluated_at:
             raise ValueError(
-                f"{self.decision.value} não carrega next_due_at — só faz sentido "
-                "informar vencimento futuro a quem ainda não venceu"
+                "assess_and_inform exige effective_due_at não posterior a "
+                "evaluated_at — prazo futuro é espera, não elegibilidade"
+            )
+        if self.due_rule_ids != self.applicable_rule_ids:
+            raise ValueError(
+                "assess_and_inform exige due_rule_ids igual a applicable_rule_ids "
+                "— o prazo efetivo é o MÁXIMO, logo vencê-lo implica que todas as "
+                "aplicáveis venceram individualmente"
             )
 
 
@@ -250,11 +346,26 @@ def avaliar_retencao(
             )
     if not isinstance(candidate, RetentionCandidate):
         raise TypeError("candidate deve ser um RetentionCandidate")
+    # ```text
+    # COLLECTION_TYPE_CHECK != CANONICAL_COLLECTION_VALIDATION
+    # UNIQUE_RULE_ID_REQUIRED_BEFORE_DICTIONARY_INDEXING
+    # NON_EMPTY_RULES → CANONICAL_VALIDATOR
+    # EMPTY_RULES     → OUT_OF_SCOPE
+    # ```
+    #
+    # A E4.9.9.c verificava `isinstance(rules, tuple)` e o tipo de cada
+    # item, e eu apresentei isso como validação da coleção. Não era:
+    # `validar_regras_retencao` é o contrato ÚNICO desde a E4.9.6.2 e
+    # recusa `rule_id` DUPLICADO — que este avaliador precisa, porque
+    # indexa os vencimentos por `rule_id`. Com duplicata, o dicionário
+    # sobrescrevia uma entrada e a ORDEM DE DECLARAÇÃO mudava a decisão.
+    #
+    # A coleção vazia é tratada antes: ela é legítima e significa
+    # `OUT_OF_SCOPE`, enquanto o validador canônico exige regra.
     if not isinstance(rules, tuple):
         raise TypeError("rules deve ser tuple — list perderia imutabilidade")
-    for indice, regra in enumerate(rules):
-        if not isinstance(regra, RetentionRule):
-            raise TypeError(f"rules[{indice}] deve ser um RetentionRule")
+    if rules:
+        validar_regras_retencao("rules", rules)
 
     if candidate.created_at > evaluated_at:
         raise ValueError(

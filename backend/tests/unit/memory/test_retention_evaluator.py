@@ -398,7 +398,11 @@ def test_u28_next_due_at_so_existe_em_not_yet_due():
 
 
 def test_u29_resultado_incoerente_e_recusado_no_construtor():
-    with pytest.raises(ValueError, match="next_due_at"):
+    # ATUALIZADO NA E4.9.9.c.1: a matriz recusa este objeto por FALTAR
+    # `effective_due_at`, antes de olhar `next_due_at`. O caso do
+    # `next_due_at` indevido em `assess_and_inform` passou a ser exercido
+    # com o objeto no mais completo, em `u38`.
+    with pytest.raises(ValueError, match="exige effective_due_at"):
         RetentionAssessment(
             decision=RetentionAssessmentDecision.ASSESS_AND_INFORM,
             subject_coid=SUJEITO,
@@ -406,7 +410,7 @@ def test_u29_resultado_incoerente_e_recusado_no_construtor():
             applicable_rule_ids=("a",),
             next_due_at=AOS_400_DIAS,
         )
-    with pytest.raises(ValueError, match="next_due_at"):
+    with pytest.raises(ValueError, match="exige effective_due_at"):
         RetentionAssessment(
             decision=RetentionAssessmentDecision.NOT_YET_DUE,
             subject_coid=SUJEITO,
@@ -418,8 +422,8 @@ def test_u29_resultado_incoerente_e_recusado_no_construtor():
             decision=RetentionAssessmentDecision.NOT_YET_DUE,
             subject_coid=SUJEITO,
             evaluated_at=AOS_60_DIAS,
-            applicable_rule_ids=("a",),
-            due_rule_ids=("b",),
+            applicable_rule_ids=("a", "b"),
+            due_rule_ids=("c",),
             effective_due_at=AOS_400_DIAS,
             next_due_at=AOS_400_DIAS,
         )
@@ -508,3 +512,320 @@ def test_u35_effective_due_at_e_next_due_at_exigem_timezone():
                 applicable_rule_ids=("a",),
                 **{campo: datetime(2026, 6, 1)},  # type: ignore[arg-type]
             )
+
+
+# ======================================================================
+# E4.9.9.c.1 — os dois defeitos que a auditoria encontrou
+#
+# ```text
+# COLLECTION_TYPE_CHECK != CANONICAL_COLLECTION_VALIDATION
+# UNIQUE_RULE_ID_REQUIRED_BEFORE_DICTIONARY_INDEXING
+# CORRECT_FACTORY_OUTPUT != SAFE_PUBLIC_RESULT_CONSTRUCTOR
+# PUBLIC_RESULT_CONSTRUCTOR_ENFORCES_DECISION_MATRIX
+# ```
+# ======================================================================
+
+
+def _duplicada(dias: int) -> RetentionRule:
+    """Duas regras com o MESMO `rule_id` e prazos diferentes."""
+    return regra("MESMO_ID", dias)
+
+
+def test_u36_duplicata_de_rule_id_e_recusada_na_ordem_longa_curta():
+    with pytest.raises(ValueError, match="duplicado"):
+        avaliar(rules=(_duplicada(365), _duplicada(30)))
+
+
+def test_u37_duplicata_e_recusada_identicamente_na_ordem_inversa():
+    """As duas ordens falham com o **mesmo** erro, antes de qualquer prazo.
+
+    O defeito da cadeia 92: o avaliador indexa vencimentos por `rule_id`,
+    e com duplicata o dicionário sobrescrevia uma entrada — a ordem de
+    declaração passava a mudar a decisão.
+
+    ```text
+    (365, 30) -> ASSESS_AND_INFORM
+    (30, 365) -> NOT_YET_DUE
+    ```
+
+    Meu `u14` alegava que a ordem não altera o resultado, e usava
+    `rule_id` DISTINTOS — nunca construiu o caso que quebrava.
+
+    ```text
+    TESTED_CASE != TESTED_PROPERTY
+    ```
+    """
+    with pytest.raises(ValueError) as longa_curta:
+        avaliar(rules=(_duplicada(365), _duplicada(30)))
+    with pytest.raises(ValueError) as curta_longa:
+        avaliar(rules=(_duplicada(30), _duplicada(365)))
+    assert str(longa_curta.value) == str(curta_longa.value)
+    assert "duplicado" in str(curta_longa.value)
+
+
+def test_u38_o_validador_canonico_e_reutilizado_e_nao_reimplementado():
+    """`validar_regras_retencao` é o contrato único desde a E4.9.6.2."""
+    import ast
+    import inspect
+
+    import app.memory.services.retention_evaluator as modulo
+
+    fonte = inspect.getsource(modulo)
+    chamadas = {
+        no.func.id
+        for no in ast.walk(ast.parse(fonte))
+        if isinstance(no, ast.Call) and isinstance(no.func, ast.Name)
+    }
+    assert "validar_regras_retencao" in chamadas
+    assert "validar_identificador_opaco" in chamadas
+    # nenhuma reimplementação local de unicidade sobre as REGRAS
+    assert "rule_ids_vistos" not in fonte
+    assert "duplicado na mesma versão" not in fonte
+
+
+def test_u39_colecao_vazia_continua_out_of_scope():
+    """`EMPTY_RULES → OUT_OF_SCOPE` — o validador canônico exige regra.
+
+    Ausência de regra nunca vira elegibilidade nem erro.
+    """
+    r = avaliar(rules=(), evaluated_at=AOS_400_DIAS)
+    assert r.decision is RetentionAssessmentDecision.OUT_OF_SCOPE
+
+
+def test_u40_colecao_valida_preserva_a_ordem_declarada():
+    """O validador canônico devolve a mesma tupla, sem reordenar."""
+    r = avaliar(rules=(regra("z", 30), regra("a", 365)))
+    assert r.applicable_rule_ids == ("z", "a")
+
+
+def test_u41_o_caminho_nominal_de_30_365_continua_identico():
+    """A correção não pode alterar o comportamento já auditado."""
+    r = avaliar()
+    assert r.decision is RetentionAssessmentDecision.NOT_YET_DUE
+    assert r.applicable_rule_ids == ("curta", "longa")
+    assert r.due_rule_ids == ("curta",)
+    assert r.effective_due_at == NASCIMENTO + timedelta(days=365)
+    assert r.next_due_at == r.effective_due_at
+
+
+# --- a matriz das cinco decisões, no construtor público ------------------
+
+
+def _resultado(**over: object) -> RetentionAssessment:
+    base: dict[str, object] = {
+        "decision": RetentionAssessmentDecision.OUT_OF_SCOPE,
+        "subject_coid": SUJEITO,
+        "evaluated_at": AOS_60_DIAS,
+    }
+    base.update(over)
+    return RetentionAssessment(**base)  # type: ignore[arg-type]
+
+
+PASSADO = NASCIMENTO
+FUTURO = AOS_400_DIAS
+
+
+@pytest.mark.parametrize(
+    "coerente",
+    [
+        {"decision": RetentionAssessmentDecision.POLICY_NOT_EFFECTIVE},
+        {"decision": RetentionAssessmentDecision.OUT_OF_SCOPE},
+        {
+            "decision": RetentionAssessmentDecision.PRESERVE_LEGACY_PROTECTED,
+            "applicable_rule_ids": ("r",),
+            "effective_due_at": FUTURO,
+        },
+        {
+            "decision": RetentionAssessmentDecision.PRESERVE_LEGACY_PROTECTED,
+            "applicable_rule_ids": ("r",),
+            "due_rule_ids": ("r",),
+            "effective_due_at": PASSADO,
+        },
+        {
+            "decision": RetentionAssessmentDecision.NOT_YET_DUE,
+            "applicable_rule_ids": ("r",),
+            "effective_due_at": FUTURO,
+            "next_due_at": FUTURO,
+        },
+        {
+            "decision": RetentionAssessmentDecision.ASSESS_AND_INFORM,
+            "applicable_rule_ids": ("a", "b"),
+            "due_rule_ids": ("a", "b"),
+            "effective_due_at": PASSADO,
+        },
+    ],
+)
+def test_u42_cada_decisao_aceita_sua_forma_coerente(coerente):
+    assert _resultado(**coerente)
+
+
+def test_u43_protecao_de_legado_nao_impoe_relacao_temporal():
+    """Item protegido pode estar **antes ou depois** do prazo.
+
+    A proteção vale nos dois casos, e exigir uma relação temporal aqui
+    inventaria uma regra que a E4.9.8.3 não estabeleceu.
+    """
+    for prazo in (PASSADO, FUTURO):
+        assert _resultado(
+            decision=RetentionAssessmentDecision.PRESERVE_LEGACY_PROTECTED,
+            applicable_rule_ids=("r",),
+            due_rule_ids=("r",) if prazo is PASSADO else (),
+            effective_due_at=prazo,
+        )
+
+
+@pytest.mark.parametrize(
+    ("rotulo", "impossivel", "trecho"),
+    [
+        (
+            "assess sem fundamento",
+            {"decision": RetentionAssessmentDecision.ASSESS_AND_INFORM},
+            "exige applicable_rule_ids",
+        ),
+        (
+            "out_of_scope com fundamento",
+            {"applicable_rule_ids": ("r",)},
+            "não cita regra",
+        ),
+        (
+            "out_of_scope com prazo",
+            {"effective_due_at": PASSADO},
+            "não carrega prazo",
+        ),
+        (
+            "policy_not_effective com prazo",
+            {
+                "decision": RetentionAssessmentDecision.POLICY_NOT_EFFECTIVE,
+                "effective_due_at": PASSADO,
+            },
+            "não carrega prazo",
+        ),
+        (
+            "preserve sem prazo efetivo",
+            {
+                "decision": RetentionAssessmentDecision.PRESERVE_LEGACY_PROTECTED,
+                "applicable_rule_ids": ("r",),
+            },
+            "exige effective_due_at",
+        ),
+        (
+            "preserve com next_due_at",
+            {
+                "decision": RetentionAssessmentDecision.PRESERVE_LEGACY_PROTECTED,
+                "applicable_rule_ids": ("r",),
+                "effective_due_at": FUTURO,
+                "next_due_at": FUTURO,
+            },
+            "não carrega next_due_at",
+        ),
+        (
+            "not_yet_due com prazo no passado",
+            {
+                "decision": RetentionAssessmentDecision.NOT_YET_DUE,
+                "applicable_rule_ids": ("r",),
+                "effective_due_at": PASSADO,
+                "next_due_at": PASSADO,
+            },
+            "posterior a evaluated_at",
+        ),
+        (
+            "assess com prazo no futuro",
+            {
+                "decision": RetentionAssessmentDecision.ASSESS_AND_INFORM,
+                "applicable_rule_ids": ("r",),
+                "due_rule_ids": ("r",),
+                "effective_due_at": FUTURO,
+            },
+            "não posterior a",
+        ),
+        (
+            "assess com due != applicable",
+            {
+                "decision": RetentionAssessmentDecision.ASSESS_AND_INFORM,
+                "applicable_rule_ids": ("a", "b"),
+                "due_rule_ids": ("a",),
+                "effective_due_at": PASSADO,
+            },
+            "igual a applicable_rule_ids",
+        ),
+        (
+            "assess com next_due_at",
+            {
+                "decision": RetentionAssessmentDecision.ASSESS_AND_INFORM,
+                "applicable_rule_ids": ("a",),
+                "due_rule_ids": ("a",),
+                "effective_due_at": PASSADO,
+                "next_due_at": FUTURO,
+            },
+            "não carrega next_due_at",
+        ),
+    ],
+)
+def test_u44_cada_celula_proibida_falha_no_construtor_direto(rotulo, impossivel, trecho):
+    """Cada célula proibida da matriz falha pelo construtor **direto**."""
+    with pytest.raises(ValueError, match=trecho):
+        _resultado(**impossivel)
+
+
+@pytest.mark.parametrize("campo", ["applicable_rule_ids", "due_rule_ids"])
+@pytest.mark.parametrize("valor", [(123,), ("",), ("   ",), ("\u200b",), (None,)])
+def test_u45_ids_devem_ser_texto_opaco_valido(campo, valor):
+    base: dict[str, object] = {
+        "decision": RetentionAssessmentDecision.PRESERVE_LEGACY_PROTECTED,
+        "applicable_rule_ids": ("r",),
+        "effective_due_at": FUTURO,
+    }
+    if campo == "due_rule_ids":
+        base["due_rule_ids"] = valor
+        base["applicable_rule_ids"] = ("r", *[v for v in valor if isinstance(v, str)])
+    else:
+        base[campo] = valor
+    with pytest.raises((TypeError, ValueError)):
+        _resultado(**base)
+
+
+@pytest.mark.parametrize("campo", ["applicable_rule_ids", "due_rule_ids"])
+def test_u46_ids_duplicados_sao_recusados_nas_duas_tuplas(campo):
+    base: dict[str, object] = {
+        "decision": RetentionAssessmentDecision.ASSESS_AND_INFORM,
+        "applicable_rule_ids": ("r",),
+        "due_rule_ids": ("r",),
+        "effective_due_at": PASSADO,
+    }
+    base[campo] = ("r", "r")
+    if campo == "applicable_rule_ids":
+        base["due_rule_ids"] = ("r", "r")
+    with pytest.raises(ValueError, match="duplicado"):
+        _resultado(**base)
+
+
+def test_u47_replace_revalida_a_matriz():
+    valido = _resultado(
+        decision=RetentionAssessmentDecision.NOT_YET_DUE,
+        applicable_rule_ids=("r",),
+        effective_due_at=FUTURO,
+        next_due_at=FUTURO,
+    )
+    with pytest.raises(ValueError, match="não carrega next_due_at"):
+        dataclasses.replace(valido, decision=RetentionAssessmentDecision.ASSESS_AND_INFORM)
+    with pytest.raises(ValueError, match="duplicado"):
+        dataclasses.replace(valido, applicable_rule_ids=("r", "r"))
+    with pytest.raises(ValueError, match="posterior a evaluated_at"):
+        dataclasses.replace(valido, effective_due_at=PASSADO, next_due_at=PASSADO)
+
+
+def test_u48_not_yet_due_exige_next_due_at_igual_ao_prazo_efetivo():
+    """Informar um vencimento diferente do efetivo desorientaria quem lê."""
+    with pytest.raises(ValueError, match="igual a effective_due_at"):
+        _resultado(
+            decision=RetentionAssessmentDecision.NOT_YET_DUE,
+            applicable_rule_ids=("r",),
+            effective_due_at=FUTURO,
+            next_due_at=FUTURO + timedelta(days=1),
+        )
+    with pytest.raises(ValueError, match="igual a effective_due_at"):
+        _resultado(
+            decision=RetentionAssessmentDecision.NOT_YET_DUE,
+            applicable_rule_ids=("r",),
+            effective_due_at=FUTURO,
+        )

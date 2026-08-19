@@ -305,3 +305,144 @@ def test_s99_2_a_guarda_do_maximo_detecta_min_introduzido() -> None:
     com_min = "def f(v):\n    return min(v)\n"
     assert "max" in usa(com_max) and "min" not in usa(com_max)
     assert "min" in usa(com_min)
+
+
+def test_s14_o_validador_canonico_da_colecao_e_reutilizado() -> None:
+    """`COLLECTION_TYPE_CHECK != CANONICAL_COLLECTION_VALIDATION`.
+
+    A cadeia 92 verificava `isinstance(rules, tuple)` e o tipo de cada
+    item, e apresentava isso como validação da coleção. Não era:
+    `validar_regras_retencao` é o contrato ÚNICO desde a E4.9.6.2 e
+    recusa `rule_id` duplicado — que este avaliador precisa, porque
+    indexa vencimentos por `rule_id`.
+
+    Guarda estática; o comportamento está em `u36`–`u40`.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "services" / "retention_evaluator.py").read_text(encoding="utf-8")
+    )
+    (funcao,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name == "avaliar_retencao"
+    ]
+    chamadas = {
+        no.func.id
+        for no in ast.walk(funcao)
+        if isinstance(no, ast.Call) and isinstance(no.func, ast.Name)
+    }
+    assert "validar_regras_retencao" in chamadas
+
+
+def test_s15_a_unicidade_das_regras_nao_foi_reimplementada() -> None:
+    """Não copiar a lógica: duas fontes divergiriam na primeira mudança."""
+    executavel = _executavel(APP / "memory" / "services" / "retention_evaluator.py")
+    assert "duplicado na mesma versão" not in executavel
+    assert "rule_ids_vistos" not in executavel
+
+
+def test_s16_a_matriz_das_decisoes_vive_no_construtor_publico() -> None:
+    """`PUBLIC_RESULT_CONSTRUCTOR_ENFORCES_DECISION_MATRIX`.
+
+    Invariante que vive só na fábrica é contornável pelo construtor
+    direto — nona vez que o projeto aplica a lição.
+    """
+    arvore = ast.parse(
+        (APP / "memory" / "services" / "retention_evaluator.py").read_text(encoding="utf-8")
+    )
+    (classe,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.ClassDef) and no.name == "RetentionAssessment"
+    ]
+    metodos = {no.name for no in classe.body if isinstance(no, ast.FunctionDef)}
+    assert "__post_init__" in metodos
+    assert "_exigir_matriz_da_decisao" in metodos
+
+    (matriz,) = [
+        no
+        for no in classe.body
+        if isinstance(no, ast.FunctionDef) and no.name == "_exigir_matriz_da_decisao"
+    ]
+    citadas = {
+        no.attr
+        for no in ast.walk(matriz)
+        if isinstance(no, ast.Attribute)
+        and isinstance(no.value, ast.Name)
+        and no.value.id == "RetentionAssessmentDecision"
+    }
+    assert citadas == {
+        "POLICY_NOT_EFFECTIVE",
+        "OUT_OF_SCOPE",
+        "PRESERVE_LEGACY_PROTECTED",
+        "NOT_YET_DUE",
+        "ASSESS_AND_INFORM",
+    }, citadas
+
+
+def test_s17_os_ids_do_resultado_usam_o_contrato_opaco_existente() -> None:
+    """Mesmo validador de `rule_id`, não um paralelo mais frouxo."""
+    arvore = ast.parse(
+        (APP / "memory" / "services" / "retention_evaluator.py").read_text(encoding="utf-8")
+    )
+    (classe,) = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.ClassDef) and no.name == "RetentionAssessment"
+    ]
+    chamadas = {
+        no.func.id
+        for no in ast.walk(classe)
+        if isinstance(no, ast.Call) and isinstance(no.func, ast.Name)
+    }
+    assert "validar_identificador_opaco" in chamadas
+
+
+def test_s99_3_a_guarda_do_validador_canonico_detecta_verificacao_fraca() -> None:
+    """§ mutante — `s14` é a única prova estática desta propriedade."""
+
+    def chamadas(fonte: str) -> set[str]:
+        return {
+            no.func.id
+            for no in ast.walk(ast.parse(fonte))
+            if isinstance(no, ast.Call) and isinstance(no.func, ast.Name)
+        }
+
+    canonico = (
+        "def avaliar_retencao(rules):\n"
+        "    if rules:\n"
+        "        validar_regras_retencao('rules', rules)\n"
+    )
+    fraco = (
+        "def avaliar_retencao(rules):\n"
+        "    for r in rules:\n"
+        "        if not isinstance(r, RetentionRule):\n"
+        "            raise TypeError('x')\n"
+    )
+    assert "validar_regras_retencao" in chamadas(canonico)
+    assert "validar_regras_retencao" not in chamadas(fraco)
+
+
+def test_s99_4_a_guarda_da_matriz_detecta_decisao_nao_coberta() -> None:
+    """§ mutante — `s16` é a única prova estática de cobertura das cinco."""
+
+    def cobertas(fonte: str) -> set[str]:
+        return {
+            no.attr
+            for no in ast.walk(ast.parse(fonte))
+            if isinstance(no, ast.Attribute)
+            and isinstance(no.value, ast.Name)
+            and no.value.id == "D"
+        }
+
+    completa = (
+        "def m():\n"
+        "    a = D.POLICY_NOT_EFFECTIVE\n"
+        "    b = D.OUT_OF_SCOPE\n"
+        "    c = D.PRESERVE_LEGACY_PROTECTED\n"
+        "    d = D.NOT_YET_DUE\n"
+        "    e = D.ASSESS_AND_INFORM\n"
+    )
+    faltando = completa.replace("    d = D.NOT_YET_DUE\n", "")
+    assert len(cobertas(completa)) == 5
+    assert len(cobertas(faltando)) == 4
