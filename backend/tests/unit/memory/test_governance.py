@@ -1353,6 +1353,24 @@ def test_e435_corrective_created_no_retention_capability():
     }
     proibidos_e499c = {"RetentionRule", "RetentionAssessment"}
 
+    # Atualizado pela E4.10: a fronteira de CONFORMIDADE lê
+    # `RetentionRule` para avaliar estado contra policy versionada — e
+    # consome `avaliar_retencao` em vez de recalcular elegibilidade.
+    #
+    # As proibições de DISPOSIÇÃO seguem INTACTAS em todos os arquivos,
+    # inclusive neste: `assess_retention`, `dispose`, `erase` e `forget`
+    # continuam ausentes.
+    #
+    # ```text
+    # COMPLIANCE != RETENTION_EXECUTION
+    # ```
+    autorizados_e410 = {
+        base / "services" / "compliance_evaluator.py",
+        base / "schemas" / "compliance.py",
+        base / "models" / "compliance_enums.py",
+    }
+    proibidos_e410 = {"RetentionRule"}
+
     for arquivo in sorted(base.rglob("*.py")):
         arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
         for no in ast.walk(arvore):
@@ -1374,6 +1392,8 @@ def test_e435_corrective_created_no_retention_capability():
             if proibido in proibidos_e496 and arquivo in autorizados_e496:
                 continue
             if proibido in proibidos_e499c and arquivo in autorizados_e499c:
+                continue
+            if proibido in proibidos_e410 and arquivo in autorizados_e410:
                 continue
             assert not re.search(rf"\b{proibido}\b", executavel), f"{arquivo}: {proibido}"
         for metodo in metodos_proibidos:

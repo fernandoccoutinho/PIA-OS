@@ -631,20 +631,43 @@ def test_i23_nenhuma_escrita_ocorre_quando_a_fase_a_recusa():
 
 
 def test_i24_sessao_do_servico_nao_vaza_entre_transacoes():
-    """Repositórios são instanciados DENTRO de cada UoW."""
+    """Repositórios são instanciados DENTRO de cada UoW.
+
+    ## Manutenção de instrumento (autorizada na E4.10)
+
+    ```text
+    OBJECT_IDENTITY_OVER_TIME != MEMORY_ADDRESS
+    ```
+
+    A versão original media `id(resultado.session)` e comparava o
+    tamanho do conjunto. `id()` é endereço, e endereço é **reciclável**:
+    quando a primeira `Session` era coletada antes de a segunda existir,
+    o alocador devolvia o mesmo endereço e duas sessões genuinamente
+    distintas produziam `id` idêntico. MEDIDO: 1 falha em 10 execuções
+    isoladas.
+
+    A correção guarda **referência forte** às duas sessões — o que
+    impede a coleta durante a medição — e compara identidade real com
+    `is not`. Nada de `id()`, `hash`, endereço ou coleta manual: são
+    todas aproximações do que se quer afirmar.
+
+    O comportamento sob teste nunca esteve em questão. O defeito era do
+    instrumento.
+    """
     aprovado = envelope()
     _persistir(aprovado)
-    sessoes: list[int] = []
+    sessoes: list[Session] = []
 
     class UoWRegistrada(UnitOfWork):
         def __enter__(self):  # noqa: ANN204
             resultado = super().__enter__()
-            sessoes.append(id(resultado.session))
+            sessoes.append(resultado.session)
             return resultado
 
     servico, _ = _servico([descritor()], [_observado(aprovado.approval_id)], fabrica=UoWRegistrada)
     servico.execute(DestructiveExecutionRequest(aprovado, (referencia(),)))
-    assert len(set(sessoes)) == 2
+    assert len(sessoes) == 2
+    assert sessoes[0] is not sessoes[1]
 
 
 def test_i25_o_recibo_persistido_nao_contem_localizador():

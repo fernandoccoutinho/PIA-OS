@@ -133,8 +133,27 @@ def test_s06_nenhuma_rede_filesystem_ou_shell() -> None:
             assert termo not in executavel, f"{caminho.name}: {termo}"
 
 
-def test_s07_nenhum_consumidor_de_producao() -> None:
-    """Contrato sem consumidor é o estado correto — a E4.9.9.d o consumirá."""
+def test_s07_o_avaliador_tem_exatamente_um_consumidor_autorizado() -> None:
+    """RENOMEADA NA E4.10 — `GUARD_NAME != GUARD_MEASUREMENT`.
+
+    O nome antigo prometia zero consumidores e anunciava a E4.9.9.d como
+    a fatia que os traria. Ela não os trouxe: quem consome a AVALIAÇÃO de
+    retenção é a fronteira de conformidade, e a E4.9.9.d deliberadamente
+    não a consultou, porque
+
+    ```text
+    RETENTION_ASSESSMENT != DELETION_AUTHORITY
+    ```
+
+    A guarda ficou MAIS FORTE, não mais frouxa: antes exigia ZERO
+    consumidores; agora exige EXATAMENTE UM, e nomeia qual. Um segundo
+    passaria numa versão apenas relaxada com `permitidos`.
+
+    ```text
+    AUTHORIZED_CONSUMER = compliance_evaluator.py
+    SECOND_CONSUMER = FORBIDDEN
+    ```
+    """
     modulos = {
         "app.memory.models.retention_assessment_enums",
         "app.memory.services.retention_evaluator",
@@ -148,7 +167,7 @@ def test_s07_nenhum_consumidor_de_producao() -> None:
         for p in _fontes()
         if p not in permitidos and modulos & _importados(p)
     ]
-    assert infratores == []
+    assert infratores == ["memory/services/compliance_evaluator.py"], infratores
 
 
 def test_s08_a_acao_de_expiracao_nao_foi_ampliada() -> None:

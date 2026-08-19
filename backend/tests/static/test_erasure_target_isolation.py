@@ -338,6 +338,14 @@ def test_s10_nenhum_consumidor_runtime_da_porta_apareceu() -> None:
         # validadores, e o serviço re-resolve pela porta.
         APP / "memory" / "schemas" / "destructive_execution.py",
         APP / "memory" / "services" / "destructive_execution_service.py",
+        # Consumidor AUTORIZADO pela E4.10: a fronteira de conformidade
+        # observa `LegacyProtectionState` para montar o candidato de
+        # retenção — o mesmo vocabulário observável que a E4.9.8.3 criou.
+        #
+        # A metade que importa continua intacta acima:
+        # `ErasureTargetResolverPort` segue com UM consumidor, e nenhum
+        # adaptador de resolução existe.
+        APP / "memory" / "services" / "compliance_evaluator.py",
     }
     consumidores_dos_vo = [
         str(p.relative_to(APP))

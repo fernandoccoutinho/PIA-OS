@@ -98,15 +98,26 @@ def _executavel(arquivo: pathlib.Path) -> str:
     return ast.unparse(arvore)
 
 
-def test_s01_nenhum_servico_importa_a_policy_para_avaliar_ou_agir() -> None:
-    """`RETENTION_EVALUATOR = NOT_COMPOSED`."""
+def test_s01_a_policy_e_lida_e_nunca_executada() -> None:
+    """RENOMEADA NA E4.10 — o que permanece verdadeiro mudou de forma.
+
+    ```text
+    READ_THE_RULE != EXECUTE_THE_RULE
+    ```
+
+    A fronteira de conformidade LÊ `RetentionRule` para avaliar — é para
+    isso que a E4.9.6 a criou. O que continua ausente, e é o que esta
+    guarda sempre protegeu, é DISPOSIÇÃO: nenhum serviço executa
+    retenção, apaga ou dispõe. `test_s16` mede exatamente isso, e o mede
+    também no consumidor novo.
+    """
     infratores: list[str] = []
     for arquivo in _fontes():
         if arquivo in PERMITIDOS:
             continue
         if NOVOS_MODULOS & _modulos_importados(arquivo):
             infratores.append(str(arquivo.relative_to(APP)))
-    assert infratores == [], f"importam a policy sem autorização: {infratores}"
+    assert infratores == ["memory/services/compliance_evaluator.py"], infratores
 
 
 def test_s02_a_policy_nao_escreve_erasure_record() -> None:
@@ -334,13 +345,21 @@ def test_s15_validador_opaco_e_compartilhado_e_nao_normaliza() -> None:
 
 def test_s16_nenhum_avaliador_ou_escritor_apareceu_no_corretivo() -> None:
     """Reafirmação: o corretivo não abriu caminho novo."""
+    # ATUALIZADA NA E4.10: o consumidor de LEITURA é autorizado, e a
+    # segunda metade — a que mede ausência de escrita e de disposição —
+    # passou a valer também para ele, logo abaixo.
     infratores: list[str] = []
     for arquivo in _fontes():
         if arquivo in PERMITIDOS:
             continue
         if NOVOS_MODULOS & _modulos_importados(arquivo):
             infratores.append(str(arquivo.relative_to(APP)))
-    assert infratores == []
+    assert infratores == ["memory/services/compliance_evaluator.py"], infratores
+
+    avaliador = APP / "memory" / "services" / "compliance_evaluator.py"
+    executavel_do_avaliador = _executavel(avaliador)
+    for termo in ("ErasureRecordRepository", "append_observed", "dispose", "erase("):
+        assert termo not in executavel_do_avaliador, f"compliance_evaluator: {termo}"
 
     for modulo in NOVOS_MODULOS:
         caminho = APP.parent / (modulo.replace(".", "/") + ".py")

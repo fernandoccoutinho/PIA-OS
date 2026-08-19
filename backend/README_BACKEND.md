@@ -35,6 +35,9 @@ guia de início rápido.
 - [E4.9.9.d — Composição Final da E4.9](docs/entregas/entrega-4/E4_9_9_D_DESTRUCTIVE_EXECUTION_COMPOSITION.md)
   — `DestructiveExecutionService`, alinhamento textual do identificador
   de regra do recibo e validação prática em sandbox.
+- [E4.10 — Compliance Boundary](docs/entregas/entrega-4/E4_10_COMPLIANCE_BOUNDARY.md)
+  — avaliação de estado ou ação contra política versionada, produzindo
+  diagnóstico e evidência transitórios.
 
 ## Diagramas
 
