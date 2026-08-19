@@ -710,7 +710,10 @@ def test_ci27_migration_head_is_unchanged_and_single():
     # branching, não a imobilidade.
     # E4.9.9.d: head atualizado para `d5b31f7a08c4` (governance_rule_id
     # textual). A guarda continua medindo head ÚNICO.
-    assert tuple(heads) == ("d5b31f7a08c4",), f"migration head mudou: {heads}"
+    # ATUALIZADO PELA E4.11: a cabeça passou a ser `e7c25a91f4b3`
+    # (validated_experiences). A guarda continua medindo head ÚNICO —
+    # só o alvo do único mudou.
+    assert tuple(heads) == ("e7c25a91f4b3",), f"migration head mudou: {heads}"
 
 
 def test_ci28_no_new_e4_model_or_table_was_introduced():
@@ -742,6 +745,10 @@ def test_ci28_no_new_e4_model_or_table_was_introduced():
         "approval_records",
         "approval_record_targets",
         "approval_record_governance_items",
+        # E4.11 — UMA tabela de registro append-only, autorizada. O
+        # conjunto continua EXATO: a guarda mede que nada ALÉM do
+        # declarado entrou, e é isso que ela sempre protegeu.
+        "validated_experiences",
     }, tabelas_memoria
     assert not hasattr(memory_models, "ConsolidationRecord")
 

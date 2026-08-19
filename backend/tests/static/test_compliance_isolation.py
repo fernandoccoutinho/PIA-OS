@@ -195,8 +195,18 @@ def test_g01_1_nenhuma_migration_cita_compliance():
     assert infratores == []
 
 
-def test_g01_2_a_cabeca_do_alembic_nao_mudou():
-    """A E4.10 não cria tabela, logo não sucede a cabeça da cadeia 94."""
+def test_g01_2_a_e4_10_nao_criou_migration_propria():
+    """RENOMEADA NA E4.11 — `GUARD_NAME != GUARD_MEASUREMENT`.
+
+    O nome antigo prometia que a cabeça não mudava, e ela mudou: a E4.11
+    criou `validated_experiences`, que é persistida por contrato. O que
+    permanece verdadeiro, e é o que esta guarda sempre protegeu, é que a
+    **E4.10** não criou migration nenhuma — nenhuma revisão do grafo cita
+    compliance, e `test_g01_1` mede isso diretamente.
+
+    A guarda passou a provar que a cabeça é ÚNICA e que a sucessora de
+    `d5b31f7a08c4` é exatamente uma.
+    """
     versoes = BACKEND / "alembic" / "versions"
     grafo: dict[str, str | None] = {}
     for caminho in sorted(versoes.glob("*.py")):
@@ -215,9 +225,11 @@ def test_g01_2_a_cabeca_do_alembic_nao_mudou():
                     pai = no.value.value
         if revisao:
             grafo[revisao] = pai
+    sucessoras = [r for r, p in grafo.items() if p == "d5b31f7a08c4"]
+    assert sucessoras == ["e7c25a91f4b3"], sucessoras
     pais = {p for p in grafo.values() if p}
     folhas = sorted(r for r in grafo if r not in pais)
-    assert folhas == ["d5b31f7a08c4"], folhas
+    assert folhas == ["e7c25a91f4b3"], folhas
 
 
 def test_g99_1_a_guarda_de_persistencia_detecta_um_modelo():

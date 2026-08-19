@@ -38,6 +38,9 @@ guia de início rápido.
 - [E4.10 — Compliance Boundary](docs/entregas/entrega-4/E4_10_COMPLIANCE_BOUNDARY.md)
   — avaliação de estado ou ação contra política versionada, produzindo
   diagnóstico e evidência transitórios.
+- [E4.11 — Validated Experience Registry](docs/entregas/entrega-4/E4_11_VALIDATED_EXPERIENCE_REGISTRY.md)
+  — registro persistente e imutável de que uma experiência foi validada,
+  por quem e contra qual critério; estrutura de evidência, não motor.
 
 ## Diagramas
 

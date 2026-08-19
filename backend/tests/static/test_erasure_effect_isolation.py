@@ -143,7 +143,9 @@ def test_s04_nenhuma_persistencia_orm_ou_migration() -> None:
     # E4.9.9.d: a migration textual de `governance_rule_id` é a sucessora
     # AUTORIZADA. Ela não pertence a ESTA fatia, e a guarda continua
     # medindo head ÚNICO — só o alvo do "único" mudou.
-    assert folhas == ["d5b31f7a08c4"], folhas
+    # E4.11: a tabela de experiência validada sucede aquela, pelo mesmo
+    # critério e sem pertencer a esta fatia.
+    assert folhas == ["e7c25a91f4b3"], folhas
 
 
 def test_s05_nenhuma_re_resolucao_nem_comparacao_de_snapshot() -> None:

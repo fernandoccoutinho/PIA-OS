@@ -1313,8 +1313,13 @@ def test_s37_nenhuma_migration_orm_ou_repository_nesta_fatia() -> None:
     # continua sendo medido — nada nasceu da revisão nova.
     netos = [rev for rev, pai in grafo.items() if pai == "a1f7c2d40e93"]
     assert netos == ["d5b31f7a08c4"], netos
+    # ATUALIZADO PELA E4.11: `e7c25a91f4b3` (validated_experiences) é a
+    # sucessora AUTORIZADA. A guarda desce mais um degrau e continua
+    # medindo o mesmo: nenhuma OUTRA migration nasceu, e o head é folha.
     bisnetos = [rev for rev, pai in grafo.items() if pai == "d5b31f7a08c4"]
-    assert bisnetos == [], bisnetos
+    assert bisnetos == ["e7c25a91f4b3"], bisnetos
+    tataranetos = [rev for rev, pai in grafo.items() if pai == "e7c25a91f4b3"]
+    assert tataranetos == [], tataranetos
 
     for caminho in (
         APP / "memory" / "schemas" / "erasure_target.py",

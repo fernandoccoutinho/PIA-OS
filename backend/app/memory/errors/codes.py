@@ -546,3 +546,42 @@ Nem alegar recibo, nem desfazer ficticiamente o efeito. O apagamento
 ocorreu e a evidência não ficou — é exatamente isso que o erro diz, e
 por isso ele carrega o desfecho observado sem inventá-lo.
 """
+
+
+PIA_8050_VALIDATED_EXPERIENCE_CONFLICT = ErrorCode(
+    code="PIA-8050",
+    default_message="validated_experience_conflict",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Mesmo `experience_id`, conteúdo canônico divergente (`E4.11`).
+
+```text
+REPLAY_SAME_ID + SAME_CANONICAL_PAYLOAD      -> devolve o existente
+REPLAY_SAME_ID + DIFFERENT_CANONICAL_PAYLOAD -> PIA-8050, zero overwrite
+DIFFERENT_ID   + SAME_VALUES                 -> permitido
+```
+
+Replay idêntico **não** é erro e não tem código: repetir a mesma chamada
+com a mesma identidade e o mesmo conteúdo é a definição de idempotência,
+e devolver o registro existente é a resposta correta.
+
+A terceira linha também é decisão, não descuido: repetição pode
+constituir evidência distinta, e recusá-la apagaria o fato de que a
+validação ocorreu duas vezes.
+"""
+
+PIA_8051_VALIDATED_EXPERIENCE_IMMUTABLE = ErrorCode(
+    code="PIA-8051",
+    default_message="validated_experience_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de `update`, `delete` ou `soft_delete` (`E4.11`).
+
+O registro é append-only nas três camadas — value object congelado,
+repositório e trigger PostgreSQL. Alterar uma validação já registrada
+faria o passado responder por um critério que não era o dele.
+"""

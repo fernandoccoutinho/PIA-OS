@@ -43,6 +43,13 @@ from app.memory.models.target_resolution_enums import (
     LegacyProtectionState,
     TargetResolutionRefusalReason,
 )
+from app.memory.models.validated_experience import ValidatedExperience
+from app.memory.models.validated_experience_enums import (
+    CriterionOriginKind,
+    EvidenceKind,
+    ExperienceSubjectKind,
+    ValidatorKind,
+)
 
 __all__ = [
     "AccessibilityPolicy",
@@ -72,5 +79,10 @@ __all__ = [
     "RetentionAssessmentDecision",
     "RetentionExpiryAction",
     "RetentionPolicy",
+    "ValidatedExperience",
+    "ExperienceSubjectKind",
+    "ValidatorKind",
+    "EvidenceKind",
+    "CriterionOriginKind",
     "RetentionScopeKind",
 ]

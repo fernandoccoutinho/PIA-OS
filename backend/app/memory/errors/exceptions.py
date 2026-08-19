@@ -40,6 +40,8 @@ from app.memory.errors.codes import (
     PIA_8047_DESTRUCTIVE_EXECUTION_UNKNOWN_MATERIAL_STATE,
     PIA_8048_DESTRUCTIVE_EXECUTION_ADAPTER_CONTRACT_VIOLATION,
     PIA_8049_ERASURE_RECEIPT_NOT_PERSISTED,
+    PIA_8050_VALIDATED_EXPERIENCE_CONFLICT,
+    PIA_8051_VALIDATED_EXPERIENCE_IMMUTABLE,
 )
 from app.memory.models.approval_lifecycle_enums import ApprovalUsageRefusalReason
 from app.memory.models.destructive_execution_enums import AdapterContractViolation
@@ -593,4 +595,60 @@ class ErasureReceiptNotPersistedError(PIAOSException):
                 "attempts_observed": evidence.attempts_observed,
                 "receipts_persisted": evidence.receipts_persisted,
             },
+        )
+
+
+class ValidatedExperienceConflictError(PIAOSException):
+    """Mesmo `experience_id`, conteúdo canônico divergente (`E4.11`).
+
+    ```text
+    ZERO_OVERWRITE
+    ```
+
+    Nenhuma escrita ocorre: o registro existente permanece exatamente
+    como estava, e quem chamou fica sabendo que a identidade já
+    descreve outra validação.
+    """
+
+    error_code = PIA_8050_VALIDATED_EXPERIENCE_CONFLICT
+
+    def __init__(self, experience_id: uuid.UUID, diverging_fields: tuple[str, ...]) -> None:
+        if not isinstance(experience_id, uuid.UUID):
+            raise TypeError("experience_id deve ser UUID")
+        if not isinstance(diverging_fields, tuple) or not diverging_fields:
+            raise ValueError(
+                "diverging_fields deve ser uma tupla não vazia — um conflito que "
+                "não diz o que divergiu não é acionável"
+            )
+        self.experience_id = experience_id
+        self.diverging_fields = diverging_fields
+        super().__init__(
+            message=(
+                f"A experiência validada {experience_id} já existe com conteúdo "
+                f"diferente; nada foi sobrescrito."
+            ),
+            detail={
+                "experience_id": str(experience_id),
+                "diverging_fields": list(diverging_fields),
+            },
+        )
+
+
+class ValidatedExperienceImmutableError(PIAOSException):
+    """Tentativa de alterar ou remover um registro já persistido (`E4.11`).
+
+    ```text
+    APPEND_ONLY_IN_THREE_LAYERS
+    ```
+    """
+
+    error_code = PIA_8051_VALIDATED_EXPERIENCE_IMMUTABLE
+
+    def __init__(self, operation: str) -> None:
+        if not isinstance(operation, str) or not operation.strip():
+            raise ValueError("operation deve ser texto não vazio")
+        self.operation = operation
+        super().__init__(
+            message=(f"validated_experiences é append-only: '{operation}' recusado."),
+            detail={"operation": operation},
         )

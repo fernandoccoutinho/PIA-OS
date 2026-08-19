@@ -715,7 +715,10 @@ def test_ii16_no_schema_orm_drift_and_single_head():
     # branching, não a imobilidade.
     # E4.9.9.d: head atualizado para `d5b31f7a08c4` (governance_rule_id
     # textual). A guarda continua medindo head ÚNICO.
-    assert tuple(heads) == ("d5b31f7a08c4",), f"migration head: {heads}"
+    # ATUALIZADO PELA E4.11: a cabeça passou a ser `e7c25a91f4b3`
+    # (validated_experiences). A guarda continua medindo head ÚNICO —
+    # só o alvo do único mudou.
+    assert tuple(heads) == ("e7c25a91f4b3",), f"migration head: {heads}"
 
 
 def test_ii17_no_new_table_was_introduced():

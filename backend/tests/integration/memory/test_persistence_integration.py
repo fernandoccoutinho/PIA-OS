@@ -76,6 +76,19 @@ _E4_TABLES = (
     "memory_domain_memberships",
     "memory_domains",
 )
+
+_APPEND_ONLY_TABLES = ("validated_experiences",)
+"""Tabelas que existem no schema mas **não** podem ser truncadas.
+
+```text
+APPEND_ONLY_TABLE != TRUNCATABLE_FIXTURE_TABLE
+```
+
+A E4.11 impõe append-only por trigger, inclusive contra `TRUNCATE`.
+Incluí-la em `_E4_TABLES` faria a fixture de limpeza tropeçar na própria
+garantia — e desativar a trigger para limpar seria contornar o que ela
+existe para provar. Ela entra apenas na expectativa de schema do `pi13`.
+"""
 _COGNITIVE_TABLES = (
     "causal_history_events",
     "causal_histories",
@@ -518,7 +531,9 @@ def test_pi13_no_new_table_and_no_new_migration():
     Lido do schema real, não do modelo.
     """
     tabelas = set(sa.inspect(engine).get_table_names())
-    esperadas = set(_COGNITIVE_TABLES) | set(_E4_TABLES) | {"alembic_version"}
+    esperadas = (
+        set(_COGNITIVE_TABLES) | set(_E4_TABLES) | set(_APPEND_ONLY_TABLES) | {"alembic_version"}
+    )
     assert tabelas == esperadas, f"tabela inesperada: {tabelas - esperadas}"
     for proibida in ("persistence_records", "persistence_assessments", "memory_items"):
         assert proibida not in tabelas

@@ -293,9 +293,14 @@ def test_s12_uma_unica_migration_sucessora_do_head_anterior() -> None:
     # nasceu da revisão desta fatia.
     netos = [r for r, p in grafo.items() if p == "a1f7c2d40e93"]
     assert netos == ["d5b31f7a08c4"], netos
+    # ATUALIZADO PELA E4.11: `e7c25a91f4b3` (validated_experiences) é a
+    # sucessora AUTORIZADA. A guarda desce mais um degrau e continua
+    # medindo o mesmo: nenhuma OUTRA migration nasceu, e o head é folha.
+    bisnetos = [r for r, p in grafo.items() if p == "d5b31f7a08c4"]
+    assert bisnetos == ["e7c25a91f4b3"], bisnetos
     pais = {p for p in grafo.values() if p}
     folhas = [r for r in grafo if r not in pais]
-    assert folhas == ["d5b31f7a08c4"], folhas
+    assert folhas == ["e7c25a91f4b3"], folhas
 
 
 def _classes_com_metodo(fontes, metodo: str) -> list[str]:
