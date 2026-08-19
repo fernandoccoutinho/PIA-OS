@@ -75,27 +75,59 @@ def _limpar():
     migrations.upgrade("head")
     _truncar()
     yield
+    _limpar_dominios()
     _truncar()
 
 
 def _truncar() -> None:
-    """Remove as linhas **desativando a trigger**, e só nos testes.
+    """Esvazia a tabela **sem desativar garantia alguma**.
 
-    A trigger existe para recusar mutação em produção; um teste que não
-    conseguisse limpar o próprio estado deixaria a suíte dependente de
-    ordem. `session_replication_role` é o mecanismo do PostgreSQL para
-    isso, e vale só para esta sessão.
+    ```text
+    A_TEST_MUST_NOT_DISABLE_THE_GUARANTEE_IT_MEASURES
+    DDL_IS_NOT_DML_BYPASS
+    ```
+
+    CORRIGIDO NO CORRETIVO DA CADEIA 97. A versão anterior usava
+    `SET session_replication_role = replica`, que desliga exatamente a
+    trigger que prova o append-only — a suíte contornava a própria
+    garantia para poder limpar.
+
+    A limpeza passou a ser **DDL deliberado**: a tabela é derrubada e
+    recriada pela migration. As três garantias DML (`UPDATE`, `DELETE`,
+    `TRUNCATE`) permanecem **ativas durante todos os testes**, e é isso
+    que `i35` mede. Derrubar o schema inteiro é a decisão explícita que o
+    downgrade da migration exige quando há dados — aqui ela é tomada por
+    quem monta a fixture, não escondida atrás de um interruptor de
+    trigger.
+    """
+    with Session(engine) as leitura:
+        pendentes = leitura.execute(
+            sa.text("SELECT count(*) FROM validated_experiences")
+        ).scalar_one()
+    if not pendentes:
+        return
+    with engine.begin() as conn:
+        conn.execute(sa.text("DROP TABLE validated_experiences CASCADE"))
+        conn.execute(sa.text("DROP FUNCTION IF EXISTS reject_validated_experience_mutation()"))
+        conn.execute(
+            sa.text(
+                "DROP FUNCTION IF EXISTS "
+                "validated_experience_evidence_is_canonical(jsonb, text, text)"
+            )
+        )
+        conn.execute(sa.text("UPDATE alembic_version SET version_num = 'd5b31f7a08c4'"))
+    migrations.upgrade("head")
+
+
+def _limpar_dominios() -> None:
+    """Os `MemoryDomain` das provas do achado A1 da cadeia 96.
+
+    Pertencem à E4.1 e **não** são append-only — deixá-los para trás
+    bloquearia o downgrade de `memory_domains` e reprovaria os testes de
+    round trip da E3 e da E4.1. Removo só os que estes testes criaram,
+    pelo prefixo do nome.
     """
     with engine.begin() as conn:
-        conn.execute(sa.text("SET session_replication_role = replica"))
-        conn.execute(sa.text("TRUNCATE validated_experiences"))
-        conn.execute(sa.text("SET session_replication_role = DEFAULT"))
-        # As provas do achado A1 gravam um `MemoryDomain` para medir que a
-        # escrita NÃO relacionada sobrevive. Ele pertence à E4.1 e não é
-        # append-only — mas deixá-lo para trás bloquearia o downgrade de
-        # `memory_domains` e reprovaria os testes de round trip da E3 e da
-        # E4.1. Removo apenas as linhas que estes testes criaram, pelo
-        # prefixo do nome; nenhuma outra é tocada.
         conn.execute(sa.text("DELETE FROM memory_domains WHERE name LIKE 'dominio-i3%'"))
 
 

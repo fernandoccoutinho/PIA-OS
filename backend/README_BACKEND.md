@@ -41,6 +41,15 @@ guia de início rápido.
 - [E4.11 — Validated Experience Registry](docs/entregas/entrega-4/E4_11_VALIDATED_EXPERIENCE_REGISTRY.md)
   — registro persistente e imutável de que uma experiência foi validada,
   por quem e contra qual critério; estrutura de evidência, não motor.
+- [E4.12 — Final Integration Gate](docs/entregas/entrega-4/E4_12_FINAL_INTEGRATION_GATE.md)
+  — gate final de integração da Entrega 4, sobre PostgreSQL real.
+- [E4 — Manifesto Final](docs/entregas/entrega-4/E4_FINAL_MANIFEST.md)
+  — inventário de fatias, tabelas, APIs, deferidos e capacidades
+  proibidas ausentes.
+- [E4 — Manifesto Final (JSON)](docs/entregas/entrega-4/E4_FINAL_MANIFEST.json)
+  — a mesma informação em formato parseável e determinístico.
+- [E4 → E5 — Handoff](docs/entregas/entrega-4/E4_TO_E5_HANDOFF.md)
+  — o que a E5 pode consumir sem modificar, e o que falta antes dela.
 
 ## Diagramas
 
