@@ -49,6 +49,13 @@ PERMITIDOS = {
     APP / "memory" / "models" / "approval_record.py",
     APP / "memory" / "models" / "approval_lifecycle_enums.py",
     APP / "memory" / "repositories" / "approval_record_repository.py",
+    # E4.9.9.b: a fronteira de efeito reutiliza `ErasureOutcome` como FONTE
+    # ÚNICA dos três desfechos observados — duplicá-lo criaria duas verdades
+    # sobre o que foi observado. Reutilizar o VOCABULÁRIO não é conhecer a
+    # primitiva de recibo: `test_erasure_effect_isolation` prova pelo outro
+    # lado que nada ali importa `ErasureRecord`, repositório ou
+    # `append_observed`.
+    APP / "memory" / "schemas" / "erasure_effect.py",
     APP / "memory" / "models" / "erasure_enums.py",
     APP / "memory" / "schemas" / "erasure_record.py",
     APP / "memory" / "repositories" / "erasure_record_repository.py",
@@ -208,11 +215,10 @@ def test_s08_target_resolver_effect_approval_e_retention_continuam_ausentes() ->
     #
     # Persistir uma aprovação é o oposto de executá-la, e esta guarda
     # continua sendo uma das provas disso.
-    ausentes = (
-        "ErasureEffectPort",
-        "DestructiveExecutionService",
-        "ObservedAttemptResult",
-    )
+    # ATUALIZADA NA E4.9.9.b: o PORT e o resultado tipado são autorizados
+    # e inertes. O que continua ausente, e é o que importa, é o
+    # EXECUTOR — nenhuma classe compõe efeito com recibo.
+    ausentes = ("DestructiveExecutionService",)
     encontrados: list[str] = []
     for arquivo in _fontes():
         texto = arquivo.read_text(encoding="utf-8")

@@ -222,10 +222,36 @@ def test_s08_nenhuma_classe_de_alvo_foi_reeditada() -> None:
 
 
 def test_s09_o_efeito_nao_foi_materializado() -> None:
-    """A E4.9.1 autorizou duas portas; esta fatia entrega uma."""
-    infratores = [
-        str(p.relative_to(APP)) for p in _fontes() if "ErasureEffectPort" in _executavel(p)
-    ]
+    """O PORT existe desde a E4.9.9.b; o ADAPTADOR continua não existindo.
+
+    ATUALIZADA NA E4.9.9.b, e a atualização troca o alvo do "nenhum".
+    Antes, a ausência do nome `ErasureEffectPort` era a prova de que não
+    havia efeito. Agora o port é contrato autorizado e inerte, e a
+    propriedade material que resta é outra:
+
+    ```text
+    EFFECT_PORT     = DECLARED_BOUNDARY   (contrato, inerte)
+    EFFECT_ADAPTER  = NONE                (o que importa)
+    ```
+
+    Nenhuma classe concreta implementa `attempt_effect`. O port declara
+    fronteira; ele não implementa efeito.
+    """
+    infratores: list[str] = []
+    for caminho in _fontes():
+        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+        for no in ast.walk(arvore):
+            if not isinstance(no, ast.ClassDef):
+                continue
+            if "Protocol" in {b.id for b in no.bases if isinstance(b, ast.Name)}:
+                continue
+            metodos = {
+                filho.name
+                for filho in no.body
+                if isinstance(filho, ast.FunctionDef | ast.AsyncFunctionDef)
+            }
+            if "attempt_effect" in metodos:
+                infratores.append(f"{caminho.name}:{no.name}")
     assert infratores == []
 
 
@@ -276,6 +302,12 @@ def test_s10_nenhum_consumidor_runtime_da_porta_apareceu() -> None:
         # nenhum adaptador de resolução existe.
         APP / "memory" / "repositories" / "approval_record_repository.py",
         APP / "memory" / "models" / "approval_record.py",
+        # Consumidor AUTORIZADO pela E4.9.9.b: a requisição de efeito
+        # incorpora `ErasureTargetDescriptor` e reutiliza os validadores.
+        #
+        # A metade que importa continua intacta acima:
+        # `ErasureTargetResolverPort` segue com ZERO consumidores.
+        APP / "memory" / "schemas" / "erasure_effect.py",
     }
     consumidores_dos_vo = [
         str(p.relative_to(APP))
@@ -1273,9 +1305,8 @@ def test_s38_e4_9_9_b_c_d_nao_foram_iniciadas() -> None:
     # RetentionEvaluator           = ABSENT   (E4.9.9.c)
     # DestructiveExecutionService  = ABSENT   (E4.9.9.d)
     # ```
+    # ATUALIZADA NA E4.9.9.b, mesma razão de `test_approval_record_isolation`.
     ausentes = (
-        "ErasureEffectPort",
-        "ObservedAttemptResult",
         "RetentionEvaluator",
         "DestructiveExecutionService",
         "comparar_com_snapshot",

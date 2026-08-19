@@ -281,9 +281,10 @@ def test_s12_uma_unica_migration_sucessora_do_head_anterior() -> None:
 
 def test_s13_e4_9_9_b_c_d_nao_foram_iniciadas() -> None:
     """Nem símbolo, nem stub, nem contrato antecipado."""
+    # ATUALIZADA NA E4.9.9.b: `ErasureEffectPort` e `ObservedAttemptResult`
+    # saíram porque a fatia `b` os autorizou e materializou como contratos
+    # inertes. As capacidades de `c` e `d` PERMANECEM ausentes.
     ausentes = (
-        "ErasureEffectPort",
-        "ObservedAttemptResult",
         "RetentionEvaluator",
         "DestructiveExecutionService",
         "comparar_com_snapshot",

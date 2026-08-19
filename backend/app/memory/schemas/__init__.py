@@ -19,3 +19,19 @@ __all__ = [
     "SafeTargetSnapshot",
     "SafeVoiceProvenance",
 ]
+
+from app.memory.schemas.erasure_effect import (
+    ConsumedApprovalEvidence,
+    ErasureEffectRequest,
+    ErasureEffectResult,
+    MaterialAttemptNotStarted,
+    ObservedAttemptResult,
+)
+
+__all__ += [
+    "ConsumedApprovalEvidence",
+    "ErasureEffectRequest",
+    "ErasureEffectResult",
+    "MaterialAttemptNotStarted",
+    "ObservedAttemptResult",
+]

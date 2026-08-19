@@ -455,3 +455,38 @@ REVOCATION = DURABLE_STATE_TRANSITION, NEVER_ROW_REMOVAL
 Limites declarados: o binding compara o que foi **persistido**, não o
 mundo — TOCTOU segue aberto até a E4.9.9.d; `IdentityEvidence` continua
 **representando** evidência externa, sem verificá-la.
+
+---
+
+## Atualização aditiva — E4.9.9.b (cadeia 91)
+
+```text
+ERASURE_EFFECT_PORT       = IMPLEMENTED_CANDIDATE  (contrato inerte)
+CONSUMED_APPROVAL_EVIDENCE = IMPLEMENTED_CANDIDATE
+ERASURE_EFFECT_REQUEST    = IMPLEMENTED_CANDIDATE
+OBSERVED_ATTEMPT_RESULT   = IMPLEMENTED_CANDIDATE
+MATERIAL_ATTEMPT_NOT_STARTED = IMPLEMENTED_CANDIDATE
+```
+
+Continuam deferidos, e esta fatia **não** os toca:
+
+```text
+ERASURE_EFFECT_ADAPTER        = NONE
+DESTRUCTIVE_EXECUTION_SERVICE = NONE            (E4.9.9.d)
+RETENTION_EVALUATOR           = NONE            (E4.9.9.c)
+FRESH_TARGET_RE_RESOLUTION    = NONE            (E4.9.9.d)
+ERASURE_RECORD_RUNTIME_WRITER = NOT_COMPOSED    (E4.9.9.d)
+AUTHENTICATOR / API / UI / TRASH = NONE
+```
+
+```text
+EFFECT != ERASURE_RECORD
+NO_MATERIAL_ATTEMPT -> NO_ERASURE_RECORD
+CAPABILITY_OPERATION_SEMANTICS = ADAPTER_BOUNDARY
+TYPED_CONSUMPTION_EVIDENCE != DATABASE_PROOF
+RUNTIME_CHECKABLE != SIGNATURE_PROOF
+```
+
+Limites declarados: `SUCCEEDED` significa escopo controlado confirmado
+pelo adaptador, não prova de desaparecimento em toda réplica; exceção do
+adaptador futuro deixa estado **ambíguo**, cujo tratamento é da E4.9.9.d.

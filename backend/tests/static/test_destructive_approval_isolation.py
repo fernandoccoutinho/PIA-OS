@@ -253,6 +253,10 @@ def test_s12_nenhum_consumidor_de_producao_fora_dos_exports() -> None:
         APP / "memory" / "schemas" / "__init__.py",
         APP / "memory" / "models" / "approval_record.py",
         APP / "memory" / "repositories" / "approval_record_repository.py",
+        # E4.9.9.b: a evidência de consumo carrega `DestructiveOperation`
+        # para dizer QUAL operação foi aprovada. Consumidor autorizado e
+        # inerte — nenhum consumidor DESTRUTIVO apareceu.
+        APP / "memory" / "schemas" / "erasure_effect.py",
     }
     infratores = [
         str(p.relative_to(APP))
@@ -263,9 +267,36 @@ def test_s12_nenhum_consumidor_de_producao_fora_dos_exports() -> None:
 
 
 def test_s13_o_efeito_continua_sem_existir() -> None:
-    infratores = [
-        str(p.relative_to(APP)) for p in _fontes() if "ErasureEffectPort" in _executavel(p)
-    ]
+    """O PORT existe desde a E4.9.9.b; o ADAPTADOR continua não existindo.
+
+    ATUALIZADA NA E4.9.9.b, e a atualização troca o alvo do "nenhum".
+    Antes, a ausência do nome `ErasureEffectPort` era a prova de que não
+    havia efeito. Agora o port é contrato autorizado e inerte, e a
+    propriedade material que resta é outra:
+
+    ```text
+    EFFECT_PORT     = DECLARED_BOUNDARY   (contrato, inerte)
+    EFFECT_ADAPTER  = NONE                (o que importa)
+    ```
+
+    Nenhuma classe concreta implementa `attempt_effect`. O port declara
+    fronteira; ele não implementa efeito.
+    """
+    infratores: list[str] = []
+    for caminho in _fontes():
+        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+        for no in ast.walk(arvore):
+            if not isinstance(no, ast.ClassDef):
+                continue
+            if "Protocol" in {b.id for b in no.bases if isinstance(b, ast.Name)}:
+                continue
+            metodos = {
+                filho.name
+                for filho in no.body
+                if isinstance(filho, ast.FunctionDef | ast.AsyncFunctionDef)
+            }
+            if "attempt_effect" in metodos:
+                infratores.append(f"{caminho.name}:{no.name}")
     assert infratores == []
 
 

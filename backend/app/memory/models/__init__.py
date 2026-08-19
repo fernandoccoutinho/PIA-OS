@@ -23,6 +23,10 @@ from app.memory.models.approval_record import (
     ApprovalRecordGovernanceItem,
     ApprovalRecordTarget,
 )
+from app.memory.models.erasure_effect_enums import (
+    EffectAttemptStage,
+    MaterialAttemptRefusalReason,
+)
 from app.memory.models.erasure_enums import ErasureOutcome, ErasureTargetClass
 from app.memory.models.erasure_record import ErasureRecord
 from app.memory.models.governance_policy import GovernancePolicy
@@ -43,6 +47,8 @@ __all__ = [
     "AccessibilityPolicy",
     "ErasureOutcome",
     "ErasureRecord",
+    "EffectAttemptStage",
+    "MaterialAttemptRefusalReason",
     "ApprovalLifecycleState",
     "ApprovalUsageRefusalReason",
     "GovernanceItemKind",
