@@ -490,3 +490,37 @@ RUNTIME_CHECKABLE != SIGNATURE_PROOF
 Limites declarados: `SUCCEEDED` significa escopo controlado confirmado
 pelo adaptador, não prova de desaparecimento em toda réplica; exceção do
 adaptador futuro deixa estado **ambíguo**, cujo tratamento é da E4.9.9.d.
+
+---
+
+## Atualização aditiva — E4.9.9.c (cadeia 92)
+
+```text
+RETENTION_EVALUATOR          = IMPLEMENTED_CANDIDATE  (função pura)
+RETENTION_ASSESSMENT_RESULT  = IMPLEMENTED_CANDIDATE
+RETENTION_CANDIDATE          = IMPLEMENTED_CANDIDATE
+```
+
+Continuam deferidos, e esta fatia **não** os toca:
+
+```text
+SCHEDULER / WORKER / DISPARO AUTOMÁTICO = NONE
+DISPOSITION                             = NONE
+PATRIMONY_ENUMERATION                   = NONE
+RETENTION_POLICY_REPOSITORY_CONSUMER    = NONE
+DESTRUCTIVE_EXECUTION_SERVICE           = NONE   (E4.9.9.d)
+ERASURE_EFFECT_ADAPTER                  = NONE
+ERASURE_RECORD_RUNTIME_WRITER           = NOT_COMPOSED
+```
+
+```text
+ASSESSMENT_ELIGIBILITY != DELETION_DECISION
+EVALUATION             != DISPOSITION
+NO_POLICY              != ELIGIBLE
+CLOCK_INJECTED         = REQUIRED
+LEGACY_PROTECTION_OVERRIDES_RETENTION_ELIGIBILITY
+effective_due_at = MAX(due_at de todas as regras aplicáveis)
+```
+
+`RetentionExpiryAction` continua com um único membro — vencimento nunca
+dispôs de nada, e esta fatia não amplia isso.

@@ -1284,10 +1284,15 @@ def test_e435_corrective_created_no_retention_capability():
     base = pathlib.Path(__file__).parents[3] / "app" / "memory"
     assert base.is_dir(), f"caminho de app/memory não resolvido: {base}"
 
+    # ATUALIZADO PELA E4.9.9.c: `RetentionAssessment` deixou de ser
+    # ausência e passou a ser contrato AUTORIZADO do avaliador puro, num
+    # arquivo nomeado — mesma forma da atualização que a E4.9.5 fez com
+    # `ErasureRecord`. A proibição continua valendo em todo o resto de
+    # `app/memory`, e o que o corretivo da E4.3.5 mede permanece: ELE não
+    # criou capacidade de retenção.
     proibidos = (
         "RetentionPolicy",
         "RetentionRule",
-        "RetentionAssessment",
         "RetentionDecision",
         "ErasureRecord",
         "retention_policies",
@@ -1329,6 +1334,25 @@ def test_e435_corrective_created_no_retention_capability():
     }
     proibidos_e496 = {"RetentionPolicy", "RetentionRule", "retention_policies"}
 
+    # Atualizado pela E4.9.9.c: o avaliador PURO consome `RetentionRule` —
+    # é para isso que a E4.9.6 a criou. `RetentionAssessment` deixou de
+    # ser ausência e passou a ser o contrato de RESULTADO dele.
+    #
+    # As proibições de DISPOSIÇÃO seguem INTACTAS em todos os arquivos,
+    # inclusive neste: `assess_retention`, `dispose`, `erase` e `forget`
+    # continuam ausentes, e a única ação de expiração do sistema continua
+    # sendo `ASSESS_AND_INFORM`.
+    #
+    # ```text
+    # EVALUATION != DISPOSITION
+    # ```
+    autorizados_e499c = {
+        base / "models" / "retention_assessment_enums.py",
+        base / "models" / "__init__.py",
+        base / "services" / "retention_evaluator.py",
+    }
+    proibidos_e499c = {"RetentionRule", "RetentionAssessment"}
+
     for arquivo in sorted(base.rglob("*.py")):
         arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
         for no in ast.walk(arvore):
@@ -1348,6 +1372,8 @@ def test_e435_corrective_created_no_retention_capability():
             if proibido == "ErasureRecord" and arquivo in autorizados_e495:
                 continue
             if proibido in proibidos_e496 and arquivo in autorizados_e496:
+                continue
+            if proibido in proibidos_e499c and arquivo in autorizados_e499c:
                 continue
             assert not re.search(rf"\b{proibido}\b", executavel), f"{arquivo}: {proibido}"
         for metodo in metodos_proibidos:

@@ -32,6 +32,7 @@ from app.memory.models.erasure_record import ErasureRecord
 from app.memory.models.governance_policy import GovernancePolicy
 from app.memory.models.memory_domain import MemoryDomain
 from app.memory.models.memory_domain_membership import MemoryDomainMembership
+from app.memory.models.retention_assessment_enums import RetentionAssessmentDecision
 from app.memory.models.retention_enums import (
     RetentionAnchor,
     RetentionExpiryAction,
@@ -68,6 +69,7 @@ __all__ = [
     "MemoryDomain",
     "MemoryDomainMembership",
     "RetentionAnchor",
+    "RetentionAssessmentDecision",
     "RetentionExpiryAction",
     "RetentionPolicy",
     "RetentionScopeKind",

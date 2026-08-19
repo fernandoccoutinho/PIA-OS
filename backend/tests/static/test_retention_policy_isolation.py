@@ -38,6 +38,20 @@ PERMITIDOS = {
     APP / "memory" / "models" / "__init__.py",
     APP / "memory" / "errors" / "codes.py",
     APP / "memory" / "errors" / "exceptions.py",
+    # E4.9.9.c: o avaliador PURO consome `RetentionRule` — é para isso que
+    # a E4.9.6 a criou, e `rule_id` existe desde então "para ser citado
+    # como fundamento de uma avaliação futura". Esta é a avaliação futura.
+    #
+    # O que continua provado, e é o que importa:
+    #
+    # ```text
+    # RETENTION_POLICY_REPOSITORY_CONSUMER = NONE
+    # DISPOSITION = NONE   SCHEDULER = NONE   PERSISTENCE = NONE
+    # ```
+    #
+    # `test_retention_evaluator_isolation` prova pelo outro lado que o
+    # avaliador não lê banco, não agenda, não dispõe e não forma aprovação.
+    APP / "memory" / "services" / "retention_evaluator.py",
 }
 
 

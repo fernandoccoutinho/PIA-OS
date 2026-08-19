@@ -308,6 +308,13 @@ def test_s10_nenhum_consumidor_runtime_da_porta_apareceu() -> None:
         # A metade que importa continua intacta acima:
         # `ErasureTargetResolverPort` segue com ZERO consumidores.
         APP / "memory" / "schemas" / "erasure_effect.py",
+        # Consumidor AUTORIZADO pela E4.9.9.c: o avaliador de retenção lê
+        # `LegacyProtectionState` para honrar a proteção do titular — o
+        # vocabulário que a E4.9.8.3 criou exatamente para ser observável.
+        #
+        # A metade que importa continua intacta acima:
+        # `ErasureTargetResolverPort` segue com ZERO consumidores.
+        APP / "memory" / "services" / "retention_evaluator.py",
     }
     consumidores_dos_vo = [
         str(p.relative_to(APP))
