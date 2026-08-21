@@ -55,6 +55,7 @@ PACOTE = RAIZ / "app" / "predictive_accessibility"
 CAMINHOS_AUTORIZADOS = (
     "__init__.py",
     "piap/__init__.py",
+    "piap/capacity.py",
     "piap/enums.py",
     "piap/envelope.py",
     "piap/authority.py",

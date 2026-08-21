@@ -7,16 +7,25 @@ ABSENT != FAILING_BEHAVIOUR
 ```
 """
 
+import ast
 import dataclasses
+import pathlib
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+from app.predictive_accessibility.piap import capacity as capacity_module
 from app.predictive_accessibility.piap.authority import (
     ApprovalBinding,
     AuthorityContext,
     BoundObjectRef,
+)
+from app.predictive_accessibility.piap.capacity import (
+    MAX_APPROVAL_SCOPE_ITEMS,
+    MAX_PAYLOAD_REFERENCES,
+    MAX_PIAP_INPUT_BYTES,
+    MAX_PIAP_VERSION_NUMBER,
 )
 from app.predictive_accessibility.piap.enums import (
     AuthorityStatus,
@@ -408,3 +417,104 @@ def test_bound_to_de_tipo_errado_e_type_error() -> None:
 def test_expiracao_de_tipo_errado_e_type_error() -> None:
     with pytest.raises(TypeError):
         _aprovacao(approval_expiry="2026-06-01")
+
+
+# --- capacidade: cardinalidade de payload_refs na construção direta -------
+#
+# ```text
+# PUBLIC_FUNCTION_MUST_BE_SAFE_WHEN_CALLED_INTERNALLY = TRUE
+# ```
+#
+# O teto não vale só na fronteira de bytes. Quem monta o envelope em memória,
+# sem passar pelo desserializador, encontra a mesma recusa — senão o limite
+# seria uma propriedade do transporte, não do contrato.
+
+
+def _referencias(n: int) -> tuple[SourceReference, ...]:
+    """`n` referências distintas, já em ordem canônica por `sort_key`."""
+    brutas = tuple(_fonte(i + 1) for i in range(n))
+    return tuple(sorted(brutas, key=lambda r: r.sort_key))
+
+
+def test_cap_refs_no_teto_e_aceito() -> None:
+    envelope = _envelope(payload_refs=_referencias(MAX_PAYLOAD_REFERENCES))
+    assert len(envelope.payload_refs) == MAX_PAYLOAD_REFERENCES
+
+
+def test_cap_refs_acima_do_teto_rejeita() -> None:
+    with pytest.raises(ValueError, match="MAX_PAYLOAD_REFERENCES"):
+        _envelope(payload_refs=_referencias(MAX_PAYLOAD_REFERENCES + 1))
+
+
+def test_cap_refs_conta_antes_de_validar_cada_item() -> None:
+    """A contagem precede a validação de tipo item a item.
+
+    Uma tupla grande DEMAIS cujo último item é de tipo errado deve reprovar
+    pela cardinalidade, com `ValueError`, e não pelo item, com `TypeError`.
+    Inverter a ordem troca a exceção e reprova este teste.
+    """
+    grande_e_invalida = _referencias(MAX_PAYLOAD_REFERENCES) + (object(),)
+    with pytest.raises(ValueError, match="MAX_PAYLOAD_REFERENCES"):
+        _envelope(payload_refs=grande_e_invalida)
+
+
+def test_cap_refs_vazio_continua_aceito() -> None:
+    """Envelope sem referências é legítimo; o teto é superior, não inferior."""
+    assert _envelope(payload_refs=()).payload_refs == ()
+
+
+def test_cap_refs_ordem_e_duplicata_continuam_exigidas_abaixo_do_teto() -> None:
+    """O teto novo não substituiu nenhuma guarda antiga."""
+    fora_de_ordem = tuple(reversed(_referencias(3)))
+    with pytest.raises(ValueError, match="ordem canônica"):
+        _envelope(payload_refs=fora_de_ordem)
+    with pytest.raises(ValueError, match="duplicada"):
+        _envelope(payload_refs=(_fonte(1), _fonte(1)))
+
+
+def test_cap_versao_de_fonte_acima_do_teto_rejeita() -> None:
+    with pytest.raises(ValueError, match="MAX_PIAP_VERSION_NUMBER"):
+        SourceReference(
+            kind=ProvenanceKind("policy.registry"),
+            ref=uuid.UUID(int=1),
+            source_version=MAX_PIAP_VERSION_NUMBER + 1,
+            content_sha256=_HASH,
+        )
+
+
+def test_cap_versao_de_fonte_no_teto_e_aceita() -> None:
+    fonte = SourceReference(
+        kind=ProvenanceKind("policy.registry"),
+        ref=uuid.UUID(int=1),
+        source_version=MAX_PIAP_VERSION_NUMBER,
+        content_sha256=_HASH,
+    )
+    assert fonte.source_version == MAX_PIAP_VERSION_NUMBER
+
+
+def test_cap_constantes_tem_os_quatro_valores_normativos() -> None:
+    assert MAX_PIAP_INPUT_BYTES == 262_144
+    assert MAX_PAYLOAD_REFERENCES == 256
+    assert MAX_APPROVAL_SCOPE_ITEMS == 32
+    assert MAX_PIAP_VERSION_NUMBER == 2_147_483_647
+
+
+def test_cap_modulo_de_capacidade_e_puro() -> None:
+    """Sem I/O, sem dependência externa e sem estado mutável.
+
+    Um teto reatribuível em runtime não é teto. A prova é estrutural, por AST,
+    e não pela ausência de sintomas.
+    """
+    arvore = ast.parse(pathlib.Path(capacity_module.__file__).read_text(encoding="utf-8"))
+    for no in ast.walk(arvore):
+        assert not isinstance(no, ast.Import | ast.ImportFrom), "capacity.py não importa nada"
+        assert not isinstance(no, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+    atribuicoes = [n for n in arvore.body if isinstance(n, ast.Assign)]
+    nomes = {a.targets[0].id for a in atribuicoes if isinstance(a.targets[0], ast.Name)}
+    assert nomes == {
+        "MAX_PIAP_INPUT_BYTES",
+        "MAX_PAYLOAD_REFERENCES",
+        "MAX_APPROVAL_SCOPE_ITEMS",
+        "MAX_PIAP_VERSION_NUMBER",
+        "__all__",
+    }

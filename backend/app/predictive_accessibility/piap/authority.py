@@ -32,6 +32,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from app.predictive_accessibility.piap.capacity import (
+    MAX_APPROVAL_SCOPE_ITEMS,
+    MAX_PIAP_VERSION_NUMBER,
+)
 from app.predictive_accessibility.piap.enums import (
     ApprovalValidationOutcome,
     AuthorityStatus,
@@ -79,16 +83,31 @@ def validar_referencia_opaca(nome: str, valor: object, tamanho: int = MAX_REF_LE
 
 
 def validar_inteiro_positivo(nome: str, valor: object) -> int:
-    """Inteiro `>= 1`, com `bool` explicitamente recusado.
+    """Versão inteira dentro do domínio fechado `1..MAX_PIAP_VERSION_NUMBER`.
 
     `bool` é subclasse de `int` em Python, e `True` passaria por um
     `isinstance(valor, int)` ingênuo. Uma versão de aprovação igual a
     `True` seria lida como `1` e ninguém veria o erro.
+
+    O domínio é fechado **dos dois lados**. Antes havia apenas piso: uma
+    versão podia ser qualquer inteiro positivo, inclusive um que nenhum
+    campo `Integer` da plataforma consegue armazenar, e inclusive um com
+    dígitos suficientes para o parser JSON recusar antes que esta camada
+    o visse.
+
+    ```text
+    UNBOUNDED_POSITIVE_VERSION = TRANSPORTED_PROMISE_THE_PLATFORM_CANNOT_KEEP
+    ```
     """
     if isinstance(valor, bool) or not isinstance(valor, int):
         raise TypeError(f"{nome} deve ser int, recebido {type(valor).__name__}")
     if valor < 1:
         raise ValueError(f"{nome} deve ser >= 1, recebido {valor}")
+    if valor > MAX_PIAP_VERSION_NUMBER:
+        raise ValueError(
+            f"{nome} excede MAX_PIAP_VERSION_NUMBER: recebido {valor}, "
+            f"permitido no máximo {MAX_PIAP_VERSION_NUMBER}"
+        )
     return valor
 
 
@@ -124,11 +143,26 @@ def validar_escopo(nome: str, valor: object) -> tuple[str, ...]:
     ```text
     SILENT_REORDER_OR_DEDUP = FORBIDDEN
     ```
+
+    A cardinalidade é verificada **antes** de validar item a item, porque
+    `validar_referencia_opaca` percorre cada caractere de cada item
+    chamando `unicodedata.category`. Contar primeiro custa uma comparação
+    de inteiro; validar primeiro custa a varredura inteira de um escopo
+    que já se sabe inadmissível.
+
+    ```text
+    CARDINALITY_CHECK_BEFORE_EXPENSIVE_PER_ITEM_VALIDATION = TRUE
+    ```
     """
     if not isinstance(valor, tuple):
         raise TypeError(f"{nome} deve ser tuple, recebido {type(valor).__name__}")
     if not valor:
         raise ValueError(f"{nome} não pode ser vazio")
+    if len(valor) > MAX_APPROVAL_SCOPE_ITEMS:
+        raise ValueError(
+            f"{nome} excede MAX_APPROVAL_SCOPE_ITEMS: recebido {len(valor)} itens, "
+            f"permitido no máximo {MAX_APPROVAL_SCOPE_ITEMS}"
+        )
     itens = tuple(validar_referencia_opaca(f"{nome}[{i}]", v) for i, v in enumerate(valor))
     if len(set(itens)) != len(itens):
         raise ValueError(f"{nome} contém entrada duplicada")

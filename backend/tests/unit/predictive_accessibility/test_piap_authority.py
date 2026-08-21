@@ -9,16 +9,22 @@ PARALLEL_AUTHORITY_STATUS = FORBIDDEN
 """
 
 import dataclasses
+import pathlib
 import uuid
 from datetime import UTC, datetime
 
 import pytest
 
+from app.predictive_accessibility.piap import authority as authority_module
 from app.predictive_accessibility.piap.authority import (
     ApprovalBinding,
     AuthorityContext,
     BoundObjectRef,
     validate_approval,
+)
+from app.predictive_accessibility.piap.capacity import (
+    MAX_APPROVAL_SCOPE_ITEMS,
+    MAX_PIAP_VERSION_NUMBER,
 )
 from app.predictive_accessibility.piap.enums import (
     ApprovalValidationOutcome,
@@ -299,3 +305,82 @@ def test_argumentos_invalidos_sao_erro_de_chamador() -> None:
 
 def test_referencia_de_aprovacao_redigida_no_repr() -> None:
     assert "APR-0001" not in repr(_aprovacao())
+
+
+# --- capacidade: teto de versão e cardinalidade de escopo -----------------
+#
+# ```text
+# UNBOUNDED_POSITIVE_VERSION = TRANSPORTED_PROMISE_THE_PLATFORM_CANNOT_KEEP
+# CARDINALITY_CHECK_BEFORE_EXPENSIVE_PER_ITEM_VALIDATION = TRUE
+# ```
+#
+# Contra o parent, `validar_inteiro_positivo` só tinha piso e `validar_escopo`
+# validava item a item antes de contar.
+
+
+def _escopo(n: int) -> tuple[str, ...]:
+    """Escopo canônico com `n` itens distintos e já ordenados."""
+    return tuple(sorted(f"bound.scope.{i:04d}" for i in range(n)))
+
+
+def test_cap_versao_no_teto_e_aceita() -> None:
+    aprovacao = _aprovacao(approval_version=MAX_PIAP_VERSION_NUMBER)
+    assert aprovacao.approval_version == MAX_PIAP_VERSION_NUMBER
+
+
+def test_cap_versao_um_e_aceita() -> None:
+    assert _aprovacao(approval_version=1).approval_version == 1
+
+
+def test_cap_versao_acima_do_teto_rejeita_em_approval_version() -> None:
+    with pytest.raises(ValueError, match="MAX_PIAP_VERSION_NUMBER"):
+        _aprovacao(approval_version=MAX_PIAP_VERSION_NUMBER + 1)
+
+
+def test_cap_versao_acima_do_teto_rejeita_em_expected_version() -> None:
+    with pytest.raises(ValueError, match="MAX_PIAP_VERSION_NUMBER"):
+        _validar(_contexto(), expected_version=MAX_PIAP_VERSION_NUMBER + 1)
+
+
+def test_cap_versao_zero_e_negativa_continuam_rejeitadas() -> None:
+    """O piso não foi trocado pelo teto: o domínio é fechado dos dois lados."""
+    with pytest.raises(ValueError, match=">= 1"):
+        _aprovacao(approval_version=0)
+    with pytest.raises(ValueError, match=">= 1"):
+        _aprovacao(approval_version=-1)
+
+
+def test_cap_escopo_no_teto_e_aceito() -> None:
+    aprovacao = _aprovacao(approval_scope=_escopo(MAX_APPROVAL_SCOPE_ITEMS))
+    assert len(aprovacao.approval_scope) == MAX_APPROVAL_SCOPE_ITEMS
+
+
+def test_cap_escopo_acima_do_teto_rejeita() -> None:
+    with pytest.raises(ValueError, match="MAX_APPROVAL_SCOPE_ITEMS"):
+        _aprovacao(approval_scope=_escopo(MAX_APPROVAL_SCOPE_ITEMS + 1))
+
+
+def test_cap_escopo_conta_antes_de_validar_item_a_item() -> None:
+    """A contagem precede a varredura Unicode, e a mensagem prova qual guarda agiu.
+
+    Um escopo grande DEMAIS e com item inválido deve reprovar pela
+    cardinalidade — não pelo item. Se a ordem se inverter, a mensagem muda e
+    este teste reprova.
+    """
+    grande_e_invalido = _escopo(MAX_APPROVAL_SCOPE_ITEMS) + ("\u0000invalido",)
+    with pytest.raises(ValueError, match="MAX_APPROVAL_SCOPE_ITEMS"):
+        _aprovacao(approval_scope=grande_e_invalido)
+
+
+def test_cap_escopo_vazio_continua_rejeitado() -> None:
+    with pytest.raises(ValueError, match="não pode ser vazio"):
+        _aprovacao(approval_scope=())
+
+
+def test_cap_constantes_vem_de_fonte_unica() -> None:
+    """`authority.py` não redeclara teto nenhum: ele os importa de `capacity`."""
+    fonte = pathlib.Path(authority_module.__file__).read_text(encoding="utf-8")
+    assert "MAX_APPROVAL_SCOPE_ITEMS = " not in fonte
+    assert "MAX_PIAP_VERSION_NUMBER = " not in fonte
+    assert authority_module.MAX_APPROVAL_SCOPE_ITEMS is MAX_APPROVAL_SCOPE_ITEMS
+    assert authority_module.MAX_PIAP_VERSION_NUMBER is MAX_PIAP_VERSION_NUMBER

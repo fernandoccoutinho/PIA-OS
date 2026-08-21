@@ -66,6 +66,12 @@ from app.predictive_accessibility.piap.authority import (
     validar_inteiro_positivo,
     validar_referencia_opaca,
 )
+from app.predictive_accessibility.piap.capacity import (
+    MAX_APPROVAL_SCOPE_ITEMS,
+    MAX_PAYLOAD_REFERENCES,
+    MAX_PIAP_INPUT_BYTES,
+    MAX_PIAP_VERSION_NUMBER,
+)
 from app.predictive_accessibility.piap.enums import (
     AuthorityStatus,
     BoundObjectKind,
@@ -309,6 +315,12 @@ class PiapEnvelope:
             raise TypeError(
                 f"payload_refs deve ser tuple, recebido {type(self.payload_refs).__name__}"
             )
+        if len(self.payload_refs) > MAX_PAYLOAD_REFERENCES:
+            raise ValueError(
+                f"payload_refs excede MAX_PAYLOAD_REFERENCES: recebido "
+                f"{len(self.payload_refs)} referências, permitido no máximo "
+                f"{MAX_PAYLOAD_REFERENCES}"
+            )
         for i, referencia in enumerate(self.payload_refs):
             if not isinstance(referencia, SourceReference):
                 raise TypeError(
@@ -346,6 +358,41 @@ class PiapEnvelope:
 # conhecer a forma esperada, e a desserialização precisaria adivinhar o
 # que cada dicionário era. Cada nível é escrito e lido contra um conjunto
 # **literal** de chaves.
+
+
+def _total_microssegundos(valor: timedelta) -> int:
+    """Total exato de microssegundos, por aritmética **inteira**.
+
+    A forma anterior era `int(delta / timedelta(microseconds=1))`. Divisão de
+    `timedelta` por `timedelta` produz `float`, e acima de 2**53 microssegundos
+    o `float` deixa de representar cada inteiro — o envelope alterava o valor
+    antes de serializá-lo. Medido no parent: `timedelta(days=200000,
+    microseconds=1)` perdia 1 microssegundo, e `timedelta.max` era arredondado
+    para cima.
+
+    ```text
+    FLOAT_ARITHMETIC_IN_TIMEDELTA_SERIALIZATION = FORBIDDEN
+    INTEGER_DIVISION_THAT_TRUNCATES = FORBIDDEN
+    ```
+
+    Os três componentes de `timedelta` já são inteiros normalizados pelo
+    próprio Python, então somá-los é exato em qualquer magnitude.
+    """
+    return ((valor.days * 86400) + valor.seconds) * 1_000_000 + valor.microseconds
+
+
+def _timedelta_de_microssegundos(nome: str, valor: int) -> timedelta:
+    """Reconstrói `timedelta` a partir do inteiro, sem normalizar em silêncio.
+
+    Valor fora do domínio de `timedelta` é violação de contrato, não um número
+    a ser aparado até caber.
+    """
+    try:
+        return timedelta(microseconds=valor)
+    except OverflowError as erro:
+        raise PiapContractViolationError(
+            f"{nome} está fora do domínio de timedelta: {valor}"
+        ) from erro
 
 
 def _instante_para_json(valor: datetime) -> str:
@@ -414,11 +461,56 @@ def _inteiro(nome: str, valor: object) -> int:
     return valor
 
 
+def _versao_piap(nome: str, valor: object) -> int:
+    """Versão transportada, dentro do domínio fechado do contrato.
+
+    Existe separado de `validar_inteiro_positivo` porque a fronteira de
+    bytes fala outro vocabulário: um payload fora do contrato produz
+    `PiapContractViolationError`, não `ValueError`. Validar aqui, antes de
+    montar o value object, mantém o erro na camada certa.
+
+    ```text
+    RAW_VALUE_ERROR_AT_PIAP_BOUNDARY = DEFECT
+    ```
+    """
+    numero = _inteiro(nome, valor)
+    if numero < 1:
+        raise PiapContractViolationError(f"{nome} deve ser >= 1, recebido {numero}")
+    if numero > MAX_PIAP_VERSION_NUMBER:
+        raise PiapContractViolationError(
+            f"{nome} excede MAX_PIAP_VERSION_NUMBER: recebido {numero}, "
+            f"permitido no máximo {MAX_PIAP_VERSION_NUMBER}"
+        )
+    return numero
+
+
 def _uuid(nome: str, valor: object) -> uuid.UUID:
+    """UUID na forma textual canônica, e somente nela.
+
+    `uuid.UUID` aceita chaves, `urn:uuid:`, maiúsculas e a forma sem hífens, e
+    **normaliza** todas para a canônica. Aceitar isso seria transformar a
+    entrada em silêncio: dois payloads textualmente diferentes produziriam o
+    mesmo objeto, e a fronteira deixaria de ser canônica.
+
+    ```text
+    VALID_BUT_NONCANONICAL_UUID = CONTRACT_VIOLATION
+    SILENT_NORMALIZATION = FORBIDDEN
+    ```
+
+    A comparação é com `str(resultado)`, sem `lower`, `strip` ou qualquer
+    transformação que faça a entrada caber.
+    """
+    texto = _texto(nome, valor)
     try:
-        return uuid.UUID(_texto(nome, valor))
+        resultado = uuid.UUID(texto)
     except ValueError as erro:
-        raise PiapContractViolationError(f"{nome} não é UUID canônico: {valor!r}") from erro
+        raise PiapContractViolationError(f"{nome} não é UUID válido: {valor!r}") from erro
+    if str(resultado) != texto:
+        raise PiapContractViolationError(
+            f"{nome} é UUID válido em forma NÃO canônica: {texto!r}; "
+            f"a forma canônica é {str(resultado)!r}"
+        )
+    return resultado
 
 
 MembroT = TypeVar("MembroT", bound=StrEnum)
@@ -469,7 +561,7 @@ def _source_reference_de_json(nome: str, bruto: object) -> SourceReference:
     return SourceReference(
         kind=ProvenanceKind(_texto(f"{nome}.kind", dados["kind"])),
         ref=_uuid(f"{nome}.ref", dados["ref"]),
-        source_version=_inteiro(f"{nome}.source_version", dados["source_version"]),
+        source_version=_versao_piap(f"{nome}.source_version", dados["source_version"]),
         content_sha256=(
             None if hash_conteudo is None else _texto(f"{nome}.content_sha256", hash_conteudo)
         ),
@@ -516,39 +608,96 @@ def serialize_piap_envelope(envelope: PiapEnvelope) -> bytes:
         "subject": {
             "horizon": {
                 "availability": envelope.subject.horizon.availability.value,
-                "delta_microseconds": int(
-                    envelope.subject.horizon.delta / timedelta(microseconds=1)
-                ),
+                "delta_microseconds": _total_microssegundos(envelope.subject.horizon.delta),
                 "reference_time": _instante_para_json(envelope.subject.horizon.reference_time),
             },
             "signal": envelope.subject.signal,
             "target": envelope.subject.target,
         },
     }
-    return json.dumps(
-        documento,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+    try:
+        texto = json.dumps(
+            documento,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except ValueError as erro:
+        raise PiapContractViolationError(
+            f"envelope não pôde ser serializado em JSON canônico: {erro}"
+        ) from erro
+    return texto.encode("utf-8")
+
+
+def _exigir_bytes_canonicos(payload: bytes, envelope: PiapEnvelope) -> None:
+    """A fronteira é definida pelos BYTES, não apenas pelo objeto reconstruído.
+
+    Validar campo a campo prova que o payload é *interpretável*; não prova que
+    ele é a forma canônica. Sem esta verificação, JSON indentado, chaves fora de
+    ordem, escapes alternativos ou um instante escrito de outro jeito eram
+    aceitos e devolvidos como um objeto que reserializava para bytes
+    **diferentes** dos recebidos — que é aceitar e reescrever.
+
+    ```text
+    CANONICAL_SERIALIZER_ONLY != CANONICAL_PROTOCOL_BOUNDARY
+    ACCEPT_AND_REWRITE != REJECT_WITHOUT_NORMALIZATION
+    VALID_SEMANTICS_BUT_NONCANONICAL_BYTES -> PiapContractViolationError
+    ```
+
+    A verificação ocorre por último, de propósito: versão desconhecida, chave
+    duplicada e JSON malformado continuam produzindo seus próprios erros antes
+    daqui, preservando as precedências já contratadas.
+    """
+    try:
+        canonico = serialize_piap_envelope(envelope)
+    except UnicodeEncodeError as erro:
+        raise PiapContractViolationError(
+            "payload reconstruído não pôde ser reserializado em UTF-8 canônico"
+        ) from erro
+    if canonico != payload:
+        raise PiapContractViolationError(
+            "payload não está na forma canônica do contrato: os bytes recebidos "
+            "diferem da serialização canônica do envelope que eles descrevem"
+        )
 
 
 def deserialize_piap_envelope(payload: bytes) -> PiapEnvelope:
     """Reconstrói o envelope a partir dos bytes canônicos.
 
-    Falha fechada em versão desconhecida, campo ausente, campo extra,
-    chave JSON duplicada, tipo errado ou JSON malformado. Nenhum campo é
+    Falha fechada em versão desconhecida, campo ausente, campo extra, chave JSON
+    duplicada, tipo errado, JSON malformado, UUID em forma não canônica e
+    payload cujos bytes não sejam exatamente a forma canônica. Nenhum campo é
     descartado, defaultado ou normalizado para o payload caber.
+
+    Aceita **somente** `bytes`. `bytearray`, `memoryview` e `str` são recusados
+    com `TypeError`: converter em silêncio seria a mesma normalização que o
+    resto do módulo recusa, um nível abaixo.
+
+    ```text
+    UNKNOWN_VERSION -> PiapUnsupportedVersionError
+    DUPLICATE_JSON_KEY -> PiapContractViolationError
+    MALFORMED_JSON_OR_UTF8 -> PiapContractViolationError
+    VALID_SEMANTICS_BUT_NONCANONICAL_BYTES -> PiapContractViolationError
+    ```
     """
-    if not isinstance(payload, bytes | bytearray):
+    if type(payload) is not bytes:
         raise TypeError(f"payload deve ser bytes, recebido {type(payload).__name__}")
+    if len(payload) > MAX_PIAP_INPUT_BYTES:
+        raise PiapContractViolationError(
+            f"payload excede MAX_PIAP_INPUT_BYTES: recebido {len(payload)} bytes, "
+            f"permitido no máximo {MAX_PIAP_INPUT_BYTES}"
+        )
     try:
-        bruto = json.loads(bytes(payload).decode("utf-8"), object_pairs_hook=_sem_chave_duplicada)
+        bruto = json.loads(payload.decode("utf-8"), object_pairs_hook=_sem_chave_duplicada)
     except UnicodeDecodeError as erro:
         raise PiapContractViolationError("payload não é UTF-8 válido") from erro
     except json.JSONDecodeError as erro:
         raise PiapContractViolationError(f"payload não é JSON válido: {erro.msg}") from erro
+    except ValueError as erro:
+        raise PiapContractViolationError(
+            f"payload contém número JSON fora da capacidade do parser: {erro}"
+        ) from erro
 
     dados = _chaves_exatas("envelope", bruto, _CHAVES_ENVELOPE)
 
@@ -573,13 +722,19 @@ def deserialize_piap_envelope(payload: bytes) -> PiapEnvelope:
         escopo_bruto = campos["approval_scope"]
         if not isinstance(escopo_bruto, Sequence) or isinstance(escopo_bruto, str):
             raise PiapContractViolationError("authority.approval.approval_scope deve ser lista")
+        if len(escopo_bruto) > MAX_APPROVAL_SCOPE_ITEMS:
+            raise PiapContractViolationError(
+                f"authority.approval.approval_scope excede MAX_APPROVAL_SCOPE_ITEMS: "
+                f"recebido {len(escopo_bruto)} itens, permitido no máximo "
+                f"{MAX_APPROVAL_SCOPE_ITEMS}"
+            )
         expiracao = campos["approval_expiry"]
         jurisdicao = campos["approval_jurisdiction"]
         aprovacao = ApprovalBinding(
             approval_reference=_texto(
                 "authority.approval.approval_reference", campos["approval_reference"]
             ),
-            approval_version=_inteiro(
+            approval_version=_versao_piap(
                 "authority.approval.approval_version", campos["approval_version"]
             ),
             approval_scope=tuple(
@@ -624,10 +779,9 @@ def deserialize_piap_envelope(payload: bytes) -> PiapEnvelope:
     assunto = _chaves_exatas("subject", dados["subject"], _CHAVES_SUBJECT)
     horizonte_bruto = _chaves_exatas("subject.horizon", assunto["horizon"], _CHAVES_HORIZON)
     horizonte = Horizon(
-        delta=timedelta(
-            microseconds=_inteiro(
-                "subject.horizon.delta_microseconds", horizonte_bruto["delta_microseconds"]
-            )
+        delta=_timedelta_de_microssegundos(
+            "subject.horizon.delta_microseconds",
+            _inteiro("subject.horizon.delta_microseconds", horizonte_bruto["delta_microseconds"]),
         ),
         reference_time=_instante_de_json(
             "subject.horizon.reference_time", horizonte_bruto["reference_time"]
@@ -645,8 +799,14 @@ def deserialize_piap_envelope(payload: bytes) -> PiapEnvelope:
     referencias_brutas = dados["payload_refs"]
     if not isinstance(referencias_brutas, Sequence) or isinstance(referencias_brutas, str):
         raise PiapContractViolationError("payload_refs deve ser lista")
+    if len(referencias_brutas) > MAX_PAYLOAD_REFERENCES:
+        raise PiapContractViolationError(
+            f"payload_refs excede MAX_PAYLOAD_REFERENCES: recebido "
+            f"{len(referencias_brutas)} referências, permitido no máximo "
+            f"{MAX_PAYLOAD_REFERENCES}"
+        )
 
-    return PiapEnvelope(
+    envelope = PiapEnvelope(
         contract_version=versao,
         subject=subject,
         provenance=proveniencia,
@@ -657,3 +817,5 @@ def deserialize_piap_envelope(payload: bytes) -> PiapEnvelope:
         ),
         sealed_at=_instante_de_json("sealed_at", dados["sealed_at"]),
     )
+    _exigir_bytes_canonicos(payload, envelope)
+    return envelope
