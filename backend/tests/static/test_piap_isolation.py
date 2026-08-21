@@ -14,14 +14,30 @@ justamente para nomear o que eles **não** fazem.
 
 ## Guarda local, e por quê
 
-`E5.b` ainda não existe: ela é a etapa seguinte e generalizará estas
-guardas para toda a camada antes de qualquer `E5.c`–`E5.t`. Até lá, a
-proteção é local a `E5.a`, e isso está registrado — não é a guarda de
-camada, é a guarda desta fatia.
+`E5.b` **existe** desde o Patch 2, em
+`test_predictive_accessibility_boundary_isolation.py`: ela descobre por
+varredura recursiva toda fonte da camada, inclusive as que ainda não
+existem, e faz valer nomenclatura, fronteira com a E4 e ownership da
+E6–E9. Este arquivo continua sendo a guarda **local** da `E5.a` — os doze
+caminhos congelados e os contratos daquela fatia — e delega ao arquivo de
+camada a proteção do namespace inteiro.
 
 ```text
 E5_A_LOCAL_ISOLATION_GUARD = REQUIRED_WITH_MUTANTS
-E5_B_MUST_GENERALIZE_THE_LAYER_GUARD_BEFORE_E5_C = TRUE
+E5_B_LAYER_GUARD = PRESENT_SINCE_PATCH_2
+E5_A_LOCAL_GUARD_SCOPE = THE_TWELVE_FROZEN_PATHS
+E5_B_LAYER_GUARD_SCOPE = EVERY_SOURCE_UNDER_THE_NAMESPACE
+```
+
+O que mudou aqui no Patch 2, e só isso: `test_s01` deixou de afirmar
+igualdade entre os doze caminhos e o namespace inteiro — afirmação que
+reprovava um módulo científico futuro corretamente nomeado apenas por
+existir — e passou a exigir **presença** dos doze. Nenhum outro contrato
+local foi removido ou enfraquecido.
+
+```text
+FROZEN_INVENTORY_EQUALITY = REMOVED
+FROZEN_PATHS_PRESENCE = KEPT
 ```
 
 ## Sobre a separação com o envelope de repasse multi-IA
@@ -156,13 +172,56 @@ def _anotacoes_de_campo(caminho: pathlib.Path) -> list[tuple[str, str]]:
 # --- delta e forma ---------------------------------------------------------
 
 
-def test_s01_somente_os_caminhos_autorizados_existem_no_pacote() -> None:
+def test_s01_os_caminhos_congelados_da_e5_a_continuam_presentes() -> None:
+    """Presença dos doze — e **não** igualdade com o namespace inteiro.
+
+    Até a `E5.b`, este teste afirmava
+    `encontrados == set(CAMINHOS_AUTORIZADOS)`. Medido em clone descartável da
+    Chain102: um módulo científico futuro corretamente nomeado
+    (`predictive_claim.py`, `class PredictiveClaim`) reprovava **só por
+    existir**. A afirmação de igualdade transformava a guarda local da `E5.a`
+    em veto à expansão autorizada dos Patches 3 e 4.
+
+    ```text
+    FROZEN_E5_A_PATHS_MUST_REMAIN_PRESENT = TRUE
+    FUTURE_AUTHORIZED_LAYER_MODULES_MUST_NOT_FAIL_BY_EXISTENCE_ALONE = TRUE
+    ```
+
+    A remoção de um dos doze continua reprovando: o que caiu foi o veto ao
+    arquivo novo, não a proteção do que já existe.
+    """
     encontrados = {
         str(p.relative_to(PACOTE)).replace("\\", "/")
         for p in PACOTE.rglob("*.py")
         if "__pycache__" not in p.parts
     }
-    assert encontrados == set(CAMINHOS_AUTORIZADOS)
+    assert set(CAMINHOS_AUTORIZADOS) <= encontrados, set(CAMINHOS_AUTORIZADOS) - encontrados
+
+
+def test_s01b_a_protecao_do_namespace_inteiro_e_delegada_a_guarda_de_camada() -> None:
+    """A delegação é explícita, e testada — não uma intenção escrita em prosa.
+
+    A guarda local cobre os doze caminhos da `E5.a`. Todo arquivo da camada,
+    inclusive os que ainda não existem, é coberto pela guarda de camada da
+    `E5.b`, que descobre as fontes por varredura recursiva.
+
+    ```text
+    E5_A_LOCAL_GUARD = THE_TWELVE_FROZEN_PATHS
+    E5_B_LAYER_GUARD = EVERY_SOURCE_UNDER_THE_NAMESPACE
+    ```
+    """
+    guarda_de_camada = (
+        pathlib.Path(__file__).resolve().parent
+        / "test_predictive_accessibility_boundary_isolation.py"
+    )
+    assert guarda_de_camada.is_file(), guarda_de_camada
+
+    arvore = ast.parse(guarda_de_camada.read_text(encoding="utf-8"))
+    definidos = {
+        no.name for no in ast.walk(arvore) if isinstance(no, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    assert "_fontes" in definidos
+    assert any(nome.startswith("test_b") for nome in definidos)
 
 
 def test_s02_todos_os_arquivos_autorizados_existem() -> None:
@@ -380,7 +439,31 @@ def test_s99_mecanismo_de_campo_detecta_status_paralelo(tmp_path: pathlib.Path) 
     assert any("status" in nome for nome, _ in _anotacoes_de_campo(caminho))
 
 
-def test_s99_mecanismo_de_delta_detecta_arquivo_extra(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "intruso.py").write_text("", encoding="utf-8")
-    encontrados = {p.name for p in tmp_path.rglob("*.py")}
-    assert encontrados - set(CAMINHOS_AUTORIZADOS)
+def test_s99_mecanismo_de_presenca_detecta_caminho_congelado_ausente(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Substitui `test_s99_mecanismo_de_delta_detecta_arquivo_extra`.
+
+    O mutante antigo provava que *qualquer* arquivo extra era intruso — que é
+    exatamente o falso positivo que a `E5.b` removeu. O mecanismo que
+    permaneceu é o oposto: a **ausência** de um caminho congelado reprova.
+
+    ```text
+    EXTRA_FILE = DISCOVERED_BY_THE_LAYER_GUARD
+    MISSING_FROZEN_PATH = STILL_A_FAILURE
+    ```
+    """
+    for nome in CAMINHOS_AUTORIZADOS[:-1]:
+        alvo = tmp_path / nome
+        alvo.parent.mkdir(parents=True, exist_ok=True)
+        alvo.write_text("", encoding="utf-8")
+    (tmp_path / "predictive_claim.py").write_text("", encoding="utf-8")
+
+    encontrados = {
+        str(p.relative_to(tmp_path)).replace("\\", "/")
+        for p in tmp_path.rglob("*.py")
+        if "__pycache__" not in p.parts
+    }
+    assert not set(CAMINHOS_AUTORIZADOS) <= encontrados
+    assert CAMINHOS_AUTORIZADOS[-1] in set(CAMINHOS_AUTORIZADOS) - encontrados
+    assert "predictive_claim.py" in encontrados
