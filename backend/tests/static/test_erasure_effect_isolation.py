@@ -145,7 +145,9 @@ def test_s04_nenhuma_persistencia_orm_ou_migration() -> None:
     # medindo head ÚNICO — só o alvo do "único" mudou.
     # E4.11: a tabela de experiência validada sucede aquela, pelo mesmo
     # critério e sem pertencer a esta fatia.
-    assert folhas == ["e7c25a91f4b3"], folhas
+    filhos_e5 = [r for r, p in grafo.items() if p == "e7c25a91f4b3"]
+    assert filhos_e5 == ["f8a91c2d4e60"], filhos_e5
+    assert folhas == ["f8a91c2d4e60"], folhas
 
 
 def test_s05_nenhuma_re_resolucao_nem_comparacao_de_snapshot() -> None:

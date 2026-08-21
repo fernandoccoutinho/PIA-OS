@@ -90,8 +90,13 @@ IDENTIFICADORES_CONGELADOS = frozenset(
     }
 )
 
-# E5.l nasce no Patch 3. Vazia aqui, e explicitamente vazia.
-ALLOWLIST_PERSISTENCIA_E5 = frozenset()
+# Persistência própria e exclusiva de E5.l, materializada no Patch 3.
+ALLOWLIST_PERSISTENCIA_E5 = frozenset(
+    {
+        "reconfiguration.py",
+        "repositories/reconfiguration_repository.py",
+    }
+)
 
 MODULOS_E4_PROIBIDOS = ("app.memory", "app.cognitive")
 
@@ -414,6 +419,8 @@ def test_b06_fronteira_e4_nenhum_import_de_app_memory_ou_app_cognitive() -> None
 def test_b07_fronteira_e4_nenhum_writer_repository_manager_orm_ou_migration() -> None:
     for caminho in _fontes():
         rel = _relativo(caminho)
+        if rel in ALLOWLIST_PERSISTENCIA_E5:
+            continue
         for modulo in _modulos_importados(caminho):
             assert not _prefixado(modulo, PERSISTENCIA_E_API), f"{rel}: {modulo}"
         for no in ast.walk(_arvore(caminho)):
@@ -422,12 +429,16 @@ def test_b07_fronteira_e4_nenhum_writer_repository_manager_orm_ou_migration() ->
                 bases = {ast.unparse(b) for b in no.bases}
                 assert not any("Base" in b or "Model" in b for b in bases), f"{rel}: {no.name}"
     assert not [p for p in PACOTE.rglob("*migration*")]
-    assert not [p for p in PACOTE.rglob("*repositor*")]
+    repositorios = {_relativo(p) for p in PACOTE.rglob("*repository.py") if p.is_file()}
+    assert repositorios == {"repositories/reconfiguration_repository.py"}
 
 
-def test_b08_fronteira_e4_allowlist_de_persistencia_da_e5_esta_vazia() -> None:
-    """`E5.l` nasce no Patch 3. Allowlist ausente != allowlist vazia."""
-    assert not ALLOWLIST_PERSISTENCIA_E5
+def test_b08_fronteira_e4_allowlist_de_persistencia_da_e5_e_exata() -> None:
+    """Somente E5.l pode persistir; E3/E4 continuam fora da fronteira."""
+    assert {
+        "reconfiguration.py",
+        "repositories/reconfiguration_repository.py",
+    } == ALLOWLIST_PERSISTENCIA_E5
     assert isinstance(ALLOWLIST_PERSISTENCIA_E5, frozenset)
 
 

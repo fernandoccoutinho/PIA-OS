@@ -298,9 +298,11 @@ def test_s12_uma_unica_migration_sucessora_do_head_anterior() -> None:
     # medindo o mesmo: nenhuma OUTRA migration nasceu, e o head é folha.
     bisnetos = [r for r, p in grafo.items() if p == "d5b31f7a08c4"]
     assert bisnetos == ["e7c25a91f4b3"], bisnetos
+    sucessoras_e5 = [r for r, p in grafo.items() if p == "e7c25a91f4b3"]
+    assert sucessoras_e5 == ["f8a91c2d4e60"], sucessoras_e5
     pais = {p for p in grafo.values() if p}
     folhas = [r for r in grafo if r not in pais]
-    assert folhas == ["e7c25a91f4b3"], folhas
+    assert folhas == ["f8a91c2d4e60"], folhas
 
 
 def _classes_com_metodo(fontes, metodo: str) -> list[str]:

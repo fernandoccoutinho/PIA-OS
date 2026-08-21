@@ -357,9 +357,11 @@ def test_g04_2_uma_unica_migration_sucessora_e_nenhuma_tabela_extra():
     filhos = [rev for rev, pai in grafo.items() if pai == "d5b31f7a08c4"]
     assert filhos == ["e7c25a91f4b3"], filhos
     netos = [rev for rev, pai in grafo.items() if pai == "e7c25a91f4b3"]
-    assert netos == [], netos
+    assert netos == ["f8a91c2d4e60"], netos
+    bisnetos = [rev for rev, pai in grafo.items() if pai == "f8a91c2d4e60"]
+    assert bisnetos == [], bisnetos
     pais = {p for p in grafo.values() if p}
-    assert sorted(r for r in grafo if r not in pais) == ["e7c25a91f4b3"]
+    assert sorted(r for r in grafo if r not in pais) == ["f8a91c2d4e60"]
 
     nova = _arvore(next(versoes.glob("e7c25a91f4b3_*.py")))
     criadas = [

@@ -1319,7 +1319,9 @@ def test_s37_nenhuma_migration_orm_ou_repository_nesta_fatia() -> None:
     bisnetos = [rev for rev, pai in grafo.items() if pai == "d5b31f7a08c4"]
     assert bisnetos == ["e7c25a91f4b3"], bisnetos
     tataranetos = [rev for rev, pai in grafo.items() if pai == "e7c25a91f4b3"]
-    assert tataranetos == [], tataranetos
+    assert tataranetos == ["f8a91c2d4e60"], tataranetos
+    descendentes_e5 = [rev for rev, pai in grafo.items() if pai == "f8a91c2d4e60"]
+    assert descendentes_e5 == [], descendentes_e5
 
     for caminho in (
         APP / "memory" / "schemas" / "erasure_target.py",

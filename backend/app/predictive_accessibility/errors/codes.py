@@ -48,3 +48,30 @@ JSON duplicada, tipo errado ou JSON malformado.
 Não é o mesmo que valor inválido num value object — aquele levanta
 `TypeError`/`ValueError` pelo precedente medido. Este código pertence à
 fronteira de serialização, onde o problema é a **forma** do payload."""
+
+PIA_8054_RECONFIGURATION_EVENT_IDENTITY_MISMATCH = ErrorCode(
+    code="PIA-8054",
+    default_message="predictive_reconfiguration_event_identity_mismatch",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Mesmo `event_id` apresentado com conteúdo canônico divergente."""
+
+PIA_8055_RECONFIGURATION_EVENT_IMMUTABLE = ErrorCode(
+    code="PIA-8055",
+    default_message="predictive_reconfiguration_event_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de alterar ou remover o log append-only da E5.l."""
+
+PIA_8056_RECONFIGURATION_CONTRACT_VIOLATION = ErrorCode(
+    code="PIA-8056",
+    default_message="predictive_reconfiguration_contract_violation",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Candidato, rollback ou metadado de aprovação incoerente."""

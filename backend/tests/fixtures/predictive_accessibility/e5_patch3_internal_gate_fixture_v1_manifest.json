@@ -1,0 +1,83 @@
+{
+  "fixture_id": "E5P3-SYNTH-v1",
+  "purpose": "internal_patch3_scientific_value_gate_only",
+  "product_evidence": false,
+  "e9_independent_benchmark": false,
+  "provenance": "architect_generated_deterministic_synthetic_fixture",
+  "license": "PIA-OS internal test fixture; no external source or third-party data",
+  "file": "e5_patch3_internal_gate_fixture_v1.csv",
+  "sha256": "bb48404b7860de9126d74fe2266f7b7032e18afc4284e88d742ce6b7a08a7088",
+  "bytes": 188880,
+  "csv_lines_including_header": 2008,
+  "schema": [
+    "fixture_version",
+    "arm",
+    "seed",
+    "phi",
+    "sample_index",
+    "split",
+    "predictor",
+    "target",
+    "predictor_available_at",
+    "target_time",
+    "horizon"
+  ],
+  "generator": {
+    "family": "AR(1)",
+    "equation": "x_t = phi * x_(t-1) + epsilon_t",
+    "innovation": "Python random.Random(seed).gauss(0.0, 1.0)",
+    "initial_value": 0.0,
+    "serialization": "UTF-8 CSV, LF, floats formatted with .17g",
+    "arms": [
+      {"name": "positive", "seed": 52066, "phi": 0.75, "n_values": 960},
+      {"name": "negative", "seed": 51991, "phi": 0.0, "n_values": 960},
+      {"name": "unresolved", "seed": 51141, "phi": 0.2, "n_values": 90}
+    ],
+    "split": "temporal 60% train, 20% calibration, 20% blind; no shuffle"
+  },
+  "preregistered_model_library": {
+    "C": ["lag_1_value_available_at_t_minus_1"],
+    "S": ["gaussian_marginal_baseline", "gaussian_ar1_ols"]
+  },
+  "frozen_statistics": {
+    "family_alpha": 0.05,
+    "multiplicity": 3,
+    "alpha_corrected": 0.016666666666666666,
+    "A_rel_nats_per_event": 0.02,
+    "confidence_method": "circular moving-block bootstrap of per-event log-score gain",
+    "bootstrap_replicates": 5000,
+    "block_length": "max(2, floor(n_blind ** (1/3)))",
+    "bootstrap_seeds": {
+      "positive": 142066,
+      "negative": 141991,
+      "unresolved": 141141
+    },
+    "placebo": "2000 deterministic permutations of blind predictors; p=(1+count(null>=observed))/2001",
+    "placebo_seeds": {
+      "positive": 242066,
+      "negative": 241991,
+      "unresolved": 241141
+    }
+  },
+  "reference_sanity_check_not_acceptance_evidence": {
+    "positive": {
+      "mean_gain_nats": 0.6909235862211834,
+      "A_lower": 0.468024518761309,
+      "A_upper": 0.9346034016881661,
+      "placebo_p": 0.0004997501249375312,
+      "expected_state": "PREDICTABLE"
+    },
+    "negative": {
+      "mean_gain_nats": 0.0006334428484719747,
+      "A_lower": -0.0013196427706592276,
+      "A_upper": 0.0027107134753301095,
+      "expected_state": "PREDICTIVELY_INACCESSIBLE"
+    },
+    "unresolved": {
+      "mean_gain_nats": 0.007259781038311807,
+      "A_lower": -0.01392060609861671,
+      "A_upper": 0.027344568574028557,
+      "expected_state": "UNRESOLVED"
+    }
+  }
+}

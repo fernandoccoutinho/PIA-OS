@@ -358,14 +358,19 @@ def test_s17_todos_os_value_objects_publicos_sao_frozen() -> None:
 # --- ausência de capacidade proibida ---------------------------------------
 
 
-def test_s18_nenhum_modelo_orm_tabela_ou_migration_no_pacote() -> None:
+def test_s18_piap_local_nao_tem_orm_e_e5l_e_a_unica_persistencia_da_camada() -> None:
     for caminho in _fontes():
         for no in ast.walk(_arvore(caminho)):
             if isinstance(no, ast.ClassDef):
                 bases = {ast.unparse(b) for b in no.bases}
                 assert not any("Base" in b or "Model" in b for b in bases), caminho.name
     assert not list(PACOTE.rglob("*migration*"))
-    assert not list(PACOTE.rglob("*repositor*"))
+    repositorios = {
+        str(path.relative_to(PACOTE)).replace("\\", "/")
+        for path in PACOTE.rglob("*repository.py")
+        if path.is_file()
+    }
+    assert repositorios == {"repositories/reconfiguration_repository.py"}
 
 
 def test_s19_nenhum_efeito_externo_chamado() -> None:
@@ -377,7 +382,7 @@ def test_s19_nenhum_efeito_externo_chamado() -> None:
                 assert no.func.id not in proibidos, f"{caminho.name}: {no.func.id}"
 
 
-def test_s20_dois_codigos_de_erro_novos_e_nenhuma_reserva() -> None:
+def test_s20_codigos_materializados_sem_reserva_preventiva() -> None:
     from app.predictive_accessibility.errors import codes
 
     novos = {
@@ -385,7 +390,7 @@ def test_s20_dois_codigos_de_erro_novos_e_nenhuma_reserva() -> None:
         for nome, valor in vars(codes).items()
         if nome.startswith("PIA_") and hasattr(valor, "code")
     }
-    assert novos == {"PIA-8052", "PIA-8053"}
+    assert novos == {"PIA-8052", "PIA-8053", "PIA-8054", "PIA-8055", "PIA-8056"}
 
 
 # --- mutantes do instrumento ----------------------------------------------

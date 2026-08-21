@@ -77,7 +77,10 @@ _E4_TABLES = (
     "memory_domains",
 )
 
-_APPEND_ONLY_TABLES = ("validated_experiences",)
+_APPEND_ONLY_TABLES = (
+    "validated_experiences",
+    "predictive_reconfiguration_events",
+)
 """Tabelas que existem no schema mas **não** podem ser truncadas.
 
 ```text
