@@ -236,6 +236,69 @@ transição nunca seja o valor default nem efeito colateral de query
 (§4 do Draft) — o mecanismo formal (`CausalHistoryEvent`) é `E3.9`,
 ainda não implementado."""
 
+PIA_8019_SEARCH_CRITERIA_INVALID = ErrorCode(
+    code="PIA-8019",
+    default_message="search_criteria_invalid",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Critérios de busca malformados (E3.8/LIB-08) — nenhuma dimensão
+informada, janela temporal invertida, ou `limit`/`offset` negativos.
+
+Deliberadamente **não** cobre "zero resultados": conjunto vazio é
+resposta válida de uma consulta bem-formada, nunca erro (§25 do
+módulo E3.8). Este é o único código novo de E3.8 — busca é read-only e
+não introduz nenhuma outra condição de domínio."""
+
+
+PIA_8020_CAUSAL_HISTORY_IMMUTABLE = ErrorCode(
+    code="PIA-8020",
+    default_message="causal_history_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de `update`/`delete` físico de uma `CausalHistory` ou de
+um `CausalHistoryEvent` já persistido (E3.9/LIB-09).
+
+História causal é append-only por construção: corrigir um fato
+histórico é acrescentar um evento novo que referencia o anterior,
+nunca reescrever o passado. Mesmo princípio de
+`LineageEdgeImmutableError`/`ProvenanceRecordImmutableError` — e aqui
+com uma razão extra: o próprio registro já é um rastro preservado
+(`COUT-CH-9`), então apagá-lo destruiria justamente a evidência que o
+módulo existe para guardar."""
+
+
+PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR = ErrorCode(
+    code="PIA-8021",
+    default_message="causal_event_self_predecessor",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de registrar um evento causal como predecessor de si
+mesmo (E3.9/LIB-09) — mesma classe de erro de `LineageSelfLinkError`
+e `RelationshipSelfLinkError`."""
+
+
+PIA_8022_SYNC_PACKAGE_INVALID = ErrorCode(
+    code="PIA-8022",
+    default_message="sync_package_invalid",
+    category=ErrorCategory.VALIDATION,
+    http_status=422,
+    severity=ErrorSeverity.ERROR,
+)
+"""Pacote de sincronização malformado, com formato/versão não
+suportados, ou com seção/referência inválida (E3.11/LIB-11).
+
+Deliberadamente **não** cobre conflito: colisão de identidade com
+estado divergente é resultado válido do contrato
+(`CONFLICT DETECTION != CONFLICT RESOLUTION`) e volta em `SyncReport`,
+nunca como exceção."""
+
+
 ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8001_IDENTITY_IMMUTABLE,
     PIA_8002_CLID_ALREADY_SET,
@@ -255,6 +318,10 @@ ALL_COGNITIVE_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_8016_RELATIONSHIP_IMMUTABLE,
     PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
     PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
+    PIA_8019_SEARCH_CRITERIA_INVALID,
+    PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
+    PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
+    PIA_8022_SYNC_PACKAGE_INVALID,
 )
 
 COGNITIVE_ERROR_CODE_BY_CODE: dict[str, ErrorCode] = {

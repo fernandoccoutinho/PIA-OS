@@ -6,9 +6,11 @@ Importar este pacote registra suas tabelas em `app.database.base.Base`
 `alembic/env.py`).
 """
 
+from app.cognitive.models.causal_history import CausalHistory, CausalHistoryEvent
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.cognitive.models.enums import (
     AccessibilityState,
+    CausalEventType,
     LineageRelation,
     ProvenanceActorType,
     ProvenanceSourceType,
@@ -23,6 +25,9 @@ from app.cognitive.models.transformation_record import TransformationRecord
 
 __all__ = [
     "AccessibilityState",
+    "CausalEventType",
+    "CausalHistory",
+    "CausalHistoryEvent",
     "CognitiveObject",
     "LineageEdge",
     "LineageRelation",

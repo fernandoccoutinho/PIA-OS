@@ -271,3 +271,344 @@ tentar recriá-la — nunca depender do erro genérico que o próprio banco
 produziria ao tentar aplicá-la sobre dados incompatíveis, porque nesse
 ponto a transação já pode ter executado outras alterações destrutivas
 anteriores no mesmo `downgrade()`.
+
+## Princípios de história causal (decisão arquitetural — E3.9)
+
+Três princípios congelados por `E3.9`/`LIB-09`. Implementação e provas
+em `E3_9_LIB09_CAUSAL_HISTORY.md`.
+
+### ARCHAEOLOGICAL CAUSAL TRACE PRINCIPLE
+
+Um estado presente pode preservar informação causalmente transmitida
+sobre uma distinção que existiu em um estado passado, mesmo quando a
+fonte ou a organização original já se transformou. Observar agora não
+obriga a estar observando o estado atual da fonte.
+
+```text
+PRESENT OBSERVATION MAY BE PRESENT ACCESS TO A PAST CAUSAL TRACE
+CURRENT != ONLY CAUSALLY ACCESSIBLE HISTORY
+```
+
+Cenário motivador (**metáfora arquitetural, não modelo físico**):
+`GALAXY TRACE` — uma fonte distante já evoluiu de `S0` para `S1`,
+mas informação emitida em `S0` continua chegando ao observador. Nada
+de relatividade geral, lente gravitacional, geodésicas, cosmologia,
+CLEO ou LOP é implementado; a lente serve apenas para lembrar que uma
+fonte pode ter **múltiplos caminhos causais**
+(`GRAVITATIONAL_LENSING = ANALOGY_ONLY`).
+
+### DISTINCTION EXTINCTION PRINCIPLE
+
+A extinção presente de uma distinção não nega sua existência
+histórica, e não exige que o substrato material tenha desaparecido.
+
+```text
+MATERIAL PERSISTENCE      != DISTINCTION PERSISTENCE
+SUBSTRATE CONTINUITY      != ORGANIZATIONAL IDENTITY
+DISTINCTION EXTINCTION    != RETROACTIVE HISTORICAL ERASURE
+CAUSALLY_EXTINCT          != NEVER EXISTED
+SUPERSEDED                != FICTION
+TRANSFORMED               != NEVER EXISTED
+```
+
+Cenário motivador: `BROKEN GLASS` — um objeto organizado se
+fragmenta e se dispersa. O material pode continuar existindo; o que
+deixa de existir é a organização que permitia identificá-lo *como
+aquilo*. Registrar que um estado originou outros **não** afirma que
+esses outros ainda sejam o original.
+
+### EPISTEMIC NON-FABRICATION PRINCIPLE
+
+Ausência de evidência preservada não autoriza nenhuma das duas
+conclusões opostas.
+
+```text
+NO PRESENT EVIDENCE != NEVER EXISTED
+NO PRESENT EVIDENCE != ASSERT THAT IT EXISTED
+ONTOLOGICAL POSSIBILITY != RECORDED HISTORICAL FACT
+NO SURVIVING TRACE MAY IMPLY HISTORY NOT RECONSTRUCTIBLE
+RECORDED HISTORY != COMPLETE HISTORY OF REALITY
+```
+
+O PIA nunca preenche lacuna causal por imaginação ou inferência
+silenciosa. Em particular, precedência temporal não é causalidade
+(`TEMPORAL PRECEDENCE != CAUSALITY`): ordenar eventos por tempo de
+registro é apresentação, nunca afirmação de parentesco causal.
+
+E o corolário operacional que muda a implementação: **o registro
+histórico é ele próprio um rastro preservado**. Simular a extinção de
+um rastro apagando o registro destruiria a evidência que o sistema
+existe para guardar — por isso história causal é append-only, e
+corrigir é anexar um evento que referencia o anterior.
+
+### Topologia da história causal (E3.9.1)
+
+```text
+ONE_HISTORY_PER_SUBJECT   = TRUE
+CROSS_HISTORY_PREDECESSOR = ALLOWED
+```
+
+`CausalHistory` é o agregado histórico **por sujeito**;
+`CausalHistoryEvent.predecessor_event_id` é relação causal **entre
+eventos**, não restrita ao mesmo sujeito. Daí:
+
+```text
+history boundary != causal boundary
+cross-history predecessor != shared identity
+```
+
+Transmissão causal atravessa sujeitos sem fundir suas identidades nem
+suas histórias. Um evento pode referenciar como predecessor um evento
+da história de outro sujeito, e `COID_A != COID_B` e
+`HISTORY_A != HISTORY_B` continuam valendo.
+
+### Garantia de aciclicidade causal (E3.9.1a)
+
+```text
+CAUSAL_DAG_GUARANTEE          = APPLICATION_STRUCTURAL
+DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE
+```
+
+A topologia de eventos causais é um DAG **sob o contrato append-only
+autorizado de Repository/Manager**. O PostgreSQL impõe
+independentemente a validade das FKs e a rejeição de auto-predecessor,
+mas não impõe independentemente aciclicidade global — não há
+constraint recursiva, trigger de DAG, detector de ciclos nem
+imutabilidade append-only no nível do banco.
+
+```text
+SELF_LINK_PROTECTION             != GLOBAL_DAG_PROOF
+APPLICATION_APPEND_ONLY_CONTRACT != DB_LEVEL_IMMUTABILITY
+CROSS_HISTORY                    != CYCLE_PERMISSION
+```
+
+`GLOBAL_DB_CYCLE_PROTECTION = NOT_REQUIRED_IN_E3_9` — a API autorizada
+preserva a propriedade necessária; a garantia será reavaliada se
+houver requisito de writers externos ou acesso direto ao banco.
+
+### Integridade, conformidade e aprendizado (E3.10)
+
+```text
+INTEGRITY_DETECTS_DOES_NOT_DECIDE
+ERROR_IS_EVIDENCE_NOT_LEARNING
+PIA_LEARNING_SOURCE = VALIDATED_EXPERIENCE
+COMPLIANCE != LEARNING
+IMPROVEMENT != REPAIR
+KERNEL_CHANGE != INCIDENT_RESPONSE
+AUTO_DESTRUCTIVE_REPAIR = FORBIDDEN_E3_10
+```
+
+**Integridade detecta, não decide.** O Integrity Manager observa,
+verifica e diagnostica; decidir o que fazer com uma condição detectada
+é governança, que pertence a `E4`. Detectar inconsistência não
+autoriza apagá-la: um estado inconsistente pode ser parte da história
+observada do sistema (`DETECTED INCONSISTENCY != AUTHORIZATION TO
+ERASE HISTORY`), e `INTERNALLY_CONSISTENT != TRUE_ABOUT_REALITY` —
+auditoria testa invariantes internos, não verdade ontológica.
+
+**Erro é evidência possível, não aprendizado.** O PIA não aprende com
+erro como regra. Um finding é observação, não conhecimento. Sucesso
+repetido, resultado superior, estabilidade, comparação entre
+estratégias, feedback humano, evidência externa, descoberta causal,
+resultado experimental e divergência Multi-IA também produzem
+evidência — `LEARNING != FAILURE_RESPONSE`.
+
+A fonte do aprendizado futuro é **experiência validada**:
+
+```text
+EXPERIENCE → EVIDENCE → EVALUATION → VALIDATION → LEARNING →
+IMPROVEMENT PROPOSAL → GOVERNANCE → CONTROLLED EVOLUTION
+```
+
+Conformidade poderá participar como **uma** fonte de evidência nesse
+fluxo, nunca como motor de aprendizado. Um caso fechado não altera
+automaticamente regra, política, contrato ou Kernel.
+
+**Kernel.** `KERNEL_SELF_MODIFICATION = NOT_AUTHORIZED`;
+`KERNEL_IMPROVEMENT = FUTURE_CONTROLLED_PROCESS`. Candidato a melhoria
+exige experiência validada mais reprodutibilidade, evidência
+suficiente, generalizabilidade e aprovação de governança. Nunca
+`INCIDENT → KERNEL CHANGE`.
+
+### Transmissão entre instâncias (E3.11)
+
+```text
+SYNCHRONIZATION = COGNITIVE_PATRIMONY_TRANSMISSION
+TRANSMISSION       != OVERWRITE
+CONFLICT_DETECTION != CONFLICT_RESOLUTION
+SAME_CURRENT_STATE != SAME_CAUSAL_HISTORY
+IMPORT MUST NOT REGENERATE COGNITIVE IDENTITY
+```
+
+Sincronizar é transmitir patrimônio — identidade e história —, não
+copiar as linhas atuais. Por isso todo identificador persistente
+atravessa a fronteira intacto: depois do round-trip, o destino tem *o
+mesmo* patrimônio, não objetos equivalentes novos.
+
+Colisão de identidade com estado divergente é **conflito explícito**,
+nunca resolução silenciosa. Não existe destino que vence, origem que
+vence, last-write-wins, timestamp mais novo, prioridade de provider ou
+score. Um conflito pode permanecer sem resolução, e o relatório
+preserva as duas representações — nenhum dos lados desaparece do
+diagnóstico. Resolver divergência é decisão, e decisão pertence à
+governança (`E4`).
+
+Havendo conflito, **nada** é aplicado: import parcial deixaria
+linhagem incompleta, provenance pela metade ou eventos causais órfãos.
+
+```text
+ausência no pacote != CAUSALLY_EXTINCT
+NO TRACE != AUTHORIZATION TO FABRICATE HISTORY
+equivalência != autorização para deduplicação destrutiva
+identidade cognitiva pertence ao PIA, não ao provider
+SYNCHRONIZATION_IS_LEARNING/GOVERNANCE/REPAIR = FALSE
+ARTIFACT_STORAGE = DEFERRED
+```
+
+### Transmissão preserva estrutura causal válida (E3.11.1)
+
+```text
+TRANSMISSION MUST PRESERVE VALID CAUSAL STRUCTURE
+SYNCHRONIZATION MUST NOT CREATE A CAUSAL HISTORY THAT THE AUTHORIZED
+SOURCE CONTRACT COULD NOT HAVE PRODUCED
+TRANSMISSION != STRUCTURAL MUTATION
+```
+
+Todo caminho autorizado de escrita novo herda os invariantes dos
+anteriores. `E3.11` abriu um (import direto em tabela), e por isso o
+import verifica, **antes de qualquer escrita**, se o grafo candidato
+`destino ∪ pacote` permanece acíclico:
+
+```text
+CAUSAL_IMPORT_DAG_PREFLIGHT   = IMPLEMENTED
+APPLICATION_STRUCTURAL_DAG    = PRESERVED
+DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE
+FK + NO_SELF != GLOBAL_CYCLE_PROTECTION
+```
+
+A verificação é global — `HISTORY_BOUNDARY != CAUSAL_BOUNDARY` — e a
+rejeição não depende do banco. Pacote cíclico é pacote inválido:
+nenhum registro é aplicado, o destino permanece inalterado, e nada é
+resolvido silenciosamente.
+
+### Conflito não é corrupção (E3.11.1a)
+
+```text
+IDENTITY_CONFLICT != CAUSAL_STRUCTURAL_INVALIDITY
+DIVERGENCE        != INVALIDITY
+TWO HISTORIES MAY CONFLICT WITHOUT EITHER BEING DECLARED CAUSALLY INVALID
+SYNCHRONIZATION MUST PRESERVE THE DISTINCTION BETWEEN CONFLICT AND
+STRUCTURAL CORRUPTION
+```
+
+`IDENTITY_CONFLICT` é mesmo identificador com representação
+divergente. `CAUSAL_STRUCTURAL_INVALIDITY` é o conjunto realmente
+candidato a inserção formando ciclo com o estado do destino. São
+diagnósticos diferentes e não podem se mascarar: uma representação
+que não seria aplicada nunca forma aresta no grafo candidato.
+
+```text
+CANDIDATE_GRAPH = DESTINATION_ACCEPTED_STATE
+                + PACKAGE_RECORDS_ELIGIBLE_FOR_INSERT
+```
+
+Detectar que duas representações divergem não é declarar uma delas
+inválida — e continua sem vencedor automático: qualquer conflito
+aborta o import, com zero escritas.
+
+---
+
+## Consolidação final da Entrega 3 (E3.12)
+
+Esta seção **não reescreve** nenhuma decisão anterior. Ela congela a
+matriz normativa COUT-PIA da E3 e registra onde cada princípio deixou
+de ser afirmação documental e passou a ser comportamento verificado.
+
+### Matriz COUT-PIA congelada
+
+```text
+COUT-P1   DISTINCTION PRESERVATION
+COUT-P2   CONTINUITY PRESERVATION
+COUT-P3   PROVENANCE PRESERVATION
+COUT-P4   MULTIPLE HISTORY PRESERVATION
+COUT-P5   TRANSFORMATION PRESERVATION / DECLARED LOSS
+COUT-P6   ACCESSIBILITY != EXISTENCE
+COUT-P7   EQUIVALENCE != DESTRUCTIVE COLLAPSE
+COUT-P8   INCOMPARABLE / UNRESOLVED ARE VALID
+COUT-P9   COUT INFORMS; DOES NOT DECIDE
+COUT-P10  PERSISTENT COGNITIVE MEMORY BELONGS TO PIA-OS,
+          NOT TO A MODEL/PROVIDER
+```
+
+Os dez são demonstrados em
+`tests/integration/cognitive/test_e3_12_final_integration_gate.py`
+(G1–G22), contra PostgreSQL real e duas instâncias reais. A
+correspondência princípio → teste está em
+`E3_12_E3_FINAL_INTEGRATION_GATE.md` §5.
+
+### Reafirmação sem alteração de classificação
+
+A E3.12 **não** alterou nenhuma classificação anterior. Em
+particular, continuam exatamente como foram registradas:
+
+```text
+APPLICATION_STRUCTURAL_DAG    = TRUE     (E3.9.1a)
+DB_LEVEL_GLOBAL_DAG_GUARANTEE = FALSE    (E3.9.1a)
+INTEGRITY_GLOBAL_AUDIT        = TRUE     (E3.10)
+SYNC_PREFLIGHT                = TRUE     (E3.11.1)
+DB_SELF_PROTECTION            = TRUE     (E3.3)
+FULL_DAG_DB_GUARANTEE         = FALSE    (E3.3 → auditado em E3.10)
+```
+
+O que a E3.12 acrescentou foi a prova **nos dois sentidos**: o
+`UPDATE` direto que cria um ciclo é aceito pelo banco — logo
+`DB_LEVEL = FALSE` não é modéstia retórica — e a auditoria global o
+encontra — logo `INTEGRITY_GLOBAL_AUDIT = TRUE` não é promessa vazia.
+
+### Não-colapso diagnóstico (princípio acrescentado em E3.12)
+
+```text
+DIAGNOSTIC DISTINCTION IS ITSELF A COUT PROPERTY
+
+FIVE DEFECT CLASSES MUST PRODUCE FIVE DIAGNOSTICS
+COLLAPSING THEM INTO "INVALID" DESTROYS THE DISTINCTION
+THE SYSTEM EXISTS TO PRESERVE
+
+DETECTION != CLASSIFICATION
+CLASSIFICATION != DECISION
+```
+
+Um sistema que respondesse "inválido" a conflito de identidade, pacote
+causalmente inválido, ciclo de linhagem, referência pendente e
+vocabulário inválido estaria tecnicamente "detectando" os cinco — e
+destruindo a informação que torna cada um acionável. A preservação da
+distinção diagnóstica é a mesma propriedade COUT aplicada ao próprio
+mecanismo de verificação.
+
+### Fronteira do que a E3 não entrega
+
+Reafirmado, e agora verificado por teste executável (G19), não apenas
+declarado:
+
+```text
+REPAIR_IMPLEMENTED                  = NO
+GOVERNANCE_IMPLEMENTED              = NO
+LEARNING_ENGINE_IMPLEMENTED         = NO
+ARTIFACT_STORAGE                    = DEFERRED
+COGNITIVE_DOMAIN_METADATA_PRIMITIVE = NONE
+COGNITIVE_EXECUTION                 = E7
+MULTI_AI_ORCHESTRATION              = E7
+FULL_ACCESSIBILITY_POLICY           = E4
+```
+
+### Continuidade cognitiva vs continuidade de modelo
+
+```text
+COGNITIVE_CONTINUITY > MODEL_CONTINUITY   ← HIPÓTESE, NÃO RESULTADO
+```
+
+A E3 entrega a infraestrutura necessária — identidade, proveniência,
+linhagem, história causal, sincronização, neutralidade de provider. Ela
+**não** demonstra o avanço empírico, e nada nesta entrega autoriza a
+afirmação mais forte. A verificação pertence a fases futuras, com
+modelos efetivamente substituíveis.

@@ -18,9 +18,15 @@ from app.cognitive.errors.codes import (
     PIA_8016_RELATIONSHIP_IMMUTABLE,
     PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
     PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
+    PIA_8019_SEARCH_CRITERIA_INVALID,
+    PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
+    PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
+    PIA_8022_SYNC_PACKAGE_INVALID,
 )
 from app.cognitive.errors.exceptions import (
     AccessibilityInvalidTransitionError,
+    CausalEventSelfPredecessorError,
+    CausalHistoryImmutableError,
     ClidInvalidError,
     CognitiveObjectClidAlreadySetError,
     CognitiveObjectIdentityImmutableError,
@@ -37,6 +43,8 @@ from app.cognitive.errors.exceptions import (
     RelationshipSelfLinkError,
     RevisionCurrentUniquenessViolationError,
     RevisionStatusInvalidTransitionError,
+    SearchCriteriaError,
+    SyncPackageInvalidError,
     TransformationRecordImmutableError,
 )
 
@@ -60,7 +68,13 @@ __all__ = [
     "PIA_8016_RELATIONSHIP_IMMUTABLE",
     "PIA_8017_PROVENANCE_RECORD_IMMUTABLE",
     "PIA_8018_ACCESSIBILITY_INVALID_TRANSITION",
+    "PIA_8019_SEARCH_CRITERIA_INVALID",
+    "PIA_8020_CAUSAL_HISTORY_IMMUTABLE",
+    "PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR",
+    "PIA_8022_SYNC_PACKAGE_INVALID",
     "AccessibilityInvalidTransitionError",
+    "CausalEventSelfPredecessorError",
+    "CausalHistoryImmutableError",
     "ClidInvalidError",
     "CoidCollisionError",
     "CoidInvalidError",
@@ -76,6 +90,8 @@ __all__ = [
     "RelationshipImmutableError",
     "RelationshipSelfLinkError",
     "RevisionCurrentUniquenessViolationError",
+    "SyncPackageInvalidError",
+    "SearchCriteriaError",
     "RevisionStatusInvalidTransitionError",
     "TransformationRecordImmutableError",
 ]

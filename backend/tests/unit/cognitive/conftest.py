@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.cognitive.models.causal_history import CausalHistory, CausalHistoryEvent
 from app.cognitive.models.cognitive_object import CognitiveObject
 from app.cognitive.models.lineage_edge import LineageEdge
 from app.cognitive.models.provenance_record import ProvenanceRecord
@@ -28,6 +29,8 @@ _COGNITIVE_TABLES = [
     TransformationRecord.__table__,
     Relationship.__table__,
     ProvenanceRecord.__table__,
+    CausalHistory.__table__,
+    CausalHistoryEvent.__table__,
 ]
 
 

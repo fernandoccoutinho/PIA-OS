@@ -26,6 +26,10 @@ from app.cognitive.errors.codes import (
     PIA_8016_RELATIONSHIP_IMMUTABLE,
     PIA_8017_PROVENANCE_RECORD_IMMUTABLE,
     PIA_8018_ACCESSIBILITY_INVALID_TRANSITION,
+    PIA_8019_SEARCH_CRITERIA_INVALID,
+    PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
+    PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
+    PIA_8022_SYNC_PACKAGE_INVALID,
 )
 from app.exceptions.base import PIAOSException
 
@@ -367,4 +371,80 @@ class AccessibilityInvalidTransitionError(PIAOSException):
                 "exige um 'reason' explícito e não-vazio."
             ),
             detail={"coid": str(coid)},
+        )
+
+
+class SearchCriteriaError(PIAOSException):
+    """Critérios de busca malformados (E3.8/LIB-08).
+
+    Levantada antes de qualquer acesso ao banco — uma consulta
+    malformada não deve nem chegar a ser executada. Conjunto vazio de
+    resultados **não** é erro: é a resposta correta de uma consulta
+    bem-formada que nenhum objeto satisfaz, e não implica inexistência
+    (`SEARCH MISS != NON-EXISTENCE`).
+    """
+
+    error_code = PIA_8019_SEARCH_CRITERIA_INVALID
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            message=f"Critérios de busca inválidos: {reason}",
+            detail={"reason": reason},
+        )
+
+
+class CausalHistoryImmutableError(PIAOSException):
+    """`update`/`delete` físico de história causal já persistida
+    (E3.9/LIB-09) — sempre rejeitado.
+
+    O registro histórico é ele próprio um rastro preservado: apagá-lo
+    não simula a extinção de um rastro físico, apenas destrói a
+    evidência que o sistema deveria guardar.
+    """
+
+    error_code = PIA_8020_CAUSAL_HISTORY_IMMUTABLE
+
+    def __init__(self, entity_id: uuid.UUID, *, operation: str, entity: str) -> None:
+        self.entity_id = entity_id
+        self.operation = operation
+        self.entity = entity
+        super().__init__(
+            message=(
+                f"{entity} {entity_id}: '{operation}' não é permitido — "
+                "história causal é append-only."
+            ),
+            detail={"id": str(entity_id), "operation": operation, "entity": entity},
+        )
+
+
+class CausalEventSelfPredecessorError(PIAOSException):
+    """Evento causal apontado como predecessor de si mesmo
+    (E3.9/LIB-09)."""
+
+    error_code = PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR
+
+    def __init__(self, event_id: uuid.UUID) -> None:
+        self.event_id = event_id
+        super().__init__(
+            message=f"CausalHistoryEvent {event_id} não pode ser predecessor de si mesmo.",
+            detail={"event_id": str(event_id)},
+        )
+
+
+class SyncPackageInvalidError(PIAOSException):
+    """Pacote de sincronização inutilizável (E3.11/LIB-11).
+
+    Levantada **antes** de qualquer escrita: um pacote malformado não
+    deve conseguir aplicar nada, nem parcialmente. Conflito de
+    identidade não passa por aqui — é resultado, não erro.
+    """
+
+    error_code = PIA_8022_SYNC_PACKAGE_INVALID
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            message=f"Pacote de sincronização inválido: {reason}",
+            detail={"reason": reason},
         )
