@@ -168,3 +168,88 @@ class PredictiveEvaluationBatchResult:
             raise PredictiveBatchLimitError(
                 f"lote devolveu {len(self.outcomes)} desfechos para " f"{self.request_length} itens"
             )
+
+
+from app.predictive_accessibility.burden import PredictiveTotalBurdenVector  # noqa: E402
+from app.predictive_accessibility.counterfactual import (  # noqa: E402
+    PredictiveAlternative,
+    PredictiveAlternativeKind,
+)
+from app.predictive_accessibility.guidance import (  # noqa: E402
+    PredictiveGuidanceReference,
+)
+from app.predictive_accessibility.predictive_claim_conflict import (  # noqa: E402
+    PredictiveComparabilityKey,
+)
+from app.predictive_accessibility.protection import (  # noqa: E402
+    PredictiveProtectionCandidateInput,
+)
+from app.predictive_accessibility.routing import PredictiveRoutingOutcome  # noqa: E402
+
+# --- Módulo 4: entradas governadas de qualidade e roteamento ---------------
+#
+#     GOVERNED_INPUT_CARRIES_REFERENCES · IT_NEVER_GRANTS_AUTHORITY
+
+
+@dataclass(frozen=True)
+class PredictiveGovernedQualityInput:
+    """Entradas governadas de UM item, alinhadas ao lote.
+
+    Transporta referências e metadados; não concede autoridade e não decide.
+    """
+
+    conclusion_signature: str
+    comparability_key: PredictiveComparabilityKey
+    decisive_constraint: str
+    protection_candidates: tuple[PredictiveProtectionCandidateInput, ...]
+    guidance: PredictiveGuidanceReference | None
+    expected_guidance_jurisdiction: str
+    expected_guidance_version: int
+    alternatives: tuple[PredictiveAlternative, ...]
+    burden_entries: tuple[tuple[PredictiveAlternativeKind, PredictiveTotalBurdenVector], ...]
+    materiality_required_scope: tuple[str, ...] = ()
+    required_protection_identifiers: tuple[str, ...] = ()
+    protection_inventory_reference: str | None = None
+    asymmetry_justification: str | None = None
+
+    def __post_init__(self) -> None:
+        # C2: NÃO existe campo público capaz de injetar PROMOTED aqui. O
+        # desfecho E5.l chega exclusivamente pelo sidecar do coordenador.
+        #
+        #     CALLER_INJECTED_PROMOTION = FORBIDDEN
+        if not self.conclusion_signature.strip():
+            raise PredictiveBatchItemTypeError(
+                "entrada governada exige assinatura de conclusão explícita"
+            )
+        if not self.decisive_constraint.strip():
+            raise PredictiveBatchItemTypeError(
+                "entrada governada exige restrição decisiva explícita"
+            )
+        if len(set(self.required_protection_identifiers)) != len(
+            self.required_protection_identifiers
+        ):
+            raise PredictiveBatchItemTypeError(
+                "inventário protetivo não admite identificador duplicado"
+            )
+        if self.required_protection_identifiers and not (
+            self.protection_inventory_reference and self.protection_inventory_reference.strip()
+        ):
+            raise PredictiveBatchItemTypeError(
+                "frentes protetivas requeridas exigem referência de inventário"
+            )
+
+
+@dataclass(frozen=True)
+class PredictiveRoutingBatchResult:
+    """Um desfecho de roteamento por item de entrada, na MESMA posição."""
+
+    outcomes: tuple[PredictiveRoutingOutcome, ...]
+    request_length: int
+    decomposed_conflict_dimensions: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if len(self.outcomes) != self.request_length:
+            raise PredictiveBatchLimitError(
+                f"roteamento devolveu {len(self.outcomes)} desfechos para "
+                f"{self.request_length} itens"
+            )
