@@ -81,6 +81,28 @@ _APPEND_ONLY_TABLES = (
     "validated_experiences",
     "predictive_reconfiguration_events",
 )
+
+_E6_PROGRAMMATIC_TABLES = (
+    "programmatic_service_principals",
+    "programmatic_quota_buckets",
+)
+"""Tabelas de acesso programático **autorizadas pela Chain107** (E6.2).
+
+```text
+AUTHORIZED_BY_CHAIN107 = TRUE
+E6_2_TABLES != E4_4_TABLES
+```
+
+Entram apenas na expectativa de schema do `pi13`: a E4.4 continua sem
+criar tabela nem migration, e o que `pi13` mede é que NENHUMA tabela
+inesperada exista — não que o schema esteja congelado no estado da E4.4.
+Uma tabela nova só é legítima aqui quando uma decisão nomeada a autoriza;
+esta lista é o registro dessa autorização, não uma válvula de escape.
+
+As três tabelas proibidas do requisito 20 (`persistence_records`,
+`persistence_assessments`, `memory_items`) continuam ausentes e seguem
+verificadas explicitamente pelo teste.
+"""
 """Tabelas que existem no schema mas **não** podem ser truncadas.
 
 ```text
@@ -531,11 +553,18 @@ def test_pi12_assessment_is_deterministic_across_repeated_reads():
 def test_pi13_no_new_table_and_no_new_migration():
     """Requisito 20: E4.4 não criou tabela nem migração.
 
-    Lido do schema real, não do modelo.
+    Lido do schema real, não do modelo. O conjunto esperado acompanha as
+    tabelas que decisões posteriores autorizaram explicitamente — hoje as
+    duas da E6.2, pela Chain107. A proibição do requisito 20 permanece
+    literal e é verificada à parte.
     """
     tabelas = set(sa.inspect(engine).get_table_names())
     esperadas = (
-        set(_COGNITIVE_TABLES) | set(_E4_TABLES) | set(_APPEND_ONLY_TABLES) | {"alembic_version"}
+        set(_COGNITIVE_TABLES)
+        | set(_E4_TABLES)
+        | set(_APPEND_ONLY_TABLES)
+        | set(_E6_PROGRAMMATIC_TABLES)
+        | {"alembic_version"}
     )
     assert tabelas == esperadas, f"tabela inesperada: {tabelas - esperadas}"
     for proibida in ("persistence_records", "persistence_assessments", "memory_items"):

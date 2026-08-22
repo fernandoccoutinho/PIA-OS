@@ -14,10 +14,16 @@ from app.models.mixins import (
     UUIDMixin,
     VersionMixin,
 )
+from app.models.programmatic_service_principal import (
+    ProgrammaticQuotaBucket,
+    ProgrammaticServicePrincipal,
+)
 
 __all__ = [
     "AuditMixin",
     "BaseModel",
+    "ProgrammaticQuotaBucket",
+    "ProgrammaticServicePrincipal",
     "SoftDeleteMixin",
     "TimestampMixin",
     "UUIDMixin",

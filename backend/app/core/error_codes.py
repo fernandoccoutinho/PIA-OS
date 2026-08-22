@@ -12,7 +12,7 @@ numérica por categoria:
     PIA-4xxx — configuração
     PIA-5xxx — infraestrutura
     PIA-6xxx — serviços externos
-    PIA-7xxx — autenticação (estrutura apenas — sem uso nesta etapa)
+    PIA-7xxx — autenticação e escopo de principal
 """
 
 from dataclasses import dataclass
@@ -178,12 +178,19 @@ PIA_6001_EXTERNAL_SERVICE_ERROR = ErrorCode(
     severity=ErrorSeverity.ERROR,
 )
 
-# --- PIA-7xxx — autenticação (estrutura apenas) ---
+# --- PIA-7xxx — autenticação e escopo ---
 PIA_7001_AUTHENTICATION_ERROR = ErrorCode(
     code="PIA-7001",
     default_message="authentication_error",
     category=ErrorCategory.AUTHENTICATION,
     http_status=401,
+    severity=ErrorSeverity.WARNING,
+)
+PIA_7002_INSUFFICIENT_SCOPE = ErrorCode(
+    code="PIA-7002",
+    default_message="insufficient_scope",
+    category=ErrorCategory.AUTHENTICATION,
+    http_status=403,
     severity=ErrorSeverity.WARNING,
 )
 
@@ -206,6 +213,7 @@ ALL_ERROR_CODES: tuple[ErrorCode, ...] = (
     PIA_5001_INFRASTRUCTURE_ERROR,
     PIA_6001_EXTERNAL_SERVICE_ERROR,
     PIA_7001_AUTHENTICATION_ERROR,
+    PIA_7002_INSUFFICIENT_SCOPE,
 )
 
 # Mapa código -> ErrorCode, útil para lookup reverso (ex.: documentação,

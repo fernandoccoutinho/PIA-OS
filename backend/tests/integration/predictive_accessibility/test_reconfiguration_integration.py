@@ -38,6 +38,11 @@ def _fresh_e5l_table():
     migrations.upgrade("head")
     yield
     with engine.begin() as connection:
+        # A E6.2 é a sucessora linear da E5.l. Rebobinar `alembic_version`
+        # sem derrubar o descendente faria o `upgrade` seguinte tentar
+        # recriar as tabelas do acesso programático.
+        connection.execute(sa.text("DROP TABLE IF EXISTS programmatic_quota_buckets CASCADE"))
+        connection.execute(sa.text("DROP TABLE IF EXISTS programmatic_service_principals CASCADE"))
         connection.execute(sa.text("DROP TABLE predictive_reconfiguration_events CASCADE"))
         connection.execute(
             sa.text("DROP FUNCTION IF EXISTS reject_predictive_reconfiguration_mutation()")
@@ -218,7 +223,7 @@ def test_e5l_migration_round_trip_vazio() -> None:
             is None
         )
     migrations.upgrade("head")
-    assert migrations.current_revision() == "f8a91c2d4e60"
+    assert migrations.current_revision() == "b4d71c58ae02"
     with engine.connect() as connection:
         assert (
             connection.execute(
@@ -235,7 +240,7 @@ def test_e5l_downgrade_com_historico_recusa_antes_de_ddl() -> None:
         session.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == "f8a91c2d4e60"
+    assert migrations.current_revision() == "b4d71c58ae02"
     with engine.connect() as connection:
         assert (
             connection.execute(

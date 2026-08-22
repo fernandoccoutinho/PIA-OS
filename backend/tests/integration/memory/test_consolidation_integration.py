@@ -713,7 +713,7 @@ def test_ci27_migration_head_is_unchanged_and_single():
     # ATUALIZADO PELA E4.11: a cabeça passou a ser `e7c25a91f4b3`
     # (validated_experiences). A guarda continua medindo head ÚNICO —
     # só o alvo do único mudou.
-    assert tuple(heads) == ("f8a91c2d4e60",), f"migration head mudou: {heads}"
+    assert tuple(heads) == ("b4d71c58ae02",), f"migration head mudou: {heads}"
 
 
 def test_ci28_no_new_e4_model_or_table_was_introduced():

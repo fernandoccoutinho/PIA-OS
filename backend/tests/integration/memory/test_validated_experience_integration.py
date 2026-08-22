@@ -107,9 +107,24 @@ def _truncar() -> None:
     if not pendentes:
         return
     with engine.begin() as conn:
-        # E5.l é a sucessora linear da E4.11. Para reconstruir a E4.11
-        # sem criar branch nem tentar recriar a tabela descendente, a
-        # fixture remove primeiro o descendente vazio e suas funções.
+        # E5.l é a sucessora linear da E4.11, e a E6.2 é a sucessora da
+        # E5.l. Para reconstruir a E4.11 sem criar branch nem tentar
+        # recriar tabela descendente, a fixture remove primeiro TODOS os
+        # descendentes vazios e suas funções, do mais novo para o mais
+        # antigo. Esquecer um descendente reprova com `DuplicateTable` no
+        # `upgrade` final, não aqui — por isso a asserção de vazio.
+        assert (
+            conn.execute(sa.text("SELECT count(*) FROM programmatic_quota_buckets")).scalar_one()
+            == 0
+        )
+        assert (
+            conn.execute(
+                sa.text("SELECT count(*) FROM programmatic_service_principals")
+            ).scalar_one()
+            == 0
+        )
+        conn.execute(sa.text("DROP TABLE programmatic_quota_buckets CASCADE"))
+        conn.execute(sa.text("DROP TABLE programmatic_service_principals CASCADE"))
         assert (
             conn.execute(
                 sa.text("SELECT count(*) FROM predictive_reconfiguration_events")
@@ -530,8 +545,8 @@ def test_i15_o_banco_recusa_versao_de_criterio_invalida():
 
 
 def test_i16_cabeca_unica_e_sucessora_linear():
-    assert migrations.head_revision() == "f8a91c2d4e60"
-    assert migrations.current_revision() == "f8a91c2d4e60"
+    assert migrations.head_revision() == "b4d71c58ae02"
+    assert migrations.current_revision() == "b4d71c58ae02"
 
 
 def test_i17_round_trip_com_a_tabela_vazia():
@@ -544,7 +559,7 @@ def test_i17_round_trip_com_a_tabela_vazia():
         ).scalar_one()
     assert existe == 0
     migrations.upgrade("head")
-    assert migrations.current_revision() == "f8a91c2d4e60"
+    assert migrations.current_revision() == "b4d71c58ae02"
 
 
 def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
@@ -584,7 +599,7 @@ def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
 
     assert (tabela, gatilho, funcao, linhas) == (1, 1, 1, 1)
     assert indices >= 3
-    assert migrations.current_revision() == "f8a91c2d4e60"
+    assert migrations.current_revision() == "b4d71c58ae02"
 
     # E a trigger continua ativa depois da recusa.
     with pytest.raises(Exception, match="append-only"), engine.begin() as conn:

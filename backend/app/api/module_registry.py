@@ -7,4 +7,10 @@ possa importar apenas os *nomes* sem precisar importar os objetos
 `api/router.py` importa `app.routers.status`.
 """
 
-REGISTERED_MODULE_NAMES: tuple[str, ...] = ("health", "status", "version", "metrics")
+REGISTERED_MODULE_NAMES: tuple[str, ...] = (
+    "health",
+    "status",
+    "version",
+    "metrics",
+    "predictive_evaluations",
+)

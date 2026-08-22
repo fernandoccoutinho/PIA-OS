@@ -19,6 +19,7 @@ from app.core.error_codes import (
     PIA_1008_TOO_MANY_REQUESTS,
     PIA_1009_UNTRUSTED_HOST,
     PIA_7001_AUTHENTICATION_ERROR,
+    PIA_7002_INSUFFICIENT_SCOPE,
 )
 from app.exceptions.base import PIAOSException
 
@@ -66,7 +67,7 @@ class UntrustedHostException(APIException):
 
 
 class AuthenticationException(PIAOSException):
-    """Estrutura apenas — nenhum endpoint desta etapa a utiliza.
+    """Falha de autenticação de principal.
 
     Não herda de `APIException` de propósito: a especificação do
     Módulo 2.7 posiciona `AuthenticationException` como irmã direta de
@@ -76,3 +77,19 @@ class AuthenticationException(PIAOSException):
     """
 
     error_code = PIA_7001_AUTHENTICATION_ERROR
+
+
+class InsufficientScopeException(PIAOSException):
+    """Principal autenticado, porém sem o escopo técnico exigido (E6.2).
+
+    Irmã de `AuthenticationException`, não subclasse dela: autenticar e
+    autorizar são decisões separadas, e confundi-las permitiria que um
+    handler tratasse `403` como `401`.
+
+    ```text
+    AUTHENTICATED != AUTHORIZED
+    SERVICE_SCOPE != PIAP_APPROVAL
+    ```
+    """
+
+    error_code = PIA_7002_INSUFFICIENT_SCOPE

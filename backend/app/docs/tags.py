@@ -25,6 +25,13 @@ TAG_STATUS = TagInfo(
 )
 TAG_VERSION = TagInfo(name="Version", description="Versões do backend, API, banco e PIA-OS.")
 TAG_METRICS = TagInfo(name="Metrics", description="Métricas mínimas de processo.")
+TAG_PREDICTIVE_EVALUATIONS = TagInfo(
+    name="Predictive Evaluations",
+    description=(
+        "Acesso programático à avaliação preditiva governada (E6.2) — "
+        "credencial de serviço, escopo técnico e cota por principal."
+    ),
+)
 
 TAG_ADMINISTRATION = TagInfo(
     name="Administration",
@@ -53,6 +60,7 @@ ALL_TAGS: tuple[TagInfo, ...] = (
     TAG_STATUS,
     TAG_VERSION,
     TAG_METRICS,
+    TAG_PREDICTIVE_EVALUATIONS,
     TAG_ADMINISTRATION,
     TAG_AUTHENTICATION,
     TAG_OBJECTS,
