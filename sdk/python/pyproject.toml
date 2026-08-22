@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pia-os-sdk"
+version = "0.1.0"
+description = "SDK de representação do PIA-OS — E6.3, derivado do OpenAPI da Chain107-R1."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = [
+    "httpx==0.28.1",
+    "pydantic==2.10.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "ruff==0.8.4",
+    "black==24.10.0",
+    "mypy==1.14.0",
+]
+
+[tool.setuptools]
+packages = ["pia_os_sdk"]
+
+[tool.setuptools.package-data]
+pia_os_sdk = ["py.typed"]
+
+[tool.black]
+# Explícito e igual ao `ruff`: sem esta seção o Black da linha de comando
+# usaria 88 e reformataria o arquivo que o gerador acabou de produzir com
+# 100 — dois donos do mesmo arquivo, e o `--check` do gerador acusaria
+# delta a cada `black .`.
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pia_os_sdk", "tools"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
