@@ -91,6 +91,7 @@ class _ReciboComando:
     operation: str
     command_key: str
     outcome_ref: str
+    request_sha256: str | None = None
 
 
 @dataclass
@@ -287,8 +288,20 @@ class RepositorioDuble:
         ]
 
     def claim_command(
-        self, *, technical_principal_ref, operation, command_key, proposed_outcome_ref
+        self,
+        *,
+        technical_principal_ref,
+        operation,
+        command_key,
+        proposed_outcome_ref,
+        request_sha256=None,
     ):
+        """Escopado e com vínculo de requisição, como o real.
+
+        ```text
+        FAKE_LOOSER_THAN_REAL = TEST_THAT_PROVES_NOTHING
+        ```
+        """
         chave = (technical_principal_ref, operation, command_key)
         existente = self.comandos.get(chave)
         if existente is not None:
@@ -299,6 +312,7 @@ class RepositorioDuble:
             operation=operation,
             command_key=command_key,
             outcome_ref=proposed_outcome_ref,
+            request_sha256=request_sha256,
         )
         self.comandos[chave] = recibo
         return recibo, True

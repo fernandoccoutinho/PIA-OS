@@ -460,6 +460,7 @@ class OrchestrationRepository:
         operation: str,
         command_key: str,
         proposed_outcome_ref: str,
+        request_sha256: str | None = None,
     ) -> tuple[CommandReceipt, bool]:
         """Reivindica a tripla e devolve `(recibo, reivindicado_agora)`.
 
@@ -471,41 +472,57 @@ class OrchestrationRepository:
         chamador só depois do commit do primeiro. É o mesmo idioma
         atômico do `consume_quota()` da E6.2.
 
-        A distinção entre inserir e recuperar sai do próprio
-        `outcome_ref`: ele carrega um UUID recém-gerado, então o valor
-        devolvido só pode ser igual ao proposto se foi esta chamada que
-        inseriu a linha. Não depende de coluna de sistema.
+        A distinção entre inserir e recuperar sai da **identidade do
+        recibo proposto**: o `id` devolvido só pode ser igual ao UUID que
+        esta chamada gerou se foi ela que inseriu a linha.
+
+        ```text
+        CLAIM_DETECTION_BY_RECEIPT_IDENTITY = TRUE
+        CLAIM_DETECTION_BY_OUTCOME_REF = BROKEN
+        ```
+
+        Corretivo R1 (Chain114): a versão anterior comparava
+        `outcome_ref`, o que funcionava enquanto todo comando propunha um
+        UUID recém-gerado. `IMPORT_RETURN` quebrou essa premissa ao
+        propor o `attempt_id` que o **chamador** enviou: no replay exato o
+        recibo existente tem exatamente o mesmo valor, e a comparação
+        classificava uma recuperação como inserção — o efeito rodava de
+        novo. Identidade do recibo não depende do que o comando decide
+        pôr em `outcome_ref`.
         """
+        receipt_id = uuid.uuid4()
         instrucao = sa.text(
             """
             INSERT INTO command_receipts
                 (id, technical_principal_ref, operation, command_key, outcome_ref,
-                 created_at, updated_at)
+                 request_sha256, created_at, updated_at)
             VALUES (
                 :receipt_id,
                 :technical_principal_ref,
                 :operation,
                 :command_key,
                 :outcome_ref,
+                :request_sha256,
                 now(),
                 now()
             )
             ON CONFLICT (technical_principal_ref, operation, command_key)
             DO UPDATE SET updated_at = command_receipts.updated_at
-            RETURNING id, outcome_ref
+            RETURNING id, outcome_ref, request_sha256
             """
         )
         linha = self._session.execute(
             instrucao,
             {
-                "receipt_id": uuid.uuid4(),
+                "receipt_id": receipt_id,
                 "technical_principal_ref": technical_principal_ref,
                 "operation": operation,
                 "command_key": command_key,
                 "outcome_ref": proposed_outcome_ref,
+                "request_sha256": request_sha256,
             },
         ).one()
-        reivindicado = str(linha.outcome_ref) == proposed_outcome_ref
+        reivindicado = linha.id == receipt_id
         recibo = self._session.get(CommandReceipt, linha.id)
         if recibo is None:  # pragma: no cover - RETURNING garante a linha
             raise RuntimeError("recibo de comando desapareceu logo após o INSERT")

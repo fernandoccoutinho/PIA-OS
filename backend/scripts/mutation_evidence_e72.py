@@ -16,6 +16,12 @@ O alvo de cada mutante é a guarda **nova correspondente**, não a suíte
 inteira: morte causada por guarda histórica alheia não prova que a guarda
 desta entrega funciona.
 
+Corretivo R1 (Chain114): os cinco mutantes originais são preservados e
+cinco novos medem as guardas criadas pelos achados C1, C2 e C3 —
+detecção de insert versus replay, vínculo requisição/comando, vínculo
+Attempt<->Step na reconstrução, redação do conteúdo no 422/log e a
+constraint canônica de `validation_codes`.
+
 Uso:
 
     python -m scripts.mutation_evidence_e72
@@ -131,6 +137,54 @@ MUTANTES: tuple[Mutante, ...] = (
         "            attempt_id=attempt_id,\n"
         "            role=role,",
         (_API, _ESTATICO, _PERSISTENCIA),
+    ),
+    Mutante(
+        "M11",
+        "detectar insert comparando outcome_ref (defeito C1 restaurado)",
+        "app/orchestration/repositories/orchestration_repository.py",
+        "        reivindicado = linha.id == receipt_id",
+        "        reivindicado = str(linha.outcome_ref) == proposed_outcome_ref",
+        (_API,),
+    ),
+    Mutante(
+        "M12",
+        "remover o vínculo entre command_key e requisição",
+        "app/orchestration/services/command_receipt_service.py",
+        "        if not reivindicado and recibo.request_sha256 != request_sha256:",
+        "        if False:",
+        (_API,),
+    ),
+    Mutante(
+        "M13",
+        "não conferir Attempt<->Step no caminho de reconstrução",
+        # Alvo alcançado por prova direta (`e72a35`): depois do corretivo
+        # C1 a impressão digital recusa antes, e o ramo deixou de ser
+        # atingível por HTTP. Guarda inalcançável por fora ainda precisa
+        # de prova — senão vira código morto que ninguém percebe morrer.
+        "app/routers/orchestration.py",
+        "    if tentativa is None or tentativa.step_id != step_id:",
+        "    if tentativa is None:",
+        (_API,),
+    ),
+    Mutante(
+        "M14",
+        "publicar o input bruto no 422 e no log (defeito C2 restaurado)",
+        "app/exceptions/handlers.py",
+        '        for chave in ("type", "loc", "msg"):',
+        '        for chave in ("type", "loc", "msg", "input", "ctx"):',
+        (_API,),
+    ),
+    Mutante(
+        "M15",
+        "remover a constraint canônica de validation_codes",
+        "alembic/versions/d1f6a83b70c5_canonical_validation_codes_e7_2_r1.py",
+        "    op.create_check_constraint(\n"
+        "        _CHECK_CODES,\n"
+        "        _RESULTS,\n"
+        '        sa.text(f"{_FUNCTION_CODES}(validation_codes)"),\n'
+        "    )",
+        "    pass",
+        (_PERSISTENCIA,),
     ),
 )
 

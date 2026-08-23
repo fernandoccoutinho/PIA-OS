@@ -119,6 +119,10 @@ def _truncar() -> None:
         # ATUALIZADO PELA E7.2: veredito e atribuição são a folha atual e
         # entram primeiro na ordem de remoção. Esquecer um descendente
         # reprova com `DuplicateTable` no `upgrade` final.
+        # ATUALIZADO PELO CORRETIVO R1: o vínculo de requisição em
+        # command_receipts faz o downgrade da folha recusar; a fixture
+        # rebobina por DROP, então limpa a tabela antes.
+        conn.execute(sa.text("DELETE FROM command_receipts"))
         for tabela_e72 in ("handoff_results", "handoff_attributions"):
             assert (
                 conn.execute(sa.text(f"SELECT count(*) FROM {tabela_e72}")).scalar_one() == 0
@@ -578,8 +582,8 @@ def test_i15_o_banco_recusa_versao_de_criterio_invalida():
 
 
 def test_i16_cabeca_unica_e_sucessora_linear():
-    assert migrations.head_revision() == "c3a75e01d248"
-    assert migrations.current_revision() == "c3a75e01d248"
+    assert migrations.head_revision() == "d1f6a83b70c5"
+    assert migrations.current_revision() == "d1f6a83b70c5"
 
 
 def test_i17_round_trip_com_a_tabela_vazia():
@@ -592,7 +596,7 @@ def test_i17_round_trip_com_a_tabela_vazia():
         ).scalar_one()
     assert existe == 0
     migrations.upgrade("head")
-    assert migrations.current_revision() == "c3a75e01d248"
+    assert migrations.current_revision() == "d1f6a83b70c5"
 
 
 def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
@@ -632,7 +636,7 @@ def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
 
     assert (tabela, gatilho, funcao, linhas) == (1, 1, 1, 1)
     assert indices >= 3
-    assert migrations.current_revision() == "c3a75e01d248"
+    assert migrations.current_revision() == "d1f6a83b70c5"
 
     # E a trigger continua ativa depois da recusa.
     with pytest.raises(Exception, match="append-only"), engine.begin() as conn:

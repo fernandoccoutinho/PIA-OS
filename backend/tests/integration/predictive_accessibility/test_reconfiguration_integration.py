@@ -45,6 +45,10 @@ def _fresh_e5l_table():
         # duas funções entram na limpeza, do mais novo para o mais antigo.
         # ATUALIZADO PELA E7.2: a folha passou a ser handoff_results/
         # handoff_attributions; ambas caem antes das tabelas da E7.1.
+        # ATUALIZADO PELO CORRETIVO R1: o vínculo de requisição em
+        # command_receipts faz o downgrade da folha recusar; a fixture
+        # rebobina por DROP, então limpa a tabela antes.
+        connection.execute(sa.text("DELETE FROM command_receipts"))
         for tabela_e72 in ("handoff_results", "handoff_attributions"):
             connection.execute(sa.text(f"DROP TABLE IF EXISTS {tabela_e72} CASCADE"))
         connection.execute(sa.text("DROP FUNCTION IF EXISTS reject_handoff_record_mutation()"))
@@ -243,7 +247,7 @@ def test_e5l_migration_round_trip_vazio() -> None:
             is None
         )
     migrations.upgrade("head")
-    assert migrations.current_revision() == "c3a75e01d248"
+    assert migrations.current_revision() == "d1f6a83b70c5"
     with engine.connect() as connection:
         assert (
             connection.execute(
@@ -260,7 +264,7 @@ def test_e5l_downgrade_com_historico_recusa_antes_de_ddl() -> None:
         session.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == "c3a75e01d248"
+    assert migrations.current_revision() == "d1f6a83b70c5"
     with engine.connect() as connection:
         assert (
             connection.execute(

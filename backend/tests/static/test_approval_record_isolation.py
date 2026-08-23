@@ -302,10 +302,10 @@ def test_s12_uma_unica_migration_sucessora_do_head_anterior() -> None:
     assert sucessoras_e5 == ["f8a91c2d4e60"], sucessoras_e5
     pais = {p for p in grafo.values() if p}
     folhas = [r for r in grafo if r not in pais]
-    # ATUALIZADO PELA E7.1: a folha passou a ser `c3a75e01d248`
+    # ATUALIZADO PELA E7.1: a folha passou a ser `d1f6a83b70c5`
     # (orquestração). A guarda continua medindo folha ÚNICA — não
     # imobilidade da cadeia.
-    assert folhas == ["c3a75e01d248"], folhas
+    assert folhas == ["d1f6a83b70c5"], folhas
 
 
 def _classes_com_metodo(fontes, metodo: str) -> list[str]:

@@ -12,6 +12,7 @@ não são redundantes: o lock serializa quem passa pelo serviço, o schema
 recusa quem chegar por SQL bruto ou por um caminho que ainda não existe.
 """
 
+import json
 import threading
 import uuid
 
@@ -382,12 +383,16 @@ def test_e72p11_head_unica_e_filha_de_b8c04e2fd137() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == (_REVISION_E72,)
+    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `d1f6a83b70c5`.
+    # O que este teste protege é a ANCESTRALIDADE da migration da E7.2,
+    # que não mudou; head única é medida por `e72p18`.
     assert script.get_revision(_REVISION_E72).down_revision == _PARENT
-    assert migrations.current_revision() == _REVISION_E72
+    assert migrations.current_revision() == "d1f6a83b70c5"
 
 
 def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
+    with engine.begin() as conexao:
+        conexao.execute(sa.text("DELETE FROM command_receipts"))
     migrations.downgrade(_PARENT)
     assert migrations.current_revision() == _PARENT
     presentes = set(sa.inspect(engine).get_table_names())
@@ -401,7 +406,7 @@ def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
         }
     assert "ix_handoff_attempts_single_open" not in indices
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E72
+    assert migrations.current_revision() == "d1f6a83b70c5"
     assert set(_TABELAS_NOVAS) <= set(sa.inspect(engine).get_table_names())
     with engine.connect() as conexao:
         indices = {
@@ -433,7 +438,7 @@ def test_e72p13_downgrade_recusa_com_linha_em_cada_tabela(tabela) -> None:
         assert conexao.execute(sa.text(f"SELECT count(*) FROM {tabela}")).scalar_one() >= 1
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT)
-    assert migrations.current_revision() == _REVISION_E72
+    assert migrations.current_revision() == "d1f6a83b70c5"
 
 
 def test_e72p14_sem_drift_entre_orm_e_schema() -> None:
@@ -449,3 +454,149 @@ def test_e72p14_sem_drift_entre_orm_e_schema() -> None:
         diferencas = compare_metadata(MigrationContext.configure(conexao), Base.metadata)
     reais = [d for d in diferencas if "test_" not in str(d)]
     assert reais == [], f"schema/ORM drift: {reais}"
+
+
+# --- corretivo R1: canonicidade de validation_codes no banco ----------------
+
+_REVISION_E72_R1 = "d1f6a83b70c5"
+
+
+def _inserir_resultado(attempt_id: uuid.UUID, status: str, codes: str) -> None:
+    with engine.begin() as conexao:
+        conexao.execute(
+            sa.text(
+                "INSERT INTO handoff_results (id, attempt_id, status, "
+                "expected_output_contract, output_media_type, output_sha256, output_bytes, "
+                "validation_codes) VALUES (gen_random_uuid(), :a, :s, 'c', 'text/plain', "
+                ":h, 1, CAST(:c AS jsonb))"
+            ),
+            {"a": attempt_id, "s": status, "h": _HASH, "c": codes},
+        )
+
+
+@pytest.mark.parametrize(
+    ("nome", "status", "codes"),
+    [
+        ("código fora do vocabulário", "rejected", '["inventado"]'),
+        ("elemento não textual", "rejected", "[1]"),
+        ("elemento objeto", "rejected", '[{"x": 1}]'),
+        ("duplicata", "rejected", '["media_type_mismatch","media_type_mismatch"]'),
+        ("ordem não canônica", "rejected", '["media_type_mismatch","expected_json_object"]'),
+        ("vazio em rejected", "rejected", "[]"),
+        ("não vazio em validated", "validated", '["media_type_mismatch"]'),
+        ("não é array", "rejected", '"media_type_mismatch"'),
+    ],
+)
+def test_e72p15_o_banco_recusa_validation_codes_nao_canonico(nome, status, codes) -> None:
+    """Achado C3: `COUNT_CHECK != VOCABULARY_CHECK`.
+
+    O `CHECK` original via array e quantidade. Vocabulário, tipo de
+    elemento, duplicata e ordem passavam por SQL bruto — e o
+    `TypeDecorator` não é integridade, porque o que não passa pelo ORM não
+    passa por ele.
+    """
+    attempt_id = _um_attempt()
+    with pytest.raises(IntegrityError):
+        _inserir_resultado(attempt_id, status, codes)
+
+
+@pytest.mark.parametrize(
+    ("status", "codes"),
+    [
+        ("validated", "[]"),
+        ("rejected", '["media_type_mismatch"]'),
+        ("rejected", '["expected_json_object","media_type_mismatch"]'),
+        (
+            "rejected",
+            '["expected_json_object","expected_non_empty_text","media_type_mismatch",'
+            '"non_canonical_json_number","unsupported_output_contract"]',
+        ),
+    ],
+)
+def test_e72p16_o_banco_aceita_a_forma_canonica(status, codes) -> None:
+    """Não-vacuidade: a constraint recusa o incoerente, não tudo."""
+    _inserir_resultado(_um_attempt(), status, codes)
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_results")).scalar_one() == 1
+
+
+def test_e72p17_o_vinculo_de_requisicao_e_persistido_como_hash() -> None:
+    """`request_sha256` guarda impressão digital, nunca corpo."""
+    schedule_id, step_id, _ = _preparar()
+    _exportar_e_importar(schedule_id, step_id, "conteúdo do parecer")
+    with engine.connect() as conexao:
+        linhas = list(
+            conexao.execute(
+                sa.text("SELECT operation, request_sha256 FROM command_receipts ORDER BY operation")
+            )
+        )
+    assert linhas, "nenhum recibo de comando"
+    for operacao, impressao in linhas:
+        assert impressao is not None, operacao
+        assert len(impressao) == 64
+        assert all(caractere in "0123456789abcdef" for caractere in impressao)
+    with engine.connect() as conexao:
+        texto = json.dumps(
+            [
+                dict(linha._mapping)
+                for linha in conexao.execute(sa.text("SELECT * FROM command_receipts"))
+            ],
+            default=str,
+        )
+    assert "conteúdo do parecer" not in texto
+
+
+def test_e72p18_head_unica_e_filha_de_c3a75e01d248() -> None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert tuple(script.get_heads()) == (_REVISION_E72_R1,)
+    assert script.get_revision(_REVISION_E72_R1).down_revision == _REVISION_E72
+
+
+def test_e72p19_round_trip_da_migration_corretiva() -> None:
+    _limpar()
+    with engine.begin() as conexao:
+        conexao.execute(sa.text("DELETE FROM command_receipts"))
+    migrations.downgrade(_REVISION_E72)
+    assert migrations.current_revision() == _REVISION_E72
+    with engine.connect() as conexao:
+        colunas = {
+            linha[0]
+            for linha in conexao.execute(
+                sa.text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'command_receipts'"
+                )
+            )
+        }
+    assert "request_sha256" not in colunas
+    migrations.upgrade("head")
+    assert migrations.current_revision() == _REVISION_E72_R1
+    with engine.connect() as conexao:
+        colunas = {
+            linha[0]
+            for linha in conexao.execute(
+                sa.text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'command_receipts'"
+                )
+            )
+        }
+        funcoes = {
+            linha[0]
+            for linha in conexao.execute(
+                sa.text("SELECT proname FROM pg_proc WHERE proname LIKE 'orchestration_%'")
+            )
+        }
+    assert "request_sha256" in colunas
+    assert "orchestration_validation_codes_are_canonical" in funcoes
+
+
+def test_e72p20_downgrade_recusa_com_vinculo_de_requisicao_gravado() -> None:
+    schedule_id, step_id, _ = _preparar()
+    _exportar_e_importar(schedule_id, step_id, "parecer")
+    with pytest.raises(RuntimeError, match="downgrade recusado"):
+        migrations.downgrade(_REVISION_E72)
+    assert migrations.current_revision() == _REVISION_E72_R1

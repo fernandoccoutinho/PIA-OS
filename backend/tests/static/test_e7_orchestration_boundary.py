@@ -318,9 +318,42 @@ def test_e71b14_o_calculo_do_hash_nao_le_relogio() -> None:
 
 
 def test_e71b15_o_content_hash_nunca_e_usado_como_chave_de_comando() -> None:
-    """`M-c`: `COMMAND_IDEMPOTENCY_KEY` é do chamador, não do conteúdo."""
-    assert "content_sha256" not in _nomes(COMANDO) | _literais_de_codigo(COMANDO)
-    assert "command_key=command_key" in COMANDO.read_text(encoding="utf-8")
+    """`M-c`: `COMMAND_IDEMPOTENCY_KEY` é do chamador, não do conteúdo.
+
+    ```text
+    SAME_CONTENT != SAME_ATTEMPT
+    FINGERPRINT_INGREDIENT != IDEMPOTENCY_KEY
+    ```
+
+    ATUALIZADO PELO CORRETIVO R1: a versão anterior proibia a substring
+    `content_sha256` no módulo inteiro. O corretivo passou a incluir o
+    hash do conteúdo como **ingrediente** da impressão digital da
+    requisição — uso legítimo e exigido, que a proibição textual
+    confundiria com "usar o hash como chave".
+
+    A guarda passa a medir o que importa: em toda chamada, o argumento
+    `command_key` é literalmente a chave recebida do chamador, e nunca
+    uma expressão derivada de conteúdo.
+    """
+    # Só as chamadas que ESCREVEM a chave: `claim_command` no repositório e
+    # `_executar_uma_vez` no próprio serviço. Montar o DTO de saída a
+    # partir do recibo (`command_key=recibo.command_key`) é leitura, não
+    # escolha de chave.
+    escritores = {"claim_command", "_executar_uma_vez"}
+    conferidas = 0
+    for no in ast.walk(_arvore(COMANDO)):
+        if not isinstance(no, ast.Call):
+            continue
+        alvo = no.func.id if isinstance(no.func, ast.Name) else getattr(no.func, "attr", "")
+        if alvo not in escritores:
+            continue
+        for argumento in no.keywords:
+            if argumento.arg == "command_key":
+                assert ast.unparse(argumento.value) == "command_key", ast.unparse(no)
+                conferidas += 1
+    assert conferidas >= 4, f"esperado ao menos 4 chamadas escritoras, achei {conferidas}"
+    # O hash de conteúdo existe, e só como ingrediente da impressão digital.
+    assert "_digest_de_conteudo" in _nomes(COMANDO)
 
 
 def test_e71b16_o_selamento_nao_altera_estado_de_etapa() -> None:

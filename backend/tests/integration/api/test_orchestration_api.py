@@ -812,3 +812,217 @@ def test_e72a28_a_documentacao_openapi_publica_as_cinco_rotas(cliente) -> None:
             continue
         propriedades = set(definicao.get("properties", {}))
         assert not (propriedades & proibidos), f"{nome}: {sorted(propriedades & proibidos)}"
+
+
+# --- corretivo R1: idempotência de importação e redação do 422 --------------
+
+
+def test_e72a29_replay_exato_de_importacao_nao_repete_o_efeito(cliente) -> None:
+    """Achado C1: `CLAIM_DETECTION_BY_OUTCOME_REF = BROKEN`.
+
+    Em `IMPORT_RETURN` o `outcome_ref` proposto é o `attempt_id` que o
+    **cliente** enviou. No replay exato o recibo existente tem o mesmo
+    valor, e comparar `outcome_ref` classificava recuperação como
+    inserção — o efeito rodava de novo. A detecção passou a usar a
+    identidade do recibo proposto.
+    """
+    _, headers = _principal()
+    sid, s1, _ = _criar(cliente, headers)
+    attempt = _exportar(cliente, headers, sid, s1, "e1").json()["data"]["attempt_id"]
+    primeiro = _importar(cliente, headers, sid, s1, attempt, "i1", "parecer completo")
+    assert primeiro.status_code == 201
+    assert primeiro.json()["data"]["replayed"] is False
+    antes = _snapshots()
+    segundo = _importar(cliente, headers, sid, s1, attempt, "i1", "parecer completo")
+    assert segundo.status_code == 201
+    assert segundo.json()["data"]["replayed"] is True
+    assert segundo.json()["data"]["result"] == primeiro.json()["data"]["result"]
+    assert segundo.json()["data"]["attribution"] == primeiro.json()["data"]["attribution"]
+    assert _snapshots() == antes
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_results")).scalar_one() == 1
+        assert (
+            conexao.execute(sa.text("SELECT count(*) FROM handoff_attributions")).scalar_one() == 1
+        )
+
+
+def test_e72a30_replay_concorrente_de_importacao_produz_um_unico_efeito(cliente) -> None:
+    _, headers = _principal()
+    sid, s1, _ = _criar(cliente, headers)
+    attempt = _exportar(cliente, headers, sid, s1, "e1").json()["data"]["attempt_id"]
+
+    def importar(_indice: int) -> int:
+        with TestClient(app) as paralelo:
+            return _importar(paralelo, headers, sid, s1, attempt, "mesma", "parecer").status_code
+
+    codigos = _em_paralelo(importar)
+    assert codigos == [201, 201]
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_results")).scalar_one() == 1
+        assert (
+            conexao.execute(sa.text("SELECT count(*) FROM handoff_attributions")).scalar_one() == 1
+        )
+        # create + export + UM import: as duas requisições concorrentes
+        # compartilham a mesma tripla e portanto o mesmo recibo.
+        importacoes = conexao.execute(
+            sa.text(
+                "SELECT count(*) FROM command_receipts WHERE operation = "
+                "'orchestration.import_return'"
+            )
+        ).scalar_one()
+    assert importacoes == 1
+
+
+@pytest.mark.parametrize(
+    "divergencia",
+    ["conteudo", "media_type", "atribuicao", "output_ref"],
+)
+def test_e72a31_mesma_chave_com_requisicao_divergente_recusa(cliente, divergencia) -> None:
+    """`SAME_COMMAND_KEY + DIFFERENT_REQUEST = CONFLICT`."""
+    _, headers = _principal()
+    sid, s1, _ = _criar(cliente, headers)
+    attempt = _exportar(cliente, headers, sid, s1, "e1").json()["data"]["attempt_id"]
+    base = {
+        "command_key": "i1",
+        "attempt_id": attempt,
+        "output": {"media_type": "text/plain", "content": "parecer"},
+        "attribution": {"declared_instance_id": "inst-1"},
+    }
+    rota = f"/api/v1/schedules/{sid}/steps/{s1}/handoff-import"
+    assert cliente.post(rota, json=base, headers=headers).status_code == 201
+    antes = _snapshots()
+    alterado = json.loads(json.dumps(base))
+    if divergencia == "conteudo":
+        alterado["output"]["content"] = "outro parecer"
+    elif divergencia == "media_type":
+        alterado["output"]["media_type"] = "application/json"
+    elif divergencia == "atribuicao":
+        alterado["attribution"]["declared_instance_id"] = "inst-2"
+    else:
+        alterado["output"]["declared_output_ref"] = "artefato://x"
+    conflito = cliente.post(rota, json=alterado, headers=headers)
+    assert conflito.status_code == 409
+    assert _snapshots() == antes
+
+
+def test_e72a32_mesma_chave_de_criacao_com_composicao_divergente_recusa(cliente) -> None:
+    _, headers = _principal()
+    _criar(cliente, headers, "c1")
+    antes = _snapshots()
+    divergente = _corpo("c1")
+    divergente["title"] = "outro título"
+    assert cliente.post("/api/v1/schedules", json=divergente, headers=headers).status_code == 409
+    assert _snapshots() == antes
+
+
+def test_e72a33_mesma_chave_de_import_sob_outro_step_nao_revela_o_recurso(cliente) -> None:
+    _, headers = _principal()
+    sid, s1, s2 = _criar(cliente, headers)
+    attempt = _exportar(cliente, headers, sid, s1, "e1").json()["data"]["attempt_id"]
+    _importar(cliente, headers, sid, s1, attempt, "i1", "parecer")
+    antes = _snapshots()
+    cruzado = _importar(cliente, headers, sid, s2, attempt, "i1", "parecer")
+    assert cruzado.status_code == 409
+    assert attempt not in cruzado.text
+    assert _snapshots() == antes
+
+
+def test_e72a34_o_422_de_validacao_nao_ecoa_o_conteudo_bruto(cliente, caplog) -> None:
+    """Achado C2: `RequestValidationError.errors()` inclui `input`.
+
+    ```text
+    RAW_OUTPUT_IN_RESPONSE = FORBIDDEN
+    RAW_OUTPUT_IN_APPLICATION_LOG = FORBIDDEN
+    DIAGNOSTIC_LOCATION != DIAGNOSTIC_VALUE
+    ```
+
+    O 422 continua dizendo QUAL campo falhou e POR QUÊ; some apenas o
+    valor enviado.
+    """
+    marcador = "MARCADOR-SECRETO-9f3a5b"
+    _, headers = _principal()
+    sid, s1, _ = _criar(cliente, headers)
+    attempt = _exportar(cliente, headers, sid, s1, "e1").json()["data"]["attempt_id"]
+    malformado = {
+        "command_key": "i1",
+        "attempt_id": attempt,
+        "output": {"media_type": "text/plain", "content": {"objeto": marcador}},
+        "attribution": {"declared_instance_id": "inst"},
+    }
+    with caplog.at_level("DEBUG"):
+        resposta = cliente.post(
+            f"/api/v1/schedules/{sid}/steps/{s1}/handoff-import",
+            json=malformado,
+            headers=headers,
+        )
+    assert resposta.status_code == 422
+    assert marcador not in resposta.text
+    assert marcador not in caplog.text
+    for registro in caplog.records:
+        assert marcador not in json.dumps(registro.__dict__, default=str)
+    corpo = resposta.json()["error"]
+    assert corpo["code"] == "PIA-2001"
+    # O diagnóstico sobrevive: localização e mensagem continuam presentes.
+    assert any("content" in str(item.get("loc", "")) for item in corpo["details"]["value"])
+    for item in corpo["details"]["value"]:
+        assert set(item) <= {"type", "loc", "msg"}
+
+
+def test_e72a35_a_reconstrucao_confere_attempt_contra_step_explicitamente() -> None:
+    """Defesa em profundidade, provada no ponto onde vive.
+
+    ```text
+    FINGERPRINT_FIRST != ATTEMPT_STEP_BINDING
+    ```
+
+    Depois do corretivo C1, a impressão digital da requisição recusa
+    `command_key` reusada sob outro Step **antes** de a reconstrução
+    rodar, porque `schedule_id` e `step_id` entram na digital do export.
+    O vínculo `tentativa.step_id == step_id` passou a ser inalcançável
+    por HTTP — e continua obrigatório: ele é a última linha caso a
+    digital mude, e remover uma guarda porque outra chegou primeiro
+    deixa o sistema com uma proteção só onde havia duas.
+
+    Como nenhuma requisição alcança o ramo, a prova chama o caminho de
+    reconstrução diretamente. Um teste que não consegue reproduzir a
+    condição por fora não é motivo para deixar a condição sem prova.
+    """
+    from app.orchestration.errors.exceptions import OrchestrationLifecycleViolationError
+    from app.orchestration.repositories.orchestration_repository import OrchestrationRepository
+    from app.repositories.unit_of_work import UnitOfWork
+    from app.routers.orchestration import _resposta_export
+
+    with TestClient(app) as cliente:
+        _, headers = _principal()
+        sid, s1, s2 = _criar(cliente, headers)
+        exportado = _exportar(cliente, headers, sid, s1, "e1").json()["data"]
+
+    class _ReciboFalso:
+        outcome_ref = exportado["attempt_id"]
+        replayed = True
+
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        principal_ref = uow.session.execute(
+            sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"),
+            {"i": sid},
+        ).scalar_one()
+        # Step certo: reconstrói.
+        assert _resposta_export(
+            repositorio=repositorio,
+            principal_ref=principal_ref,
+            schedule_id=uuid.UUID(sid),
+            step_id=uuid.UUID(s1),
+            recibo=_ReciboFalso(),
+            saida=None,
+        ).attempt_id == uuid.UUID(exportado["attempt_id"])
+        # Step de outra etapa do MESMO Schedule: recusa.
+        with pytest.raises(OrchestrationLifecycleViolationError):
+            _resposta_export(
+                repositorio=repositorio,
+                principal_ref=principal_ref,
+                schedule_id=uuid.UUID(sid),
+                step_id=uuid.UUID(s2),
+                recibo=_ReciboFalso(),
+                saida=None,
+            )

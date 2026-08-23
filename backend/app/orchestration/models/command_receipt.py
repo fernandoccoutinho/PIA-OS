@@ -58,6 +58,10 @@ class CommandReceipt(BaseModel):
             "length(btrim(outcome_ref)) > 0",
             name="ck_command_receipts_outcome_ref_not_blank",
         ),
+        CheckConstraint(
+            "request_sha256 IS NULL OR length(request_sha256) = 64",
+            name="ck_command_receipts_request_sha256_length",
+        ),
         Index("ix_command_receipts_principal", "technical_principal_ref"),
     )
     """A unicidade composta não é conveniência de consulta: é o alvo do
@@ -80,6 +84,26 @@ class CommandReceipt(BaseModel):
 
     command_key: Mapped[str] = mapped_column(String(MAX_COMMAND_KEY_LENGTH), nullable=False)
     """Escolhida pelo **chamador**. Opaca para a E7."""
+
+    request_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    """Impressão digital canônica da requisição que criou este recibo.
+
+    ```text
+    SAME_COMMAND_KEY + DIFFERENT_REQUEST = CONFLICT
+    IDEMPOTENCY_WITHOUT_REQUEST_BINDING = SILENT_WRONG_ANSWER
+    ```
+
+    Sem este vínculo, reusar a mesma `command_key` com corpo diferente
+    devolveria o recurso antigo como se fosse a resposta do pedido novo —
+    idempotência virando resposta errada em silêncio, que é pior que erro.
+
+    `nullable` por causa das linhas históricas, criadas antes desta
+    coluna existir: preenchê-las exigiria inventar a requisição que as
+    originou. Obrigatória para todo comando público novo, e o serviço
+    recusa quando falta.
+
+    Guarda o hash, nunca o corpo — `RAW_OUTPUT_IN_DATABASE = FORBIDDEN`.
+    """
 
     outcome_ref: Mapped[str] = mapped_column(String(MAX_REF_LENGTH), nullable=False)
     """Referência do efeito produzido por este comando.

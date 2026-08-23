@@ -127,18 +127,101 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
     )
 
 
+#: Campos de `RequestValidationError.errors()` seguros para publicar.
+#:
+#: ```text
+#: RAW_OUTPUT_IN_RESPONSE = FORBIDDEN
+#: RAW_OUTPUT_IN_APPLICATION_LOG = FORBIDDEN
+#: ```
+#:
+#: `input` e `ctx` carregam o VALOR que o cliente enviou. Num endpoint que
+#: recebe retorno de IA, esse valor é justamente o conteúdo bruto que o
+#: programa promete não persistir nem registrar — e um payload malformado
+#: o devolveria no corpo do 422 e o gravaria no log, derrotando a
+#: promessa por um detalhe de formatação do framework.
+#:
+#: Lista de PERMITIDOS, não de proibidos: um campo novo do Pydantic entra
+#: como oculto por omissão, e não como vazamento por omissão.
+CAMPOS_DE_VALIDACAO_PUBLICAVEIS: frozenset[str] = frozenset({"type", "loc", "msg"})
+
+
+def _validacao_sem_conteudo(erros: object) -> list[dict[str, object]]:
+    """Recorta cada erro aos campos seguros, preservando o diagnóstico.
+
+    `loc` continua dizendo QUAL campo falhou e `msg` POR QUE; some apenas
+    o valor enviado. O cliente conserta a requisição sem que o servidor
+    ecoe o que recebeu.
+    """
+    saneados: list[dict[str, object]] = []
+    if not isinstance(erros, list):  # pragma: no cover - contrato do FastAPI
+        return saneados
+    for erro in erros:
+        if not isinstance(erro, dict):  # pragma: no cover - contrato do FastAPI
+            continue
+        seguro: dict[str, object] = {}
+        for chave in ("type", "loc", "msg"):
+            if chave in erro:
+                valor = erro[chave]
+                seguro[chave] = list(valor) if isinstance(valor, tuple) else valor
+        saneados.append(seguro)
+    return saneados
+
+
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """Validação automática de request (Pydantic, via FastAPI)."""
+    """Validação automática de request (Pydantic, via FastAPI), **sem eco**.
+
+    O log usa uma mensagem derivada dos campos seguros em vez de
+    `str(exc)`: a representação padrão da exceção contém a lista completa
+    de erros, `input` incluído. `exc_info` também fica de fora — o
+    traceback do Pydantic carrega o valor recebido.
+
+    ```text
+    DIAGNOSTIC_LOCATION != DIAGNOSTIC_VALUE
+    ```
+    """
     error_code = PIA_2001_VALIDATION_ERROR
-    _log_exception(request, exc, event=events.INTERNAL_ERROR, error_code=error_code)
+    seguros = _validacao_sem_conteudo(exc.errors())
+    _log_validacao(request, seguros, error_code=error_code)
     return _build_response(
         error_code=error_code,
         message=error_code.default_message,
-        detail=exc.errors(),
+        detail=seguros,
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         request=request,
+    )
+
+
+def _log_validacao(
+    request: Request, seguros: list[dict[str, object]], *, error_code: ErrorCode
+) -> None:
+    """Registra a falha de validação sem `str(exc)` e sem `exc_info`."""
+    request_id = getattr(request.state, "request_id", None)
+    context = LoggingContext.get()
+    localizacoes: list[str] = []
+    for erro in seguros:
+        local = erro.get("loc")
+        if isinstance(local, list):
+            localizacoes.append(".".join(str(parte) for parte in local))
+    events.log_event(
+        logger,
+        events.INTERNAL_ERROR,
+        level=logging.ERROR,
+        exc_info=None,
+        exception_type="RequestValidationError",
+        exception_message=(
+            f"{len(seguros)} erro(s) de validação em: {', '.join(localizacoes) or '(desconhecido)'}"
+        ),
+        error_code=error_code.code,
+        category=error_code.category.value,
+        severity=error_code.severity.value,
+        request_id=request_id,
+        correlation_id=context.correlation_id,
+        trace_id=context.trace_id,
+        user_id=context.user_id,
+        route=request.url.path,
+        method=request.method,
     )
 
 

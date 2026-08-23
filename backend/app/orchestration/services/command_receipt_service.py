@@ -25,11 +25,16 @@ executor genérico deixaria a fronteira de idempotência aceitar qualquer
 efeito que alguém quisesse rotular como comando.
 """
 
+import hashlib
+import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from app.orchestration.errors.exceptions import OrchestrationContractViolationError
+from app.orchestration.errors.exceptions import (
+    OrchestrationContractViolationError,
+    OrchestrationLifecycleViolationError,
+)
 from app.orchestration.models.enums import CommandOperation, HandoffMode
 from app.orchestration.ports.transport import RawReturn
 from app.orchestration.repositories.orchestration_repository import OrchestrationRepository
@@ -47,6 +52,28 @@ from app.orchestration.services.return_validation_service import (
 from app.orchestration.services.schedule_service import ScheduleService
 
 MAX_COMMAND_KEY_LENGTH = 255
+
+
+def _impressao_digital(payload: Mapping[str, object]) -> str:
+    """SHA-256 do JSON canônico da requisição.
+
+    ```text
+    SAME_COMMAND_KEY + DIFFERENT_REQUEST = CONFLICT
+    FINGERPRINT_STORES_HASH_NOT_CONTENT
+    ```
+
+    Ordenado, compacto e sem escape de não-ASCII, como o
+    `ENVELOPE_CONTENT`: a ordem em que o cliente montou o corpo não é
+    conteúdo. Do conteúdo bruto entra apenas o **hash** dos bytes UTF-8
+    exatos — a impressão digital identifica a requisição sem guardá-la.
+    """
+    canonico = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()
+
+
+def _digest_de_conteudo(content: str) -> str:
+    """SHA-256 dos bytes UTF-8 exatos, sem canonicalizar nem aparar."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -113,6 +140,23 @@ class CommandReceiptService:
         emitiu o comando (addendum §1): quem cria é quem controla.
         """
         schedule_id = uuid.uuid4()
+        impressao = _impressao_digital(
+            {
+                "operation": CommandOperation.CREATE_SCHEDULE.value,
+                "title": draft.title,
+                "execution_mode": execution_mode.value,
+                "steps": [
+                    {
+                        "role": etapa.role,
+                        "instruction_ref": etapa.instruction_ref,
+                        "expected_output_contract": etapa.expected_output_contract,
+                        "context_refs": [ref.as_content() for ref in etapa.context_refs],
+                        "constraints": dict(etapa.constraints),
+                    }
+                    for etapa in draft.steps
+                ],
+            }
+        )
 
         def efeito() -> None:
             self._schedule_service.create_schedule(
@@ -127,6 +171,7 @@ class CommandReceiptService:
             operation=CommandOperation.CREATE_SCHEDULE,
             command_key=command_key,
             proposed_outcome_ref=str(schedule_id),
+            request_sha256=impressao,
             efeito=efeito,
         )
 
@@ -161,6 +206,13 @@ class CommandReceiptService:
             operation=CommandOperation.SEAL_HANDOFF,
             command_key=command_key,
             proposed_outcome_ref=str(attempt_id),
+            request_sha256=_impressao_digital(
+                {
+                    "operation": CommandOperation.SEAL_HANDOFF.value,
+                    "schedule_id": str(schedule_id),
+                    "step_id": str(step_id),
+                }
+            ),
             efeito=efeito,
         )
 
@@ -173,9 +225,19 @@ class CommandReceiptService:
         operation: CommandOperation,
         command_key: str,
         proposed_outcome_ref: str,
+        request_sha256: str,
         efeito: Callable[[], None],
     ) -> CommandOutcome:
-        """Reivindica a tripla; só quem reivindicou produz o efeito."""
+        """Reivindica a tripla; só quem reivindicou produz o efeito.
+
+        No replay, a impressão digital do recibo existente é comparada com
+        a do pedido atual. Divergência é 409, e não a devolução silenciosa
+        do recurso antigo:
+
+        ```text
+        SAME_COMMAND_KEY + DIFFERENT_REQUEST = CONFLICT
+        ```
+        """
         if not technical_principal_ref.strip():
             raise OrchestrationContractViolationError(
                 message="technical_principal_ref não pode ser vazio"
@@ -196,7 +258,19 @@ class CommandReceiptService:
             operation=operation.value,
             command_key=command_key,
             proposed_outcome_ref=proposed_outcome_ref,
+            request_sha256=request_sha256,
         )
+        if not reivindicado and recibo.request_sha256 != request_sha256:
+            # Recibo histórico (sem impressão) também cai aqui: sem saber
+            # que requisição o originou, devolvê-lo seria afirmar uma
+            # equivalência não verificada.
+            raise OrchestrationLifecycleViolationError(
+                message=(
+                    "command_key já usada para uma requisição diferente; "
+                    "use chave nova para um pedido novo"
+                ),
+                detail={"operation": operation.value},
+            )
         if reivindicado:
             efeito()
         return CommandOutcome(
@@ -252,6 +326,13 @@ class CommandReceiptService:
             operation=CommandOperation.EXPORT_HANDOFF,
             command_key=command_key,
             proposed_outcome_ref=str(attempt_id),
+            request_sha256=_impressao_digital(
+                {
+                    "operation": CommandOperation.EXPORT_HANDOFF.value,
+                    "schedule_id": str(schedule_id),
+                    "step_id": str(step_id),
+                }
+            ),
             efeito=efeito,
         )
         return recibo, resultado.get("saida")
@@ -292,6 +373,20 @@ class CommandReceiptService:
             operation=CommandOperation.IMPORT_RETURN,
             command_key=command_key,
             proposed_outcome_ref=str(attempt_id),
+            request_sha256=_impressao_digital(
+                {
+                    "operation": CommandOperation.IMPORT_RETURN.value,
+                    "schedule_id": str(schedule_id),
+                    "step_id": str(step_id),
+                    "attempt_id": str(attempt_id),
+                    "media_type": raw.media_type,
+                    "content_sha256": _digest_de_conteudo(raw.content),
+                    "declared_output_ref": raw.declared_output_ref,
+                    "declared_provider_id": attribution.declared_provider_id,
+                    "declared_model_id": attribution.declared_model_id,
+                    "declared_instance_id": attribution.declared_instance_id,
+                },
+            ),
             efeito=efeito,
         )
         return recibo, resultado.get("saida")
