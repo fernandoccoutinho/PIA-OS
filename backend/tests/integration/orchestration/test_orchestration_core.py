@@ -750,6 +750,47 @@ _COLUNAS_RECIBO = (
 )
 
 
+def _snapshot_agendas() -> list[tuple[object, ...]]:
+    """Todas as colunas de todos os Schedules — inclui `state` e `updated_at`."""
+    with engine.connect() as conexao:
+        return [
+            tuple(linha)
+            for linha in conexao.execute(
+                sa.text(
+                    "SELECT id, title, state, execution_mode, control_principal_ref, "
+                    "created_at, updated_at FROM schedules ORDER BY id"
+                )
+            )
+        ]
+
+
+def _snapshot_tentativas() -> list[tuple[object, ...]]:
+    with engine.connect() as conexao:
+        return [
+            tuple(linha)
+            for linha in conexao.execute(
+                sa.text(
+                    "SELECT id, schedule_id, step_id, attempt_number, envelope_version, "
+                    "content_sha256, state, created_at, updated_at "
+                    "FROM handoff_attempts ORDER BY id"
+                )
+            )
+        ]
+
+
+def _snapshot_selos() -> list[tuple[object, ...]]:
+    with engine.connect() as conexao:
+        return [
+            tuple(linha)
+            for linha in conexao.execute(
+                sa.text(
+                    "SELECT id, attempt_id, content_sha256, sealed_at, sealer_ref, "
+                    "created_at, updated_at FROM seal_receipts ORDER BY id"
+                )
+            )
+        ]
+
+
 def _snapshot_recibos() -> list[tuple[object, ...]]:
     """Todas as colunas de todos os recibos de comando, em ordem estável."""
     with engine.connect() as conexao:
@@ -908,26 +949,38 @@ def test_e71i28_b_nao_le_recibo_nem_tentativa_de_a() -> None:
     schedule_id, _, attempt_id, _ = _agenda_selada("principal-a")
     with UnitOfWork() as uow:
         repositorio = OrchestrationRepository(uow.session)
-        # A vê o que é dele.
+        # A vê o que é dele, no Schedule certo.
         assert (
             repositorio.get_seal_receipt_by_attempt(
-                control_principal_ref="principal-a", attempt_id=attempt_id
+                control_principal_ref="principal-a",
+                schedule_id=schedule_id,
+                attempt_id=attempt_id,
             )
             is not None
         )
         assert (
-            repositorio.get_attempt(control_principal_ref="principal-a", attempt_id=attempt_id)
+            repositorio.get_attempt(
+                control_principal_ref="principal-a",
+                schedule_id=schedule_id,
+                attempt_id=attempt_id,
+            )
             is not None
         )
         # B, com o mesmo attempt_id em mãos, não vê nada.
         assert (
             repositorio.get_seal_receipt_by_attempt(
-                control_principal_ref="principal-b", attempt_id=attempt_id
+                control_principal_ref="principal-b",
+                schedule_id=schedule_id,
+                attempt_id=attempt_id,
             )
             is None
         )
         assert (
-            repositorio.get_attempt(control_principal_ref="principal-b", attempt_id=attempt_id)
+            repositorio.get_attempt(
+                control_principal_ref="principal-b",
+                schedule_id=schedule_id,
+                attempt_id=attempt_id,
+            )
             is None
         )
         assert (
@@ -961,12 +1014,13 @@ def test_e71i29_b_nao_numera_nem_cria_tentativa_em_schedule_de_a() -> None:
 
 
 def test_e71i30_b_nao_cria_recibo_para_tentativa_de_a() -> None:
-    _, _, attempt_id, _ = _agenda_selada("principal-a")
+    schedule_id, _, attempt_id, _ = _agenda_selada("principal-a")
     with UnitOfWork() as uow:
         repositorio = OrchestrationRepository(uow.session)
         with pytest.raises(OrchestrationScopeViolationError):
             repositorio.create_seal_receipt(
                 control_principal_ref="principal-b",
+                schedule_id=schedule_id,
                 attempt_id=attempt_id,
                 content_sha256=_HASH,
                 sealed_at=repositorio.database_now(),
@@ -1095,3 +1149,118 @@ def test_e71i36_head_unico_e_filha_de_a7f31c05be24() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     assert tuple(script.get_heads()) == (_REVISION_E71_R1,)
     assert script.get_revision(_REVISION_E71_R1).down_revision == _REVISION_E71
+
+
+# --- corretivo R2: dono não basta, o Schedule declarado também vincula ------
+
+
+def test_e71i37_mesmo_dono_nao_alcanca_tentativa_de_outro_schedule_seu() -> None:
+    """`OWNER_BINDING != SCHEDULE_BINDING`.
+
+    O principal P possui A e B, e a tentativa está em B. Pedir com o
+    contexto de A tem de devolver nada — a resposta "é seu" não é a
+    resposta à pergunta "é deste trabalho".
+    """
+    schedule_a, _ = _criar_agenda_ativa(principal="principal-p")
+    schedule_b, step_b, attempt_b, receipt_b = _agenda_selada("principal-p")
+    assert schedule_a != schedule_b
+
+    antes_recibos = _snapshot_selos()
+    antes_tentativas = _snapshot_tentativas()
+    antes_agendas = _snapshot_agendas()
+
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+
+        # Contexto ERRADO (A) com material de B: nada.
+        assert (
+            repositorio.get_attempt(
+                control_principal_ref="principal-p",
+                schedule_id=schedule_a,
+                attempt_id=attempt_b,
+            )
+            is None
+        )
+        assert (
+            repositorio.get_seal_receipt_by_attempt(
+                control_principal_ref="principal-p",
+                schedule_id=schedule_a,
+                attempt_id=attempt_b,
+            )
+            is None
+        )
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.create_seal_receipt(
+                control_principal_ref="principal-p",
+                schedule_id=schedule_a,
+                attempt_id=attempt_b,
+                content_sha256=_HASH,
+                sealed_at=repositorio.database_now(),
+                sealer_ref="contexto-errado",
+            )
+        uow.commit()
+
+    # Nenhuma linha e nenhum updated_at mudou depois da recusa.
+    assert _snapshot_selos() == antes_recibos
+    assert _snapshot_tentativas() == antes_tentativas
+    assert _snapshot_agendas() == antes_agendas
+
+    # Não-vacuidade: com o Schedule CERTO (B), as três seguem funcionando.
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        tentativa = repositorio.get_attempt(
+            control_principal_ref="principal-p",
+            schedule_id=schedule_b,
+            attempt_id=attempt_b,
+        )
+        assert tentativa is not None
+        recibo = repositorio.get_seal_receipt_by_attempt(
+            control_principal_ref="principal-p",
+            schedule_id=schedule_b,
+            attempt_id=attempt_b,
+        )
+        assert recibo is not None and recibo.id == receipt_b
+        segundo = _Contexto(uow).handoff.seal_step(
+            attempt_id=uuid.uuid4(),
+            control_principal_ref="principal-p",
+            schedule_id=schedule_b,
+            step_id=step_b,
+            sealer_ref="selador",
+        )
+        uow.commit()
+    assert segundo.attempt_number == 2
+
+
+def test_e71i38_o_vinculo_de_schedule_vale_para_os_escritores_de_tentativa() -> None:
+    """Numerar e criar tentativa também exigem o Schedule declarado."""
+    schedule_a, _ = _criar_agenda_ativa(principal="principal-p")
+    schedule_b, step_b = _criar_agenda_ativa(principal="principal-p")
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.next_attempt_number(
+                control_principal_ref="principal-p",
+                schedule_id=schedule_a,
+                step_id=step_b,
+            )
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.create_attempt(
+                control_principal_ref="principal-p",
+                attempt_id=uuid.uuid4(),
+                schedule_id=schedule_a,
+                step_id=step_b,
+                attempt_number=1,
+                envelope_version="1",
+                content_sha256=_HASH,
+            )
+        # Com o Schedule certo, ambos funcionam.
+        assert (
+            repositorio.next_attempt_number(
+                control_principal_ref="principal-p",
+                schedule_id=schedule_b,
+                step_id=step_b,
+            )
+            == 1
+        )
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_attempts")).scalar_one() == 0

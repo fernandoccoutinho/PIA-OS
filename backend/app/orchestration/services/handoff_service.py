@@ -19,6 +19,13 @@ valendo se alguém chamar o repositório direto.
 EARLY_REFUSAL != THE_GUARANTEE
 ```
 
+O `schedule_id` também atravessa: o repositório precisa do Schedule que
+o chamador **declarou**, não do que a tentativa deixa derivar.
+
+```text
+OWNER_BINDING != SCHEDULE_BINDING
+```
+
 Selar é montar o conteúdo congelado da etapa, calcular seu hash, abrir uma
 tentativa e registrar o recibo daquele ato. Não há transporte: o envelope
 não atravessa fronteira nenhuma nesta entrega, e por isso a etapa
@@ -179,6 +186,7 @@ class HandoffService:
         sealed_at = self._repository.database_now()
         recibo = self._repository.create_seal_receipt(
             control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
             attempt_id=tentativa.id,
             content_sha256=content_sha256,
             sealed_at=sealed_at,

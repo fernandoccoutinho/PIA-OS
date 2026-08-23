@@ -442,13 +442,99 @@ def test_e71b21_os_metodos_de_recusa_levantam_incondicionalmente() -> None:
         assert "if " not in corpo, f"{nome}: recusa condicional não é recusa"
 
 
+#: Caminhos que tocam `HandoffAttempt` ou `SealReceipt`. Além do dono,
+#: exigem o Schedule **declarado pelo chamador**.
+#:
+#: ```text
+#: OWNER_BINDING != SCHEDULE_BINDING
+#: DERIVED_SCHEDULE != CALLER_EXPECTED_SCHEDULE
+#: ```
+ATTEMPT_SCOPED = frozenset(
+    {
+        "next_attempt_number",
+        "create_attempt",
+        "create_seal_receipt",
+        "get_attempt",
+        "get_seal_receipt_by_attempt",
+        "list_attempts",
+    }
+)
+
+#: Helper privado — verificado explicitamente porque é o ponto único de
+#: travessia e porque foi exatamente onde o defeito R2 se escondeu.
+HELPER_DE_ESCOPO = "_attempt_under_scope"
+
+
+def _metodo_do_repositorio(nome: str) -> ast.FunctionDef:
+    arvore = _arvore(REPOSITORIO)
+    encontrados = [
+        no for no in ast.walk(arvore) if isinstance(no, ast.FunctionDef) and no.name == nome
+    ]
+    assert len(encontrados) == 1, f"{nome}: esperado exatamente um método, achei {len(encontrados)}"
+    return encontrados[0]
+
+
 def test_e71b22_tentativa_e_recibo_alcancam_o_schedule_por_join_ou_helper() -> None:
     """Nenhum caminho de tentativa/recibo lê a tabela sem atravessar o Schedule."""
     metodos = _metodos_publicos_do_repositorio()
     for nome in ("get_attempt", "get_seal_receipt_by_attempt", "list_attempts"):
         corpo = ast.unparse(metodos[nome])
         assert ".join(Schedule" in corpo, f"{nome}: não atravessa Schedule"
-    assert "_attempt_under_scope" in ast.unparse(metodos["create_seal_receipt"])
+    assert HELPER_DE_ESCOPO in ast.unparse(metodos["create_seal_receipt"])
+
+
+def test_e71b24_todo_caminho_de_tentativa_exige_dono_e_schedule() -> None:
+    """Assinatura: os dois parâmetros, nunca só um.
+
+    Exigir o dono e derivar o Schedule responde "é seu", que não é a
+    pergunta. A pergunta é "é seu **e** é deste trabalho".
+    """
+    metodos = _metodos_publicos_do_repositorio()
+    assert ATTEMPT_SCOPED <= CONTROL_BOUND, sorted(ATTEMPT_SCOPED - CONTROL_BOUND)
+    for nome in sorted(ATTEMPT_SCOPED):
+        no = metodos[nome]
+        argumentos = {arg.arg for arg in no.args.kwonlyargs} | {arg.arg for arg in no.args.args}
+        assert "control_principal_ref" in argumentos, f"{nome}: sem o dono"
+        assert "schedule_id" in argumentos, f"{nome}: sem o Schedule declarado"
+
+
+def test_e71b25_o_corpo_usa_os_dois_vinculos_e_nao_apenas_os_recebe() -> None:
+    """Receber `schedule_id` e não filtrar por ele é o defeito R2 de volta."""
+    metodos = _metodos_publicos_do_repositorio()
+    for nome in sorted(ATTEMPT_SCOPED):
+        corpo = ast.unparse(metodos[nome])
+        usa_dono = (
+            "control_principal_ref ==" in corpo
+            or "control_principal_ref=control_principal_ref" in corpo
+        )
+        usa_schedule = "schedule_id ==" in corpo or "schedule_id=schedule_id" in corpo
+        assert usa_dono, f"{nome}: recebe o dono e não o usa"
+        assert usa_schedule, f"{nome}: recebe o Schedule e não o usa"
+
+
+def test_e71b26_o_helper_de_escopo_impoe_as_quatro_condicoes() -> None:
+    """`_attempt_under_scope` verificado explicitamente, predicado a predicado."""
+    no = _metodo_do_repositorio(HELPER_DE_ESCOPO)
+    argumentos = {arg.arg for arg in no.args.kwonlyargs} | {arg.arg for arg in no.args.args}
+    assert {"control_principal_ref", "schedule_id", "attempt_id"} <= argumentos
+    corpo = ast.unparse(no)
+    for predicado in (
+        "HandoffAttempt.id == attempt_id",
+        "HandoffAttempt.schedule_id == schedule_id",
+        "Schedule.id == schedule_id",
+        "Schedule.control_principal_ref == control_principal_ref",
+    ):
+        assert predicado in corpo, f"{HELPER_DE_ESCOPO}: falta `{predicado}`"
+
+
+def test_e71b27_as_consultas_de_tentativa_impoem_as_quatro_condicoes() -> None:
+    """Os dois getters repetem o mesmo conjunto — nenhum deriva o Schedule."""
+    metodos = _metodos_publicos_do_repositorio()
+    for nome in ("get_attempt", "get_seal_receipt_by_attempt"):
+        corpo = ast.unparse(metodos[nome])
+        assert "HandoffAttempt.schedule_id == schedule_id" in corpo, nome
+        assert "Schedule.id == schedule_id" in corpo, nome
+        assert "Schedule.control_principal_ref == control_principal_ref" in corpo, nome
 
 
 def test_e71b23_a_integridade_schedule_step_vive_no_schema() -> None:

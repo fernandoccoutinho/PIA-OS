@@ -18,6 +18,10 @@ sem alteração, e três novos medem as guardas que o corretivo criou —
 binding na leitura de recibo, binding no escritor de tentativa e a
 integridade Schedule<->Step no banco.
 
+Corretivo R2 (Chain112): os nove anteriores seguem intactos, e M-s6 mede
+o vínculo por Schedule DECLARADO no helper de escopo — o predicado cuja
+ausência fazia `OWNER_BINDING` passar por `SCHEDULE_BINDING`.
+
 Uso:
 
     python -m scripts.mutation_evidence_e71
@@ -139,13 +143,22 @@ MUTANTES: tuple[Mutante, ...] = (
     Mutante(
         "M-s3",
         "remover o binding na leitura de recibo (get_seal_receipt_by_attempt)",
+        # REAPONTADO NO R2: o corretivo acrescentou dois predicados a esta
+        # cláusula, e o alvo original deixou de existir. Mutante com alvo
+        # ausente é pior que mutante ausente — aparece na lista e parece
+        # medido (lição da E6.3, mS2). A INTENÇÃO é preservada: continua
+        # removendo o vínculo de dono da leitura de recibo.
         "app/orchestration/repositories/orchestration_repository.py",
         "            .where(\n"
         "                SealReceipt.attempt_id == attempt_id,\n"
+        "                HandoffAttempt.schedule_id == schedule_id,\n"
+        "                Schedule.id == schedule_id,\n"
         "                Schedule.control_principal_ref == control_principal_ref,\n"
         "            )",
         "            .where(\n"
         "                SealReceipt.attempt_id == attempt_id,\n"
+        "                HandoffAttempt.schedule_id == schedule_id,\n"
+        "                Schedule.id == schedule_id,\n"
         "            )",
         (
             "tests/integration/orchestration/test_orchestration_core.py",
@@ -170,6 +183,29 @@ MUTANTES: tuple[Mutante, ...] = (
         "            )\n"
         "        tentativa = HandoffAttempt(",
         "        tentativa = HandoffAttempt(",
+        (
+            "tests/integration/orchestration/test_orchestration_core.py",
+            "tests/static/test_e7_orchestration_boundary.py",
+        ),
+    ),
+    Mutante(
+        "M-s6",
+        "remover HandoffAttempt.schedule_id == schedule_id do helper de escopo",
+        "app/orchestration/repositories/orchestration_repository.py",
+        "                HandoffAttempt.id == attempt_id,\n"
+        "                HandoffAttempt.schedule_id == schedule_id,\n"
+        "                Schedule.id == schedule_id,\n"
+        "                Schedule.control_principal_ref == control_principal_ref,\n"
+        "            )\n"
+        "        ).one_or_none()\n"
+        "\n"
+        "    def get_attempt(",
+        "                HandoffAttempt.id == attempt_id,\n"
+        "                Schedule.control_principal_ref == control_principal_ref,\n"
+        "            )\n"
+        "        ).one_or_none()\n"
+        "\n"
+        "    def get_attempt(",
         (
             "tests/integration/orchestration/test_orchestration_core.py",
             "tests/static/test_e7_orchestration_boundary.py",

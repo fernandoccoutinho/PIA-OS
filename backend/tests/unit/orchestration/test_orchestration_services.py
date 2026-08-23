@@ -225,9 +225,16 @@ class RepositorioDuble:
         return tentativa
 
     def create_seal_receipt(
-        self, *, control_principal_ref, attempt_id, content_sha256, sealed_at, sealer_ref
+        self,
+        *,
+        control_principal_ref,
+        schedule_id,
+        attempt_id,
+        content_sha256,
+        sealed_at,
+        sealer_ref,
     ):
-        if self._tentativa_no_escopo(control_principal_ref, attempt_id) is None:
+        if self._tentativa_no_escopo(control_principal_ref, schedule_id, attempt_id) is None:
             raise OrchestrationScopeViolationError(message="fora do escopo")
         recibo = _Recibo(
             id=uuid.uuid4(),
@@ -239,22 +246,31 @@ class RepositorioDuble:
         self.recibos.append(recibo)
         return recibo
 
-    def _tentativa_no_escopo(self, control_principal_ref, attempt_id):
+    def _tentativa_no_escopo(self, control_principal_ref, schedule_id, attempt_id):
+        """As quatro condições do real, inclusive o Schedule DECLARADO.
+
+        ```text
+        OWNER_BINDING != SCHEDULE_BINDING
+        FAKE_LOOSER_THAN_REAL = TEST_THAT_PROVES_NOTHING
+        ```
+
+        Derivar o Schedule de `tentativa.schedule_id`, como o dublê fazia,
+        reproduziria no teste exatamente o defeito R2.
+        """
         for tentativa in self.tentativas:
-            if tentativa.id != attempt_id:
+            if tentativa.id != attempt_id or tentativa.schedule_id != schedule_id:
                 continue
             agenda = self.get_schedule(
-                control_principal_ref=control_principal_ref,
-                schedule_id=tentativa.schedule_id,
+                control_principal_ref=control_principal_ref, schedule_id=schedule_id
             )
             return tentativa if agenda is not None else None
         return None
 
-    def get_attempt(self, *, control_principal_ref, attempt_id):
-        return self._tentativa_no_escopo(control_principal_ref, attempt_id)
+    def get_attempt(self, *, control_principal_ref, schedule_id, attempt_id):
+        return self._tentativa_no_escopo(control_principal_ref, schedule_id, attempt_id)
 
-    def get_seal_receipt_by_attempt(self, *, control_principal_ref, attempt_id):
-        if self._tentativa_no_escopo(control_principal_ref, attempt_id) is None:
+    def get_seal_receipt_by_attempt(self, *, control_principal_ref, schedule_id, attempt_id):
+        if self._tentativa_no_escopo(control_principal_ref, schedule_id, attempt_id) is None:
             return None
         return next((r for r in self.recibos if r.attempt_id == attempt_id), None)
 

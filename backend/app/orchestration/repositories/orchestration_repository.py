@@ -40,6 +40,24 @@ público — nenhum método novo escapa por omissão.
 Caminho de escrita não devolve `None` em caso de escopo alheio: levanta
 `OrchestrationScopeViolationError`. Devolver `None` num escritor
 convidaria o chamador a tratar recusa como ausência.
+
+## Corretivo R2 (Chain112)
+
+O vínculo por dono estava certo e era **insuficiente**. Tentativa e
+recibo derivavam o Schedule da própria linha e conferiam só o
+proprietário, de modo que um principal dono de A e de B pedia contexto
+de A e recebia material de B.
+
+```text
+OWNER_BINDING != SCHEDULE_BINDING
+DERIVED_SCHEDULE != CALLER_EXPECTED_SCHEDULE
+```
+
+Todo caminho de `HandoffAttempt`/`SealReceipt` passa a exigir
+`schedule_id` do chamador e a impor as quatro condições juntas:
+identidade da tentativa, tentativa dentro do Schedule, Schedule
+declarado e dono do Schedule. Nenhuma delas é derivada de outra —
+derivar é justamente o que produziu este defeito.
 """
 
 import uuid
@@ -285,21 +303,24 @@ class OrchestrationRepository:
         self,
         *,
         control_principal_ref: str,
+        schedule_id: uuid.UUID,
         attempt_id: uuid.UUID,
         content_sha256: str,
         sealed_at: datetime,
         sealer_ref: str,
     ) -> SealReceipt:
-        """Emite o recibo só para tentativa que pertence ao principal."""
+        """Emite o recibo só para tentativa deste Schedule e deste dono."""
         if (
             self._attempt_under_scope(
-                control_principal_ref=control_principal_ref, attempt_id=attempt_id
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                attempt_id=attempt_id,
             )
             is None
         ):
             raise OrchestrationScopeViolationError(
-                message="tentativa inexistente sob este principal de controle",
-                detail={"attempt_id": str(attempt_id)},
+                message="tentativa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "attempt_id": str(attempt_id)},
             )
         recibo = SealReceipt(
             attempt_id=attempt_id,
@@ -326,48 +347,64 @@ class OrchestrationRepository:
         )
 
     def _attempt_under_scope(
-        self, *, control_principal_ref: str, attempt_id: uuid.UUID
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, attempt_id: uuid.UUID
     ) -> uuid.UUID | None:
-        """Identidade da tentativa **se** ela pertencer ao principal.
+        """Identidade da tentativa se ela pertencer ao Schedule **e** ao dono.
 
-        Ponto único por onde tentativa e recibo alcançam o Schedule; o
-        gate estático exige que todo caminho de tentativa/recibo passe
-        por aqui ou por um `JOIN` equivalente.
+        ```text
+        OWNER_BINDING != SCHEDULE_BINDING
+        DERIVED_SCHEDULE != CALLER_EXPECTED_SCHEDULE
+        ```
+
+        Corretivo R2: a versão anterior derivava o Schedule da própria
+        tentativa e conferia só o dono. Um principal que possui A e B
+        pedia contexto de A e recebia tentativa de B — o predicado
+        respondia "é seu", que não é a pergunta. A pergunta é "é seu **e**
+        é deste trabalho".
+
+        As quatro condições valem juntas; nenhuma é derivada de outra.
         """
         return self._session.scalars(
             sa.select(HandoffAttempt.id)
             .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
             .where(
                 HandoffAttempt.id == attempt_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
                 Schedule.control_principal_ref == control_principal_ref,
             )
         ).one_or_none()
 
     def get_attempt(
-        self, *, control_principal_ref: str, attempt_id: uuid.UUID
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, attempt_id: uuid.UUID
     ) -> HandoffAttempt | None:
-        """Leitura escopada de uma tentativa. `None` quando é de outro."""
+        """Tentativa **deste** Schedule e **deste** dono. `None` caso contrário."""
         return self._session.scalars(
             sa.select(HandoffAttempt)
             .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
             .where(
                 HandoffAttempt.id == attempt_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
                 Schedule.control_principal_ref == control_principal_ref,
             )
         ).one_or_none()
 
     def get_seal_receipt_by_attempt(
-        self, *, control_principal_ref: str, attempt_id: uuid.UUID
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, attempt_id: uuid.UUID
     ) -> SealReceipt | None:
-        """Recibo de uma tentativa do principal. `None` quando é de outro.
+        """Recibo de uma tentativa deste Schedule e deste dono.
 
         ```text
         OPAQUE_ID != SECRET_ID
+        OWNER_BINDING != SCHEDULE_BINDING
         ```
 
-        Um `attempt_id` vazado deixava de ser opaco e virava chave de
-        leitura do trabalho alheio enquanto esta consulta não atravessava
-        o Schedule.
+        A Chain110 não atravessava o Schedule: um `attempt_id` vazado
+        virava chave de leitura do trabalho alheio. A Chain111 passou a
+        atravessar, mas derivando o Schedule da tentativa — bastava ser
+        dono dos dois trabalhos para ler o do contexto errado. Aqui o
+        Schedule é o que o chamador declarou, não o que a linha diz.
         """
         return self._session.scalars(
             sa.select(SealReceipt)
@@ -375,6 +412,8 @@ class OrchestrationRepository:
             .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
             .where(
                 SealReceipt.attempt_id == attempt_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
                 Schedule.control_principal_ref == control_principal_ref,
             )
         ).one_or_none()
