@@ -18,7 +18,7 @@ import uuid
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 
 from app.database import migrations
 from app.database.engine import engine
@@ -27,6 +27,7 @@ from app.database.session import SessionLocal
 from app.orchestration.adapters.manual_transport import ManualTransport
 from app.orchestration.errors.exceptions import (
     HandoffRecordImmutableError,
+    OrchestrationLifecycleViolationError,
     OrchestrationScopeViolationError,
 )
 from app.orchestration.models.enums import HandoffMode
@@ -383,11 +384,11 @@ def test_e72p11_head_unica_e_filha_de_b8c04e2fd137() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `d1f6a83b70c5`.
+    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `e5b21c9704af`.
     # O que este teste protege é a ANCESTRALIDADE da migration da E7.2,
     # que não mudou; head única é medida por `e72p18`.
     assert script.get_revision(_REVISION_E72).down_revision == _PARENT
-    assert migrations.current_revision() == "d1f6a83b70c5"
+    assert migrations.current_revision() == "e5b21c9704af"
 
 
 def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
@@ -406,7 +407,7 @@ def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
         }
     assert "ix_handoff_attempts_single_open" not in indices
     migrations.upgrade("head")
-    assert migrations.current_revision() == "d1f6a83b70c5"
+    assert migrations.current_revision() == "e5b21c9704af"
     assert set(_TABELAS_NOVAS) <= set(sa.inspect(engine).get_table_names())
     with engine.connect() as conexao:
         indices = {
@@ -438,7 +439,7 @@ def test_e72p13_downgrade_recusa_com_linha_em_cada_tabela(tabela) -> None:
         assert conexao.execute(sa.text(f"SELECT count(*) FROM {tabela}")).scalar_one() >= 1
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT)
-    assert migrations.current_revision() == "d1f6a83b70c5"
+    assert migrations.current_revision() == "e5b21c9704af"
 
 
 def test_e72p14_sem_drift_entre_orm_e_schema() -> None:
@@ -551,7 +552,7 @@ def test_e72p18_head_unica_e_filha_de_c3a75e01d248() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == (_REVISION_E72_R1,)
+    assert tuple(script.get_heads()) == ("e5b21c9704af",)
     assert script.get_revision(_REVISION_E72_R1).down_revision == _REVISION_E72
 
 
@@ -573,7 +574,7 @@ def test_e72p19_round_trip_da_migration_corretiva() -> None:
         }
     assert "request_sha256" not in colunas
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E72_R1
+    assert migrations.current_revision() == _REVISION_E72_R2
     with engine.connect() as conexao:
         colunas = {
             linha[0]
@@ -599,4 +600,225 @@ def test_e72p20_downgrade_recusa_com_vinculo_de_requisicao_gravado() -> None:
     _exportar_e_importar(schedule_id, step_id, "parecer")
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_REVISION_E72)
-    assert migrations.current_revision() == _REVISION_E72_R1
+    assert migrations.current_revision() == _REVISION_E72_R2
+
+
+# --- corretivo R2: sealer_ref na digital e hexadecimal no banco -------------
+
+_REVISION_E72_R2 = "e5b21c9704af"
+
+
+def _exportar_uma_vez(
+    schedule_id: uuid.UUID, step_id: uuid.UUID, chave: str, sealer: str, principal: str = "p"
+):
+    with UnitOfWork() as uow:
+        ctx = _Contexto(uow)
+        recibo, saida = ctx.comandos.export_handoff_once(
+            technical_principal_ref=principal,
+            command_key=chave,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            sealer_ref=sealer,
+        )
+        uow.commit()
+    return recibo, saida
+
+
+def _snapshot_completo() -> dict[str, list[tuple[object, ...]]]:
+    consultas = {
+        "schedules": "SELECT id, state, updated_at FROM schedules ORDER BY id",
+        "schedule_steps": "SELECT id, state, updated_at FROM schedule_steps ORDER BY id",
+        "handoff_attempts": (
+            "SELECT id, step_id, attempt_number, state, content_sha256, created_at, updated_at "
+            "FROM handoff_attempts ORDER BY id"
+        ),
+        "seal_receipts": (
+            "SELECT id, attempt_id, content_sha256, sealed_at, sealer_ref, created_at "
+            "FROM seal_receipts ORDER BY id"
+        ),
+        "handoff_results": (
+            "SELECT id, attempt_id, status, created_at FROM handoff_results ORDER BY id"
+        ),
+        "handoff_attributions": (
+            "SELECT id, attempt_id, role, declared_instance_id, declared_at, self_declared, "
+            "created_at FROM handoff_attributions ORDER BY id"
+        ),
+        "command_receipts": (
+            "SELECT id, operation, command_key, outcome_ref, request_sha256, created_at, "
+            "updated_at FROM command_receipts ORDER BY id"
+        ),
+    }
+    with engine.connect() as conexao:
+        return {
+            nome: [tuple(linha) for linha in conexao.execute(sa.text(sql))]
+            for nome, sql in consultas.items()
+        }
+
+
+def test_e72p21_export_com_mesmo_selador_e_replay_exato() -> None:
+    """Mesma chave + mesmo `sealer_ref` = replay, zero efeito adicional."""
+    schedule_id, step_id, _ = _preparar()
+    primeiro, saida = _exportar_uma_vez(schedule_id, step_id, "e1", "selador-a")
+    assert primeiro.replayed is False and saida is not None
+    antes = _snapshot_completo()
+    segundo, repetida = _exportar_uma_vez(schedule_id, step_id, "e1", "selador-a")
+    assert segundo.replayed is True
+    assert repetida is None, "replay não pode reexecutar o efeito"
+    assert segundo.receipt_id == primeiro.receipt_id
+    assert segundo.outcome_ref == primeiro.outcome_ref
+    assert _snapshot_completo() == antes
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_attempts")).scalar_one() == 1
+        assert conexao.execute(sa.text("SELECT count(*) FROM seal_receipts")).scalar_one() == 1
+
+
+def test_e72p22_export_com_selador_diferente_recusa_sem_mutar() -> None:
+    """`WHO_SEALED_IS_PART_OF_WHAT_WAS_REQUESTED`.
+
+    Pelo caminho HTTP o `sealer_ref` deriva do principal, que já compõe a
+    tripla — a colisão nem existiria. O serviço, porém, recebe o selador
+    como parâmetro próprio, e é aí que a digital precisa cobri-lo.
+    """
+    schedule_id, step_id, _ = _preparar()
+    _exportar_uma_vez(schedule_id, step_id, "e1", "selador-a")
+    antes = _snapshot_completo()
+    with UnitOfWork() as uow:
+        ctx = _Contexto(uow)
+        with pytest.raises(OrchestrationLifecycleViolationError):
+            ctx.comandos.export_handoff_once(
+                technical_principal_ref="p",
+                command_key="e1",
+                schedule_id=schedule_id,
+                step_id=step_id,
+                sealer_ref="selador-INTRUSO",
+            )
+    assert _snapshot_completo() == antes
+    with engine.connect() as conexao:
+        seladores = {
+            linha[0] for linha in conexao.execute(sa.text("SELECT sealer_ref FROM seal_receipts"))
+        }
+    assert seladores == {"selador-a"}
+
+
+def test_e72p23_seal_handoff_com_selador_diferente_recusa_sem_mutar() -> None:
+    """O mesmo para `SEAL_HANDOFF`, cuja semântica E7.1 é preservada."""
+    schedule_id, step_id, _ = _preparar()
+    with UnitOfWork() as uow:
+        ctx = _Contexto(uow)
+        primeiro = ctx.comandos.seal_handoff_once(
+            technical_principal_ref="p",
+            command_key="s1",
+            schedule_id=schedule_id,
+            step_id=step_id,
+            sealer_ref="selador-a",
+        )
+        uow.commit()
+    assert primeiro.replayed is False
+    antes = _snapshot_completo()
+    with UnitOfWork() as uow:
+        ctx = _Contexto(uow)
+        repetido = ctx.comandos.seal_handoff_once(
+            technical_principal_ref="p",
+            command_key="s1",
+            schedule_id=schedule_id,
+            step_id=step_id,
+            sealer_ref="selador-a",
+        )
+        uow.commit()
+    assert repetido.replayed is True
+    assert repetido.receipt_id == primeiro.receipt_id
+    assert _snapshot_completo() == antes
+    with UnitOfWork() as uow:
+        ctx = _Contexto(uow)
+        with pytest.raises(OrchestrationLifecycleViolationError):
+            ctx.comandos.seal_handoff_once(
+                technical_principal_ref="p",
+                command_key="s1",
+                schedule_id=schedule_id,
+                step_id=step_id,
+                sealer_ref="outro-selador",
+            )
+    assert _snapshot_completo() == antes
+
+
+def test_e72p24_a_atribuicao_imutavel_original_permanece_intacta() -> None:
+    """Recusa por selador divergente não toca veredito nem atribuição."""
+    schedule_id, step_id, _ = _preparar()
+    _exportar_e_importar(schedule_id, step_id, "parecer completo")
+    antes = _snapshot_completo()
+    with UnitOfWork() as uow:
+        ctx = _Contexto(uow)
+        with pytest.raises(OrchestrationLifecycleViolationError):
+            (
+                ctx.comandos.export_handoff_once(
+                    technical_principal_ref="p",
+                    command_key="e-conflito",
+                    schedule_id=schedule_id,
+                    step_id=step_id,
+                    sealer_ref="selador-a",
+                )
+                if False
+                else ctx.comandos.seal_handoff_once(
+                    technical_principal_ref="p",
+                    command_key="s-nova",
+                    schedule_id=schedule_id,
+                    step_id=step_id,
+                    sealer_ref="x",
+                )
+            )
+    assert _snapshot_completo()["handoff_attributions"] == antes["handoff_attributions"]
+    assert _snapshot_completo()["handoff_results"] == antes["handoff_results"]
+
+
+@pytest.mark.parametrize(
+    ("nome", "valor"),
+    [
+        ("não hexadecimal", "z" * 64),
+        ("maiúsculas", "A" * 64),
+        ("mistura de caixa", "aB" * 32),
+        ("curto demais", "a" * 63),
+        ("longo demais", "a" * 65),
+    ],
+)
+def test_e72p25_o_banco_recusa_request_sha256_fora_da_forma_canonica(nome, valor) -> None:
+    """`LENGTH_CHECK != FORMAT_CHECK`; `UPPERCASE_DIGEST != CANONICAL_DIGEST`.
+
+    `DataError` para o valor longo demais: o tipo `varchar(64)` barra
+    antes do `CHECK`. Recusa por tipo é recusa — o que não pode existir é
+    a linha.
+    """
+    with pytest.raises((IntegrityError, DataError)), engine.begin() as conexao:
+        conexao.execute(
+            sa.text(
+                "INSERT INTO command_receipts (id, technical_principal_ref, operation, "
+                "command_key, outcome_ref, request_sha256) VALUES "
+                "(gen_random_uuid(), 'p', 'orchestration.seal_handoff', :k, 'x', :h)"
+            ),
+            {"k": f"k-{nome}", "h": valor},
+        )
+
+
+@pytest.mark.parametrize("valor", [None, "a" * 64, "0123456789abcdef" * 4])
+def test_e72p26_o_banco_aceita_null_historico_e_digest_canonico(valor) -> None:
+    """Não-vacuidade: recusa o inválido, não tudo. `NULL` histórico segue."""
+    with engine.begin() as conexao:
+        conexao.execute(
+            sa.text(
+                "INSERT INTO command_receipts (id, technical_principal_ref, operation, "
+                "command_key, outcome_ref, request_sha256) VALUES "
+                "(gen_random_uuid(), 'p', 'orchestration.seal_handoff', :k, 'x', :h)"
+            ),
+            {"k": f"ok-{valor}", "h": valor},
+        )
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM command_receipts")).scalar_one() == 1
+
+
+def test_e72p27_head_unica_e_filha_de_e5b21c9704af() -> None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert tuple(script.get_heads()) == (_REVISION_E72_R2,)
+    assert script.get_revision(_REVISION_E72_R2).down_revision == "d1f6a83b70c5"
+    assert migrations.current_revision() == _REVISION_E72_R2

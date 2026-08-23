@@ -39,7 +39,7 @@ pytestmark = pytest.mark.skipif(
 
 _MIGRATION_E62 = "b4d71c58ae02"
 _MIGRATION_PARENT = "f8a91c2d4e60"
-_MIGRATION_HEAD = "d1f6a83b70c5"
+_MIGRATION_HEAD = "e5b21c9704af"
 """ATUALIZADO PELA E7.1: a folha da cadeia passou a ser a orquestração.
 
 ```text

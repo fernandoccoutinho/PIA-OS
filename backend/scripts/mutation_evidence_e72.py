@@ -22,6 +22,10 @@ detecção de insert versus replay, vínculo requisição/comando, vínculo
 Attempt<->Step na reconstrução, redação do conteúdo no 422/log e a
 constraint canônica de `validation_codes`.
 
+Corretivo R2 (Chain115): os dez anteriores seguem intactos, e três novos
+medem o `sealer_ref` na impressão digital de selar e exportar, mais a
+constraint hexadecimal de `request_sha256`.
+
 Uso:
 
     python -m scripts.mutation_evidence_e72
@@ -182,6 +186,44 @@ MUTANTES: tuple[Mutante, ...] = (
         "        _CHECK_CODES,\n"
         "        _RESULTS,\n"
         '        sa.text(f"{_FUNCTION_CODES}(validation_codes)"),\n'
+        "    )",
+        "    pass",
+        (_PERSISTENCIA,),
+    ),
+    Mutante(
+        "M16",
+        "remover sealer_ref da impressão digital de SEAL_HANDOFF",
+        "app/orchestration/services/command_receipt_service.py",
+        '                    "operation": CommandOperation.SEAL_HANDOFF.value,\n'
+        '                    "schedule_id": str(schedule_id),\n'
+        '                    "step_id": str(step_id),\n'
+        '                    "sealer_ref": sealer_ref,',
+        '                    "operation": CommandOperation.SEAL_HANDOFF.value,\n'
+        '                    "schedule_id": str(schedule_id),\n'
+        '                    "step_id": str(step_id),',
+        (_PERSISTENCIA,),
+    ),
+    Mutante(
+        "M17",
+        "remover sealer_ref da impressão digital de EXPORT_HANDOFF",
+        "app/orchestration/services/command_receipt_service.py",
+        '                    "operation": CommandOperation.EXPORT_HANDOFF.value,\n'
+        '                    "schedule_id": str(schedule_id),\n'
+        '                    "step_id": str(step_id),\n'
+        '                    "sealer_ref": sealer_ref,',
+        '                    "operation": CommandOperation.EXPORT_HANDOFF.value,\n'
+        '                    "schedule_id": str(schedule_id),\n'
+        '                    "step_id": str(step_id),',
+        (_PERSISTENCIA,),
+    ),
+    Mutante(
+        "M18",
+        "remover a constraint hexadecimal de request_sha256",
+        "alembic/versions/e5b21c9704af_hex_request_sha256_e7_2_r2.py",
+        "    op.create_check_constraint(\n"
+        "        _CHECK_HEX,\n"
+        "        _COMMANDS,\n"
+        "        sa.text(\"request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$'\"),\n"
         "    )",
         "    pass",
         (_PERSISTENCIA,),

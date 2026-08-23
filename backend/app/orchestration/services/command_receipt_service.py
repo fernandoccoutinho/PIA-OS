@@ -66,6 +66,24 @@ def _impressao_digital(payload: Mapping[str, object]) -> str:
     `ENVELOPE_CONTENT`: a ordem em que o cliente montou o corpo não é
     conteúdo. Do conteúdo bruto entra apenas o **hash** dos bytes UTF-8
     exatos — a impressão digital identifica a requisição sem guardá-la.
+
+    ## Corretivo R2 (Chain115): `sealer_ref` entra em selar e exportar
+
+    ```text
+    WHO_SEALED_IS_PART_OF_WHAT_WAS_REQUESTED
+    DERIVED_TODAY != DERIVED_FOREVER
+    ```
+
+    Hoje a API deriva `sealer_ref` de `str(principal.id)`, que já compõe a
+    tripla de idempotência — então, **por esse caminho**, um selador
+    diferente implica principal diferente e a colisão nem chega a existir.
+    A digital não depende disso: `seal_handoff_once` e
+    `export_handoff_once` recebem `sealer_ref` como parâmetro próprio, e
+    um chamador de serviço pode passá-lo divergente.
+
+    Deixar de fora um campo que muda o efeito, apoiado em como a única
+    superfície atual o preenche, é fazer a corretude depender de uma
+    coincidência entre camadas. Quem selou é parte do que foi pedido.
     """
     canonico = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonico.encode("utf-8")).hexdigest()
@@ -211,6 +229,7 @@ class CommandReceiptService:
                     "operation": CommandOperation.SEAL_HANDOFF.value,
                     "schedule_id": str(schedule_id),
                     "step_id": str(step_id),
+                    "sealer_ref": sealer_ref,
                 }
             ),
             efeito=efeito,
@@ -331,6 +350,7 @@ class CommandReceiptService:
                     "operation": CommandOperation.EXPORT_HANDOFF.value,
                     "schedule_id": str(schedule_id),
                     "step_id": str(step_id),
+                    "sealer_ref": sealer_ref,
                 }
             ),
             efeito=efeito,
