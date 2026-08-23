@@ -98,6 +98,7 @@ class ControlService:
         control_principal_ref: str,
         schedule_id: uuid.UUID,
         action: str,
+        event_id: uuid.UUID,
         stop_condition_category: StopConditionCategory | None = None,
     ) -> ControlOutcome:
         """Aplica `pause | resume | stop | cancel` sob a ordem de locks."""
@@ -145,6 +146,7 @@ class ControlService:
             state=destino,
         )
         evento = self._repository.create_control_event(
+            event_id=event_id,
             control_principal_ref=control_principal_ref,
             schedule_id=schedule_id,
             step_id=None,
@@ -238,6 +240,7 @@ class ControlService:
         else:  # pragma: no cover - terminal recusa antes de chegar aqui
             return None
         evento = self._repository.create_control_event(
+            event_id=uuid.uuid4(),
             control_principal_ref=control_principal_ref,
             schedule_id=schedule_id,
             step_id=step_id,
@@ -278,6 +281,7 @@ class ControlService:
             state=ScheduleState.COMPLETED,
         )
         evento = self._repository.create_control_event(
+            event_id=uuid.uuid4(),
             control_principal_ref=control_principal_ref,
             schedule_id=schedule_id,
             step_id=None,

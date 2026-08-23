@@ -174,3 +174,31 @@ class ScheduleService:
         return self.get_schedule(
             control_principal_ref=control_principal_ref, schedule_id=schedule_id
         )
+
+    def advance(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, position: int
+    ) -> tuple[int, ...]:
+        """Autoridade **pura** sobre "a próxima etapa pode ir".
+
+        ```text
+        advance() = AUTORIZACAO_DA_PROXIMA_ETAPA
+        advance() != TRANSICAO_PERSISTIDA
+        NEXT_STEP_SUGGESTION != NEXT_STEP_AUTHORIZATION
+        REJECTED_RESULT BLOCKS ADVANCE
+        ```
+
+        Devolve as posições anteriores que ainda **não** retornaram; vazio
+        significa autorizado. Não grava nada: o estado das predecessoras já
+        é a verdade, e uma segunda gravação seria uma segunda fonte dela.
+
+        Corretivo R1 (Chain117): esta regra existia embutida no despacho,
+        sem nome e sem ponto único de teste. O decision register aprovou
+        ponto único de autorização; deixá-la inline contrariava isso.
+        """
+        return tuple(
+            self._repository.list_unreturned_predecessors(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                position=position,
+            )
+        )

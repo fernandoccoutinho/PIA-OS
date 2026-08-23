@@ -59,6 +59,7 @@ class AuditService:
         opinion: AuditOpinionKind,
         reason_codes: tuple[str, ...],
         auditor_execution_ref: str,
+        opinion_id: uuid.UUID,
     ) -> AuditOpinionView:
         """Emite parecer. A matriz opinião×motivo é imposta antes do banco."""
         if not auditor_execution_ref.strip():
@@ -84,6 +85,7 @@ class AuditService:
                 detail={"schedule_id": str(schedule_id), "attempt_id": str(attempt_id)},
             )
         parecer = self._repository.create_audit_opinion(
+            opinion_id=opinion_id,
             control_principal_ref=control_principal_ref,
             schedule_id=schedule_id,
             handoff_result_id=resultado.id,

@@ -106,6 +106,10 @@ class AuditOpinion(BaseModel):
             "length(btrim(issued_by_principal_ref)) > 0",
             name="ck_audit_opinions_principal_not_blank",
         ),
+        CheckConstraint(
+            "opinion IN ('concur', 'dissent', 'insufficient_evidence', 'out_of_scope')",
+            name="ck_audit_opinions_opinion_vocabulary",
+        ),
         Index("ix_audit_opinions_result", "handoff_result_id"),
     )
     """Sem `UNIQUE` em `handoff_result_id`: opiniões independentes coexistem.

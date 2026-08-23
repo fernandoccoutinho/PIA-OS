@@ -69,6 +69,10 @@ class ExecutionObservation(BaseModel):
             "previous_declared_provider_id IS DISTINCT FROM current_declared_provider_id",
             name="ck_execution_observations_provider_actually_changed",
         ),
+        CheckConstraint(
+            "observation_kind IN ('declared_provider_switch')",
+            name="ck_execution_observations_kind_vocabulary",
+        ),
         Index("ix_execution_observations_step", "step_id"),
     )
     """As duas FKs compostas provam que **ambas** as tentativas pertencem à

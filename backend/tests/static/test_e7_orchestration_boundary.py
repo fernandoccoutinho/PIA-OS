@@ -436,6 +436,8 @@ CONTROL_BOUND = frozenset(
         "create_execution_observation",
         "list_execution_observations",
         "get_result_for_audit",
+        "get_control_event",
+        "get_audit_opinion",
         "create_audit_opinion",
         "list_audit_opinions",
         # --- E7.2 ---
@@ -574,6 +576,8 @@ ATTEMPT_SCOPED = frozenset(
         "create_execution_observation",
         "list_execution_observations",
         "get_result_for_audit",
+        "get_control_event",
+        "get_audit_opinion",
         "create_audit_opinion",
         "list_audit_opinions",
     }

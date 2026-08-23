@@ -433,3 +433,164 @@ def test_e73p10_uma_ativa_por_trinca_mas_terminal_libera_a_proxima() -> None:
         ).scalar_one()
     assert ativas == 1
     assert segunda != primeira
+
+
+# --- corretivo R1: vocabulários fechados no banco (achado C3) ----------------
+
+_INSERT_EVENTO = (
+    "INSERT INTO orchestration_control_events (id, schedule_id, event_kind, "
+    "reason_code, stop_condition_category, declared_by_principal_ref, occurred_at) "
+    "VALUES (gen_random_uuid(), :s, :k, :r, :c, 'p', now())"
+)
+
+
+@pytest.mark.parametrize(
+    ("nome", "coluna", "valor"),
+    [
+        ("estado de delegação", "state", "inventado"),
+        ("estado vazio", "state", ""),
+        ("scope desconhecido", "scope", "review"),
+    ],
+)
+def test_e73p11_o_banco_recusa_vocabulario_de_delegacao_invalido(nome, coluna, valor) -> None:
+    """Achado C3: `SAEnum(native_enum=False)` **não** cria `CHECK`.
+
+    ```text
+    TYPED_IN_PYTHON != CONSTRAINED_IN_POSTGRES
+    ```
+
+    Pior que aceitar lixo: a linha inválida ficava protegida pelos
+    triggers append-only, isto é, indelével.
+    """
+    schedule_id, step_id = _cenario()
+    valores = {
+        "i": uuid.uuid4(),
+        "s": schedule_id,
+        "p": step_id,
+        "h": _HASH,
+        "v": datetime.now(UTC) + timedelta(hours=1),
+    }
+    sql = _INSERT_DELEGATION
+    if coluna == "state":
+        sql = sql.replace("'active')", f"'{valor}')")
+    else:
+        sql = sql.replace("'dispatch'", f"'{valor}'")
+    with pytest.raises(IntegrityError, match="vocabulary"), engine.begin() as conexao:
+        conexao.execute(sa.text(sql), valores)
+
+
+@pytest.mark.parametrize(
+    ("nome", "kind", "reason", "categoria"),
+    [
+        ("event_kind inválido", "explodido", "operator_requested", None),
+        ("reason_code inválido", "paused", "porque_sim", None),
+        (
+            "categoria inválida",
+            "stopped",
+            "stop_condition_declared",
+            "categoria_inventada",
+        ),
+    ],
+)
+def test_e73p12_o_banco_recusa_vocabulario_de_controle_invalido(
+    nome, kind, reason, categoria
+) -> None:
+    schedule_id, _ = _cenario()
+    with pytest.raises(IntegrityError, match="vocabulary"), engine.begin() as conexao:
+        conexao.execute(
+            sa.text(_INSERT_EVENTO),
+            {"s": schedule_id, "k": kind, "r": reason, "c": categoria},
+        )
+
+
+def test_e73p13_o_banco_recusa_tipo_de_observacao_invalido() -> None:
+    schedule_id, step_id = _cenario()
+    a1, a2 = uuid.uuid4(), uuid.uuid4()
+    with engine.begin() as conexao:
+        for indice, attempt in enumerate((a1, a2), start=1):
+            conexao.execute(
+                sa.text(_INSERT_ATTEMPT),
+                {"i": attempt, "s": schedule_id, "p": step_id, "n": indice, "h": _HASH},
+            )
+            conexao.execute(
+                sa.text("UPDATE handoff_attempts SET state = 'closed_ok' WHERE id = :i"),
+                {"i": attempt},
+            )
+    with pytest.raises(IntegrityError, match="vocabulary"), engine.begin() as conexao:
+        conexao.execute(
+            sa.text(
+                "INSERT INTO execution_observations (id, schedule_id, step_id, "
+                "observation_kind, previous_attempt_id, current_attempt_id, "
+                "previous_declared_provider_id, current_declared_provider_id, "
+                "self_declared, observed_at) VALUES (gen_random_uuid(), :s, :p, "
+                "'tipo_inventado', :a1, :a2, 'x', 'y', true, now())"
+            ),
+            {"s": schedule_id, "p": step_id, "a1": a1, "a2": a2},
+        )
+
+
+def test_e73p14_o_banco_aceita_o_vocabulario_valido() -> None:
+    """Não-vacuidade: os `CHECK` recusam o inválido, não tudo."""
+    schedule_id, _ = _cenario()
+    with engine.begin() as conexao:
+        conexao.execute(
+            sa.text(_INSERT_EVENTO),
+            {
+                "s": schedule_id,
+                "k": "stopped",
+                "r": "stop_condition_declared",
+                "c": "missing_authority",
+            },
+        )
+    with engine.connect() as conexao:
+        assert (
+            conexao.execute(
+                sa.text("SELECT count(*) FROM orchestration_control_events")
+            ).scalar_one()
+            == 1
+        )
+
+
+def test_e73p15_o_consumo_recusa_hash_divergente_no_repositorio() -> None:
+    """O `content_sha256` na cláusula do UPDATE é carga, não enfeite.
+
+    ```text
+    DELEGATION_CONSUMPTION = HASH_BOUND
+    ```
+
+    O serviço revalida o conteúdo antes de chamar aqui — defesa em
+    profundidade. Esta prova mede a camada de baixo diretamente: se a
+    cláusula sair do `UPDATE`, um consumo com hash errado passaria, e a
+    única barreira restante seria uma checagem acima que alguém pode
+    reordenar.
+    """
+    from app.orchestration.repositories.orchestration_repository import (
+        OrchestrationRepository,
+    )
+    from app.repositories.unit_of_work import UnitOfWork
+
+    schedule_id, step_id = _cenario()
+    delegation_id = _delegacao(
+        schedule_id, step_id, validade=datetime.now(UTC) + timedelta(hours=1)
+    )
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        consumida = repositorio.consume_delegation(
+            control_principal_ref="p",
+            schedule_id=schedule_id,
+            step_id=step_id,
+            delegation_id=delegation_id,
+            content_sha256=_OUTRO_HASH,
+            scope="dispatch",
+            attempt_id=uuid.uuid4(),
+        )
+        assert consumida is False
+        uow.rollback()
+    with engine.connect() as conexao:
+        assert (
+            conexao.execute(
+                sa.text("SELECT state FROM service_delegations WHERE id = :d"),
+                {"d": delegation_id},
+            ).scalar_one()
+            == "active"
+        )

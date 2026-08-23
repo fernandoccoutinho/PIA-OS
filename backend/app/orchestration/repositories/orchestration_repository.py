@@ -1051,6 +1051,7 @@ class OrchestrationRepository:
     def create_control_event(
         self,
         *,
+        event_id: uuid.UUID,
         control_principal_ref: str,
         schedule_id: uuid.UUID,
         step_id: uuid.UUID | None,
@@ -1069,6 +1070,7 @@ class OrchestrationRepository:
                 detail={"schedule_id": str(schedule_id)},
             )
         evento = OrchestrationControlEvent(
+            id=event_id,
             schedule_id=schedule_id,
             step_id=step_id,
             event_kind=event_kind,
@@ -1269,6 +1271,7 @@ class OrchestrationRepository:
     def create_audit_opinion(
         self,
         *,
+        opinion_id: uuid.UUID,
         control_principal_ref: str,
         schedule_id: uuid.UUID,
         handoff_result_id: uuid.UUID,
@@ -1301,6 +1304,7 @@ class OrchestrationRepository:
                 detail={"schedule_id": str(schedule_id), "result_id": str(handoff_result_id)},
             )
         parecer = AuditOpinion(
+            id=opinion_id,
             handoff_result_id=handoff_result_id,
             opinion=opinion,
             reason_codes=reason_codes,
@@ -1343,3 +1347,44 @@ class OrchestrationRepository:
             message="registro de governança é append-only: DELETE recusado",
             detail={"record_id": str(record_id)},
         )
+
+    def get_control_event(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, event_id: uuid.UUID
+    ) -> OrchestrationControlEvent | None:
+        """O evento EXATO, por id — base do replay fiel.
+
+        ```text
+        REPLAY_RETURNS_THE_ORIGINAL_RECORD
+        ```
+
+        Devolver "o último evento do Schedule" faria o replay de uma pausa
+        responder com a retomada que veio depois. O recibo guarda o id, e
+        é por ele que se lê.
+        """
+        return self._session.scalars(
+            sa.select(OrchestrationControlEvent)
+            .join(Schedule, Schedule.id == OrchestrationControlEvent.schedule_id)
+            .where(
+                OrchestrationControlEvent.id == event_id,
+                OrchestrationControlEvent.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()
+
+    def get_audit_opinion(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, opinion_id: uuid.UUID
+    ) -> AuditOpinion | None:
+        """O parecer EXATO, por id. Um `dissent` não pode virar `concur`."""
+        return self._session.scalars(
+            sa.select(AuditOpinion)
+            .join(HandoffResult, HandoffResult.id == AuditOpinion.handoff_result_id)
+            .join(HandoffAttempt, HandoffAttempt.id == HandoffResult.attempt_id)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                AuditOpinion.id == opinion_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()

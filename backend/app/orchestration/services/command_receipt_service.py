@@ -490,6 +490,7 @@ class CommandReceiptService:
             saida["v"] = self._delegation_service.revoke(  # type: ignore[union-attr]
                 control_principal_ref=technical_principal_ref,
                 schedule_id=schedule_id,
+                step_id=step_id,
                 delegation_id=delegation_id,
             )
 
@@ -529,6 +530,7 @@ class CommandReceiptService:
             raise OrchestrationContractViolationError(
                 message="serviço de controle não configurado nesta composição"
             )
+        event_id = uuid.uuid4()
         saida: dict[str, object] = {}
 
         def efeito() -> None:
@@ -536,6 +538,7 @@ class CommandReceiptService:
                 control_principal_ref=technical_principal_ref,
                 schedule_id=schedule_id,
                 action=action,
+                event_id=event_id,
                 stop_condition_category=stop_condition_category,
             )
 
@@ -543,7 +546,9 @@ class CommandReceiptService:
             technical_principal_ref=technical_principal_ref,
             operation=CommandOperation.CONTROL_SCHEDULE,
             command_key=command_key,
-            proposed_outcome_ref=str(schedule_id),
+            # O recibo aponta para o EVENTO, não para o Schedule: o replay
+            # precisa devolver o registro original, e o Schedule tem muitos.
+            proposed_outcome_ref=str(event_id),
             request_sha256=_impressao_digital(
                 {
                     "operation": CommandOperation.CONTROL_SCHEDULE.value,
@@ -573,6 +578,7 @@ class CommandReceiptService:
             raise OrchestrationContractViolationError(
                 message="serviço de auditoria não configurado nesta composição"
             )
+        opinion_id = uuid.uuid4()
         saida: dict[str, object] = {}
 
         def efeito() -> None:
@@ -583,13 +589,16 @@ class CommandReceiptService:
                 opinion=opinion,
                 reason_codes=reason_codes,
                 auditor_execution_ref=auditor_execution_ref,
+                opinion_id=opinion_id,
             )
 
         recibo = self._executar_uma_vez(
             technical_principal_ref=technical_principal_ref,
             operation=CommandOperation.ISSUE_AUDIT_OPINION,
             command_key=command_key,
-            proposed_outcome_ref=str(attempt_id),
+            # Aponta para o PARECER: um `dissent` replayado não pode
+            # devolver um `concur` emitido depois sobre a mesma tentativa.
+            proposed_outcome_ref=str(opinion_id),
             request_sha256=_impressao_digital(
                 {
                     "operation": CommandOperation.ISSUE_AUDIT_OPINION.value,

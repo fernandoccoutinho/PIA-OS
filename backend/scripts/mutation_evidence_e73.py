@@ -54,6 +54,7 @@ _IGNORAR = shutil.ignore_patterns(
 _API = "tests/integration/api/test_e73_governance_api.py"
 _PERSISTENCIA = "tests/integration/orchestration/test_e73_delegation_schema.py"
 _ESTATICO = "tests/static/test_e72_orchestration_boundary.py"
+_DTO_UNITARIO = "tests/unit/orchestration/test_e73_public_dtos.py"
 _UNITARIO = "tests/unit/orchestration/test_return_validation.py"
 
 
@@ -142,9 +143,12 @@ MUTANTES: tuple[Mutante, ...] = (
         "M-h",
         "remover content_sha256 do consumo da delegacao",
         "app/orchestration/repositories/orchestration_repository.py",
+        # REAPONTADO: a revalidação de conteúdo no serviço (corretivo C1)
+        # absorve este mutante pela API. A cláusula do UPDATE é a camada de
+        # baixo e tem prova própria em `e73p15`.
         "AND content_sha256 = :h AND state = 'active' AND valid_until > now()",
         "AND state = 'active' AND valid_until > now()",
-        (_API,),
+        (_PERSISTENCIA,),
     ),
     Mutante(
         "M-u",
@@ -227,6 +231,79 @@ MUTANTES: tuple[Mutante, ...] = (
         "def ler_governanca(\n    schedule_id: uuid.UUID,\n    principal: "
         "ProgrammaticPrincipal | None = None,",
         (_API, _ESTATICO),
+    ),
+    Mutante(
+        "M-c1",
+        "aceitar autorizacao fabricada pelo chamador (achado C1)",
+        "app/orchestration/services/manual_handoff_export_service.py",
+        "        self._consumir_autorizacao(autorizacao)",
+        "        pass",
+        (_API,),
+    ),
+    Mutante(
+        "M-c1b",
+        "nao revalidar o conteudo entre autorizacao e despacho",
+        "app/orchestration/services/manual_handoff_export_service.py",
+        "        if conteudo_agora.content_sha256() != autorizacao.content_sha256:",
+        "        if False:",
+        (_API,),
+    ),
+    Mutante(
+        "M-c2",
+        "replay devolve o evento mais recente e nao o original (achado C2)",
+        "app/routers/orchestration.py",
+        "            event_id=uuid.UUID(recibo.outcome_ref),",
+        "            event_id=repositorio.list_control_events(\n"
+        "                control_principal_ref=principal_ref, schedule_id=schedule_id\n"
+        "            )[-1].id,",
+        (_API,),
+    ),
+    Mutante(
+        "M-c2b",
+        "replay de parecer devolve o mais recente (achado C2)",
+        "app/routers/orchestration.py",
+        "            opinion_id=uuid.UUID(recibo.outcome_ref),",
+        "            opinion_id=repositorio.list_audit_opinions(\n"
+        "                control_principal_ref=principal_ref, schedule_id=schedule_id\n"
+        "            )[-1].id,",
+        (_API,),
+    ),
+    Mutante(
+        "M-c4",
+        "revogacao ignora a Step declarada no path (achado C4)",
+        "app/orchestration/services/delegation_service.py",
+        "        if delegacao.step_id != step_id:",
+        "        if False:",
+        (_API,),
+    ),
+    Mutante(
+        "M-c5",
+        "aceitar valid_until sem fuso horario (achado C5)",
+        # O serviço tem guarda equivalente para chamada direta e absorveria
+        # este mutante pela API; o alvo é a camada de ENTRADA, medida pelo
+        # unitário do DTO.
+        "app/schemas/orchestration_public.py",
+        "        if valor.tzinfo is None or valor.tzinfo.utcoffset(valor) is None:",
+        "        if False:",
+        (_DTO_UNITARIO,),
+    ),
+    Mutante(
+        "M-c6",
+        "advance() deixa de exigir predecessoras RETURNED (achado C6)",
+        "app/orchestration/services/schedule_service.py",
+        "        return tuple(\n" "            self._repository.list_unreturned_predecessors(",
+        "        return ()  # type: ignore[unreachable]\n"
+        "        return tuple(\n"
+        "            self._repository.list_unreturned_predecessors(",
+        (_API,),
+    ),
+    Mutante(
+        "M-c3",
+        "remover os CHECK de vocabulario do banco (achado C3)",
+        "alembic/versions/a91d3f7c26be_close_e73_vocabularies.py",
+        "        op.create_check_constraint(nome, tabela, sa.text(regra))",
+        "        pass",
+        (_PERSISTENCIA,),
     ),
 )
 

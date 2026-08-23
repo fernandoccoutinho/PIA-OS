@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.orchestration.models.enums import (
     AttemptState,
@@ -237,11 +237,26 @@ class GrantDelegationRequest(_Congelado):
 
     ```text
     SERVER_DERIVES_WHAT_THE_CLIENT_COULD_LIE_ABOUT
+    NAIVE_DATETIME = AMBIGUOUS_INSTANT
     ```
     """
 
     command_key: str = Field(min_length=1, max_length=MAX_COMMAND_KEY)
     valid_until: datetime
+
+    @field_validator("valid_until")
+    @classmethod
+    def _exige_fuso(cls, valor: datetime) -> datetime:
+        """Recusa instante sem fuso — 422, não erro interno.
+
+        Sem fuso não há instante: o servidor teria de escolher um, e a
+        escolha decidiria silenciosamente quando a delegação expira. A
+        comparação com o relógio do banco (timezone-aware) também
+        estouraria `TypeError`, virando 500 para um erro do cliente.
+        """
+        if valor.tzinfo is None or valor.tzinfo.utcoffset(valor) is None:
+            raise ValueError("valid_until exige fuso horário explícito")
+        return valor
 
 
 class RevokeDelegationRequest(_Congelado):

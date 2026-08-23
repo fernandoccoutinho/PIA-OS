@@ -49,24 +49,37 @@ from app.orchestration.schemas.envelope import (
 )
 from app.orchestration.services.control_service import ControlService
 from app.orchestration.services.handoff_service import HandoffService
+from app.orchestration.services.schedule_service import ScheduleService
+
+MAX_AUTORIZACOES_PENDENTES = 8
+"""Teto de autorizações emitidas e não usadas por instância de serviço."""
 
 
 @dataclass(frozen=True)
 class DispatchAuthorized:
-    """Preflight aprovado. Congelado, e produzido **só** pelo preflight.
+    """Preflight aprovado, **emitido** por uma instância de serviço.
 
     ```text
-    NO_PUBLIC_OBJECT_ACCEPTS_AN_INVENTED_AUTHORIZED_FLAG
+    FORGEABLE_AUTHORIZATION = NO_AUTHORIZATION
+    AUTHORIZATION_IS_BOUND_TO_ITS_ISSUER
+    AUTHORIZATION_IS_SINGLE_USE
     ```
 
-    Não existe construtor público que receba `authorized=True` de um
-    chamador: o objeto só nasce de `_preflight()`, e o caminho autorizado
-    revalida o vínculo no `UPDATE` condicional antes de qualquer efeito.
+    Corretivo R1 (Chain117). A versão anterior era um dataclass público
+    que qualquer chamador podia construir e passar a `export_step()`,
+    obtendo transporte sem preflight, sem gate e sem delegação. A
+    docstring afirmava que isso era impossível; não era.
+
+    `authorization_id` não é o segredo — o objeto inteiro é registrado no
+    emissor e retirado de lá no uso. Um objeto fabricado, ainda que copie
+    todos os campos, não está no registro da instância que vai executar,
+    e um objeto legítimo só serve uma vez.
     """
 
     content_sha256: str
     delegation_id: uuid.UUID | None
     first_dispatch: bool
+    authorization_id: uuid.UUID
 
 
 @dataclass(frozen=True)
@@ -96,12 +109,67 @@ class ManualHandoffExportService:
         transport: HandoffTransportPort,
         human_gate: GateAuthorizationPort | None = None,
         control_service: ControlService | None = None,
+        schedule_service: ScheduleService | None = None,
     ) -> None:
         self._repository = repository
         self._handoff_service = handoff_service
+        self._schedule_service = schedule_service or ScheduleService(repository)
         self._transport = transport
         self._human_gate = human_gate
         self._control_service = control_service
+        self._autorizacoes_emitidas: dict[uuid.UUID, DispatchAuthorized] = {}
+        """Autorizações emitidas por ESTA instância e ainda não usadas.
+
+        Privado e por instância: uma autorização emitida noutra requisição,
+        noutra sessão, ou construída à mão, não está aqui.
+        """
+
+    def _registrar_autorizacao(self, autorizacao: DispatchAuthorized) -> DispatchAuthorized:
+        """Registra, com teto explícito.
+
+        ```text
+        REGISTRY_LIFETIME = REQUEST_SCOPED
+        UNBOUNDED_REGISTRY = A_LEAK_WAITING_FOR_A_LOOP
+        ```
+
+        O registro morre com a instância, que é construída por requisição —
+        então o acúmulo já é limitado pelo ciclo de vida. O teto existe
+        mesmo assim: "não cresce porque ninguém chama duas vezes" é um
+        argumento sobre chamadores, e chamadores mudam. Estourar o teto é
+        recusa tipada, não crescimento silencioso.
+        """
+        if len(self._autorizacoes_emitidas) >= MAX_AUTORIZACOES_PENDENTES:
+            raise DispatchBlockedError(
+                message="autorizações pendentes em excesso nesta composição",
+                detail={"reason_code": "too_many_pending_authorizations"},
+            )
+        self._autorizacoes_emitidas[autorizacao.authorization_id] = autorizacao
+        return autorizacao
+
+    def _consumir_autorizacao(self, autorizacao: DispatchAuthorized) -> None:
+        """Retira a autorização do registro. Fabricada ou reusada, recusa.
+
+        ```text
+        IDENTITY_IS_NOT_EQUALITY
+        ```
+
+        A comparação é `is`, não `==`. Um dataclass congelado com os mesmos
+        campos — `authorization_id` incluído — é **igual** e não é o
+        **mesmo** objeto: copiar os valores não reproduz a autorização.
+
+        `dict.pop` é a operação atômica: sob concorrência, exatamente uma
+        chamada leva o objeto e as demais encontram ausência.
+        """
+        emitida = self._autorizacoes_emitidas.pop(autorizacao.authorization_id, None)
+        if emitida is not autorizacao:
+            if emitida is not None:
+                self._autorizacoes_emitidas[autorizacao.authorization_id] = emitida
+            raise DispatchBlockedError(
+                message=(
+                    "autorização de despacho não foi emitida por este serviço, " "ou já foi usada"
+                ),
+                detail={"reason_code": "authorization_not_issued"},
+            )
 
     # --- fase 1: preflight sob locks ---------------------------------------
 
@@ -170,10 +238,13 @@ class ManualHandoffExportService:
                 message="etapa cancelada não despacha",
                 detail={"current_state": etapa.state.value},
             )
-        pendentes = self._repository.list_unreturned_predecessors(
-            control_principal_ref=control_principal_ref,
-            schedule_id=schedule_id,
-            position=etapa.position,
+        # Ponto único de autorização da próxima etapa.
+        pendentes = list(
+            self._schedule_service.advance(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                position=etapa.position,
+            )
         )
         if pendentes:
             raise OrchestrationLifecycleViolationError(
@@ -211,8 +282,13 @@ class ManualHandoffExportService:
         if exigencia is None:
             # Ausência de marcador = retrocompatível. Nenhuma delegação é
             # exigida, e nada de novo é gravado.
-            return DispatchAuthorized(
-                content_sha256=hash_corrente, delegation_id=None, first_dispatch=primeira
+            return self._registrar_autorizacao(
+                DispatchAuthorized(
+                    content_sha256=hash_corrente,
+                    delegation_id=None,
+                    first_dispatch=primeira,
+                    authorization_id=uuid.uuid4(),
+                )
             )
 
         if exigencia.requires_human:
@@ -262,10 +338,13 @@ class ManualHandoffExportService:
                 reason_code=ControlReasonCode.DELEGATION_CONTENT_CHANGED,
                 content_sha256=hash_corrente,
             )
-        return DispatchAuthorized(
-            content_sha256=hash_corrente,
-            delegation_id=delegacao.id,
-            first_dispatch=primeira,
+        return self._registrar_autorizacao(
+            DispatchAuthorized(
+                content_sha256=hash_corrente,
+                delegation_id=delegacao.id,
+                first_dispatch=primeira,
+                authorization_id=uuid.uuid4(),
+            )
         )
 
     def register_block(
@@ -339,6 +418,10 @@ class ManualHandoffExportService:
                 raise AssertionError("register_block sempre levanta")  # pragma: no cover
             autorizacao = resultado
 
+        # Chamada direta com objeto fabricado morre aqui, antes de qualquer
+        # lock, consumo ou transporte.
+        self._consumir_autorizacao(autorizacao)
+
         etapa = self._repository.lock_step(
             control_principal_ref=control_principal_ref,
             schedule_id=schedule_id,
@@ -350,6 +433,30 @@ class ManualHandoffExportService:
                 detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
             )
         primeira_exportacao = autorizacao.first_dispatch
+
+        # O conteúdo é recalculado AQUI e comparado com o que foi
+        # autorizado. Entre o preflight e este ponto a etapa pode ter
+        # mudado: a delegação continuaria casando com o hash antigo, e o
+        # selo sairia com o novo — autorização para um conteúdo,
+        # despacho de outro.
+        #
+        # ```text
+        # AUTHORIZED_CONTENT == DISPATCHED_CONTENT
+        # ```
+        conteudo_agora = self._handoff_service.build_envelope_content(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+        )
+        if conteudo_agora.content_sha256() != autorizacao.content_sha256:
+            raise DispatchBlockedError(
+                message="o conteúdo mudou entre a autorização e o despacho",
+                detail={
+                    "schedule_id": str(schedule_id),
+                    "step_id": str(step_id),
+                    "reason_code": "content_changed_after_authorization",
+                },
+            )
 
         # ```text
         # CLAIM_BEFORE_ALLOWED_EFFECT = TRUE

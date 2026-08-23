@@ -65,6 +65,25 @@ class OrchestrationControlEvent(BaseModel):
             "length(btrim(declared_by_principal_ref)) > 0",
             name="ck_control_events_principal_not_blank",
         ),
+        CheckConstraint(
+            "event_kind IN ('paused', 'resumed', 'stopped', 'cancelled', 'completed')",
+            name="ck_control_events_kind_vocabulary",
+        ),
+        CheckConstraint(
+            "reason_code IN ('operator_requested', 'delegation_missing', "
+            "'delegation_expired', 'delegation_content_changed', "
+            "'human_gate_unavailable', 'stop_condition_declared', 'all_steps_returned')",
+            name="ck_control_events_reason_vocabulary",
+        ),
+        CheckConstraint(
+            "stop_condition_category IS NULL OR stop_condition_category IN ("
+            "'missing_authority', 'scope_or_impact_change', 'provider_or_tool_switch', "
+            "'cost_quota_or_duration_limit', 'secret_or_privacy_risk', "
+            "'artifact_identity_mismatch', 'mandatory_gate_failed', "
+            "'material_audit_finding', 'external_effect_requested', "
+            "'provenance_or_isolation_failure')",
+            name="ck_control_events_stop_category_vocabulary",
+        ),
         Index("ix_control_events_schedule", "schedule_id"),
     )
     """A matriz categoria×motivo é imposta por `CHECK`, nos dois sentidos.

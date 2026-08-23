@@ -360,7 +360,7 @@ def test_e73a12_cancelamento_fecha_tentativas_abertas_e_preserva_returned(client
     sid = dados["schedule_id"]
     s1, s2 = dados["steps"][0]["step_id"], dados["steps"][1]["step_id"]
     attempt = _exportar(cliente, headers, sid, s1, "e1").json()["data"]["attempt_id"]
-    cliente.post(
+    importado = cliente.post(
         f"/api/v1/schedules/{sid}/steps/{s1}/handoff-import",
         json={
             "command_key": "i1",
@@ -370,6 +370,8 @@ def test_e73a12_cancelamento_fecha_tentativas_abertas_e_preserva_returned(client
         },
         headers=headers,
     )
+    assert importado.status_code == 201, importado.text
+    assert importado.json()["data"]["step_state"] == "returned"
     aberta = _exportar(cliente, headers, sid, s2, "e2")
     assert aberta.status_code == 201
     resposta = _controle(cliente, headers, sid, "cancel", "k1")
@@ -705,13 +707,12 @@ def test_e73a27_replay_exato_de_controle_nao_duplica(cliente) -> None:
 def test_e73a28_o_consumo_revalida_o_hash_no_ponto_material(cliente) -> None:
     """Mata `M-h`: `content_sha256` fora do UPDATE de consumo.
 
-    O preflight já compara o hash, mas o consumo **revalida** — entre uma
+    O preflight compara o hash, mas o consumo **revalida** — entre uma
     coisa e outra a etapa pode mudar, e a garantia tem de estar onde o
-    efeito acontece, não só onde a decisão foi tomada.
+    efeito acontece.
 
-    O cenário força exatamente essa janela: a delegação é concedida, o
-    conteúdo muda no banco, e a autorização anterior é oferecida ao
-    caminho de efeito.
+    A autorização é obtida do próprio serviço (não pode ser fabricada);
+    o conteúdo muda **depois** dela ser emitida.
     """
     from app.orchestration.adapters.deny_all_human_gate import DenyAllHumanGate
     from app.orchestration.adapters.manual_transport import ManualTransport
@@ -735,17 +736,6 @@ def test_e73a28_o_consumo_revalida_o_hash_no_ponto_material(cliente) -> None:
         principal_ref = conexao.execute(
             sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
         ).scalar_one()
-        hash_antigo = conexao.execute(
-            sa.text("SELECT content_sha256 FROM service_delegations")
-        ).scalar_one()
-        delegation_id = conexao.execute(sa.text("SELECT id FROM service_delegations")).scalar_one()
-
-    # O conteúdo muda DEPOIS da concessão.
-    with engine.begin() as conexao:
-        conexao.execute(
-            sa.text("UPDATE schedule_steps SET instruction_ref = 'i://mudou' WHERE id = :p"),
-            {"p": step},
-        )
 
     with UnitOfWork() as uow:
         repositorio = OrchestrationRepository(uow.session)
@@ -756,21 +746,18 @@ def test_e73a28_o_consumo_revalida_o_hash_no_ponto_material(cliente) -> None:
             DenyAllHumanGate(),
             ControlService(repositorio),
         )
-        # A autorização carrega o hash CORRENTE, como o preflight real
-        # produziria; a delegação ficou presa ao antigo. É a revalidação no
-        # UPDATE que precisa recusar — passar o hash antigo casaria com a
-        # linha antiga e não provaria nada.
-        conteudo_atual = HandoffService(repositorio).build_envelope_content(
+        autorizacao = servico.preflight(
             control_principal_ref=principal_ref,
             schedule_id=uuid.UUID(sid),
             step_id=uuid.UUID(step),
         )
-        assert conteudo_atual.content_sha256() != hash_antigo
-        autorizacao_obsoleta = DispatchAuthorized(
-            content_sha256=conteudo_atual.content_sha256(),
-            delegation_id=delegation_id,
-            first_dispatch=True,
+        assert isinstance(autorizacao, DispatchAuthorized)
+        # O conteúdo muda DEPOIS da autorização ser emitida.
+        uow.session.execute(
+            sa.text("UPDATE schedule_steps SET instruction_ref = 'i://mudou' WHERE id = :p"),
+            {"p": uuid.UUID(step)},
         )
+        uow.session.flush()
         with pytest.raises(DispatchBlockedError):
             servico.export_step(
                 attempt_id=uuid.uuid4(),
@@ -778,10 +765,156 @@ def test_e73a28_o_consumo_revalida_o_hash_no_ponto_material(cliente) -> None:
                 schedule_id=uuid.UUID(sid),
                 step_id=uuid.UUID(step),
                 sealer_ref=principal_ref,
-                authorization=autorizacao_obsoleta,
+                authorization=autorizacao,
             )
     assert _contar("SELECT count(*) FROM service_delegations WHERE state = 'consumed'") == 0
     assert _contar("SELECT count(*) FROM handoff_attempts") == 0
+
+
+def test_e73a28b_autorizacao_fabricada_pelo_chamador_e_recusada(cliente) -> None:
+    """Achado C1: `FORGEABLE_AUTHORIZATION = NO_AUTHORIZATION`.
+
+    Um chamador construía `DispatchAuthorized` à mão e obtinha transporte
+    sem preflight, sem gate e sem delegação. A autorização passou a ser
+    registrada na instância emissora e retirada no uso: um objeto
+    fabricado não está no registro, por mais que copie os campos.
+    """
+    from app.orchestration.adapters.deny_all_human_gate import DenyAllHumanGate
+    from app.orchestration.errors.exceptions import DispatchBlockedError
+    from app.orchestration.repositories.orchestration_repository import (
+        OrchestrationRepository,
+    )
+    from app.orchestration.services.control_service import ControlService
+    from app.orchestration.services.handoff_service import HandoffService
+    from app.orchestration.services.manual_handoff_export_service import (
+        DispatchAuthorized,
+        ManualHandoffExportService,
+    )
+    from app.repositories.unit_of_work import UnitOfWork
+
+    class _TransporteContado:
+        mode = "manual_handoff"
+
+        def __init__(self) -> None:
+            self.chamadas = 0
+
+        def export(self, handoff):  # noqa: ANN001, ANN202
+            self.chamadas += 1
+            return handoff
+
+        def receive(self, *, attempt_id):  # noqa: ANN001, ANN202
+            raise AssertionError("não usado")
+
+    headers = _principal()
+    # Etapa COM gate e SEM delegação alguma: só um bypass a faria despachar.
+    sid, step = _criar(cliente, headers, GATE_TECNICO)
+    with engine.connect() as conexao:
+        principal_ref = conexao.execute(
+            sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
+        ).scalar_one()
+    transporte = _TransporteContado()
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        servico = ManualHandoffExportService(
+            repositorio,
+            HandoffService(repositorio),
+            transporte,
+            DenyAllHumanGate(),
+            ControlService(repositorio),
+        )
+        forjada = DispatchAuthorized(
+            content_sha256="a" * 64,
+            delegation_id=None,
+            first_dispatch=True,
+            authorization_id=uuid.uuid4(),
+        )
+        with pytest.raises(DispatchBlockedError) as capturado:
+            servico.export_step(
+                attempt_id=uuid.uuid4(),
+                control_principal_ref=principal_ref,
+                schedule_id=uuid.UUID(sid),
+                step_id=uuid.UUID(step),
+                sealer_ref=principal_ref,
+                authorization=forjada,
+            )
+    assert capturado.value.detail["reason_code"] == "authorization_not_issued"
+    assert transporte.chamadas == 0
+    assert _contar("SELECT count(*) FROM handoff_attempts") == 0
+    assert _contar("SELECT count(*) FROM seal_receipts") == 0
+
+
+def test_e73a28c_autorizacao_legitima_serve_uma_unica_vez(cliente) -> None:
+    """Emitida por outra instância, ou já usada, não vale."""
+    from app.orchestration.adapters.deny_all_human_gate import DenyAllHumanGate
+    from app.orchestration.adapters.manual_transport import ManualTransport
+    from app.orchestration.errors.exceptions import DispatchBlockedError
+    from app.orchestration.repositories.orchestration_repository import (
+        OrchestrationRepository,
+    )
+    from app.orchestration.services.control_service import ControlService
+    from app.orchestration.services.handoff_service import HandoffService
+    from app.orchestration.services.manual_handoff_export_service import (
+        DispatchAuthorized,
+        ManualHandoffExportService,
+    )
+    from app.repositories.unit_of_work import UnitOfWork
+
+    headers = _principal()
+    sid, step = _criar(cliente, headers, {})
+    with engine.connect() as conexao:
+        principal_ref = conexao.execute(
+            sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
+        ).scalar_one()
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+
+        def montar() -> ManualHandoffExportService:
+            return ManualHandoffExportService(
+                repositorio,
+                HandoffService(repositorio),
+                ManualTransport(),
+                DenyAllHumanGate(),
+                ControlService(repositorio),
+            )
+
+        emissor = montar()
+        autorizacao = emissor.preflight(
+            control_principal_ref=principal_ref,
+            schedule_id=uuid.UUID(sid),
+            step_id=uuid.UUID(step),
+        )
+        assert isinstance(autorizacao, DispatchAuthorized)
+        # Outra instância não conhece esta autorização.
+        with pytest.raises(DispatchBlockedError):
+            montar().export_step(
+                attempt_id=uuid.uuid4(),
+                control_principal_ref=principal_ref,
+                schedule_id=uuid.UUID(sid),
+                step_id=uuid.UUID(step),
+                sealer_ref=principal_ref,
+                authorization=autorizacao,
+            )
+        # O emissor aceita uma vez...
+        emissor.export_step(
+            attempt_id=uuid.uuid4(),
+            control_principal_ref=principal_ref,
+            schedule_id=uuid.UUID(sid),
+            step_id=uuid.UUID(step),
+            sealer_ref=principal_ref,
+            authorization=autorizacao,
+        )
+        # ...e recusa a segunda.
+        with pytest.raises(DispatchBlockedError):
+            emissor.export_step(
+                attempt_id=uuid.uuid4(),
+                control_principal_ref=principal_ref,
+                schedule_id=uuid.UUID(sid),
+                step_id=uuid.UUID(step),
+                sealer_ref=principal_ref,
+                authorization=autorizacao,
+            )
+        uow.commit()
+    assert _contar("SELECT count(*) FROM handoff_attempts") == 1
 
 
 @pytest.mark.parametrize(
@@ -1101,3 +1234,380 @@ def test_e73a36_a_impressao_da_fase_zero_coincide_com_a_do_claim(cliente) -> Non
             sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
         ).scalar_one()
     assert _impressao_de_export(uuid.UUID(sid), uuid.UUID(step), principal_ref) == persistida
+
+
+# --- corretivo R1: C2, C4, C5 e C6 ------------------------------------------
+
+
+def test_e73a37_replay_de_controle_devolve_o_evento_original(cliente) -> None:
+    """Achado C2: o replay devolvia o registro mais recente.
+
+    ```text
+    REPLAY_RETURNS_THE_ORIGINAL_RECORD
+    ```
+
+    Ler "o último evento do Schedule" fazia o replay de uma pausa
+    responder com a retomada que veio depois — resposta plausível e
+    errada, que é a pior espécie.
+    """
+    headers = _principal()
+    sid, _ = _criar(cliente, headers, {})
+    pausa = _controle(cliente, headers, sid, "pause", "k1")
+    assert pausa.status_code == 201
+    original = pausa.json()["data"]["event"]
+    assert original["event_kind"] == "paused"
+
+    assert _controle(cliente, headers, sid, "resume", "k2").status_code == 201
+    assert _controle(cliente, headers, sid, "pause", "k3").status_code == 201
+
+    replay = _controle(cliente, headers, sid, "pause", "k1")
+    assert replay.status_code == 201
+    assert replay.json()["data"]["replayed"] is True
+    assert replay.json()["data"]["event"] == original
+
+
+def test_e73a38_replay_de_parecer_devolve_o_parecer_original(cliente) -> None:
+    """Achado C2: um `dissent` replayado devolvia um `concur` posterior."""
+    headers = _principal()
+    sid, step = _criar(cliente, headers, {})
+    attempt = _exportar(cliente, headers, sid, step, "e1").json()["data"]["attempt_id"]
+    cliente.post(
+        f"/api/v1/schedules/{sid}/steps/{step}/handoff-import",
+        json={
+            "command_key": "i1",
+            "attempt_id": attempt,
+            "output": {"media_type": "text/plain", "content": "parecer"},
+            "attribution": {"declared_instance_id": "i1"},
+        },
+        headers=headers,
+    )
+
+    def emitir(chave: str, opiniao: str, motivo: str):
+        return cliente.post(
+            f"/api/v1/schedules/{sid}/attempts/{attempt}/audit-opinions",
+            json={
+                "command_key": chave,
+                "opinion": opiniao,
+                "reason_codes": [motivo],
+                "auditor_execution_ref": f"exec-{chave}",
+            },
+            headers=headers,
+        )
+
+    primeiro = emitir("a1", "dissent", "contract_nonconformity")
+    assert primeiro.status_code == 201
+    original = primeiro.json()["data"]["opinion"]
+    assert emitir("a2", "concur", "contract_conforms").status_code == 201
+
+    replay = emitir("a1", "dissent", "contract_nonconformity")
+    assert replay.status_code == 201
+    assert replay.json()["data"]["replayed"] is True
+    assert replay.json()["data"]["opinion"] == original
+    assert replay.json()["data"]["opinion"]["opinion"] == "dissent"
+
+
+def test_e73a39_revogacao_nao_alcanca_delegacao_de_outra_step(cliente) -> None:
+    """Achado C4: `step_id` entrava na digital mas não chegava ao serviço."""
+    headers = _principal()
+    corpo = {
+        "command_key": "c1",
+        "title": "t",
+        "steps": [
+            {
+                "role": f"r{i}",
+                "instruction_ref": f"i://{i}",
+                "expected_output_contract": OUTPUT_NON_EMPTY_TEXT_V1,
+                "constraints": GATE_TECNICO,
+            }
+            for i in range(2)
+        ],
+    }
+    dados = cliente.post("/api/v1/schedules", json=corpo, headers=headers).json()["data"]
+    sid = dados["schedule_id"]
+    s1, s2 = dados["steps"][0]["step_id"], dados["steps"][1]["step_id"]
+    delegacao = _grant(cliente, headers, sid, s1, "g1").json()["data"]["delegation"]
+    assert _grant(cliente, headers, sid, s2, "g2").status_code == 201
+
+    # URL com a etapa B, delegação da etapa A.
+    cruzado = cliente.post(
+        f"/api/v1/schedules/{sid}/steps/{s2}/delegations/{delegacao['delegation_id']}/revoke",
+        json={"command_key": "rv1"},
+        headers=headers,
+    )
+    assert cruzado.status_code == 404
+    assert _contar("SELECT count(*) FROM service_delegations WHERE state = 'active'") == 2
+
+
+@pytest.mark.parametrize("instante", ["2030-01-01T00:00:00", "2030-06-15T12:30:00.000000"])
+def test_e73a40_valid_until_sem_fuso_e_422(cliente, instante) -> None:
+    """Achado C5: virava `TypeError` e 500. Erro de entrada é 422."""
+    headers = _principal()
+    sid, step = _criar(cliente, headers, GATE_TECNICO)
+    resposta = cliente.post(
+        f"/api/v1/schedules/{sid}/steps/{step}/delegations",
+        json={"command_key": "g1", "valid_until": instante},
+        headers=headers,
+    )
+    assert resposta.status_code == 422
+    assert _contar("SELECT count(*) FROM service_delegations") == 0
+
+
+def test_e73a41_advance_e_a_autoridade_unica_da_proxima_etapa(cliente) -> None:
+    """Achado C6: a regra existia inline, sem nome nem ponto único.
+
+    ```text
+    advance() = AUTORIZACAO_PURA
+    advance() != TRANSICAO_PERSISTIDA
+    ```
+    """
+    from app.orchestration.repositories.orchestration_repository import (
+        OrchestrationRepository,
+    )
+    from app.orchestration.services.schedule_service import ScheduleService
+    from app.repositories.unit_of_work import UnitOfWork
+
+    headers = _principal()
+    corpo = {
+        "command_key": "c1",
+        "title": "t",
+        "steps": [
+            {
+                "role": f"r{i}",
+                "instruction_ref": f"i://{i}",
+                "expected_output_contract": OUTPUT_NON_EMPTY_TEXT_V1,
+            }
+            for i in range(2)
+        ],
+    }
+    dados = cliente.post("/api/v1/schedules", json=corpo, headers=headers).json()["data"]
+    sid = dados["schedule_id"]
+    s1 = dados["steps"][0]["step_id"]
+    with engine.connect() as conexao:
+        principal_ref = conexao.execute(
+            sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
+        ).scalar_one()
+
+    def perguntar(posicao: int) -> tuple[int, ...]:
+        with UnitOfWork() as uow:
+            resposta = ScheduleService(OrchestrationRepository(uow.session)).advance(
+                control_principal_ref=principal_ref,
+                schedule_id=uuid.UUID(sid),
+                position=posicao,
+            )
+            uow.commit()
+        return resposta
+
+    # Posições são 1-based: a primeira etapa não tem predecessora.
+    assert perguntar(1) == ()
+    assert perguntar(2) == (1,)
+
+    antes = _estados_das_etapas()
+    assert perguntar(2) == (1,)
+    # Perguntar de novo não grava nada: é decisão, não transição.
+    assert _estados_das_etapas() == antes
+
+    attempt = _exportar(cliente, headers, sid, s1, "e1").json()["data"]["attempt_id"]
+    importado = cliente.post(
+        f"/api/v1/schedules/{sid}/steps/{s1}/handoff-import",
+        json={
+            "command_key": "i1",
+            "attempt_id": attempt,
+            "output": {"media_type": "text/plain", "content": "ok"},
+            "attribution": {"declared_instance_id": "i1"},
+        },
+        headers=headers,
+    )
+    assert importado.status_code == 201, importado.text
+    assert importado.json()["data"]["step_state"] == "returned"
+    assert perguntar(2) == ()
+
+
+def _estados_das_etapas() -> list[tuple[object, ...]]:
+    with engine.connect() as conexao:
+        return [
+            tuple(linha)
+            for linha in conexao.execute(
+                sa.text("SELECT position, state FROM schedule_steps ORDER BY position")
+            )
+        ]
+
+
+# --- corretivo R1: propriedades do registro de autorização ------------------
+
+
+def _servico_de_export(repositorio):  # noqa: ANN001, ANN202
+    from app.orchestration.adapters.deny_all_human_gate import DenyAllHumanGate
+    from app.orchestration.adapters.manual_transport import ManualTransport
+    from app.orchestration.services.control_service import ControlService
+    from app.orchestration.services.handoff_service import HandoffService
+    from app.orchestration.services.manual_handoff_export_service import (
+        ManualHandoffExportService,
+    )
+
+    return ManualHandoffExportService(
+        repositorio,
+        HandoffService(repositorio),
+        ManualTransport(),
+        DenyAllHumanGate(),
+        ControlService(repositorio),
+    )
+
+
+def test_e73a42_a_autorizacao_e_identidade_opaca_nao_igualdade(cliente) -> None:
+    """`IDENTITY_IS_NOT_EQUALITY`.
+
+    Uma cópia exata — mesmo `authorization_id`, mesmos campos — é
+    **igual** ao original e não é o **mesmo** objeto. Se o registro
+    comparasse por igualdade, conhecer os campos bastaria para forjar.
+    """
+    import dataclasses
+
+    from app.orchestration.errors.exceptions import DispatchBlockedError
+    from app.orchestration.repositories.orchestration_repository import (
+        OrchestrationRepository,
+    )
+    from app.orchestration.services.manual_handoff_export_service import DispatchAuthorized
+    from app.repositories.unit_of_work import UnitOfWork
+
+    headers = _principal()
+    sid, step = _criar(cliente, headers, {})
+    with engine.connect() as conexao:
+        principal_ref = conexao.execute(
+            sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
+        ).scalar_one()
+    with UnitOfWork() as uow:
+        servico = _servico_de_export(OrchestrationRepository(uow.session))
+        legitima = servico.preflight(
+            control_principal_ref=principal_ref,
+            schedule_id=uuid.UUID(sid),
+            step_id=uuid.UUID(step),
+        )
+        assert isinstance(legitima, DispatchAuthorized)
+        copia = dataclasses.replace(legitima)
+        assert copia == legitima and copia is not legitima
+        with pytest.raises(DispatchBlockedError) as capturado:
+            servico.export_step(
+                attempt_id=uuid.uuid4(),
+                control_principal_ref=principal_ref,
+                schedule_id=uuid.UUID(sid),
+                step_id=uuid.UUID(step),
+                sealer_ref=principal_ref,
+                authorization=copia,
+            )
+        assert capturado.value.detail["reason_code"] == "authorization_not_issued"
+        # A legítima continua utilizável: a recusa da cópia não a queimou.
+        servico.export_step(
+            attempt_id=uuid.uuid4(),
+            control_principal_ref=principal_ref,
+            schedule_id=uuid.UUID(sid),
+            step_id=uuid.UUID(step),
+            sealer_ref=principal_ref,
+            authorization=legitima,
+        )
+        uow.commit()
+    assert _contar("SELECT count(*) FROM handoff_attempts") == 1
+
+
+def test_e73a43_consumo_concorrente_permite_exatamente_um_despacho(cliente) -> None:
+    """`dict.pop` é a operação atômica: um leva, os outros encontram ausência."""
+    import threading
+
+    from app.orchestration.errors.exceptions import DispatchBlockedError
+    from app.orchestration.repositories.orchestration_repository import (
+        OrchestrationRepository,
+    )
+    from app.orchestration.services.manual_handoff_export_service import DispatchAuthorized
+    from app.repositories.unit_of_work import UnitOfWork
+
+    headers = _principal()
+    sid, step = _criar(cliente, headers, {})
+    with engine.connect() as conexao:
+        principal_ref = conexao.execute(
+            sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
+        ).scalar_one()
+
+    with UnitOfWork() as uow:
+        servico = _servico_de_export(OrchestrationRepository(uow.session))
+        autorizacao = servico.preflight(
+            control_principal_ref=principal_ref,
+            schedule_id=uuid.UUID(sid),
+            step_id=uuid.UUID(step),
+        )
+        assert isinstance(autorizacao, DispatchAuthorized)
+
+        barreira = threading.Barrier(4)
+        aceitos: list[int] = []
+        recusados: list[str] = []
+
+        def tentar(_indice: int) -> None:
+            barreira.wait(timeout=15)
+            try:
+                servico._consumir_autorizacao(autorizacao)
+                aceitos.append(1)
+            except DispatchBlockedError as erro:
+                recusados.append(str(erro.detail["reason_code"]))
+
+        linhas = [threading.Thread(target=tentar, args=(i,)) for i in range(4)]
+        for linha in linhas:
+            linha.start()
+        for linha in linhas:
+            linha.join(timeout=30)
+    assert len(aceitos) == 1
+    assert recusados == ["authorization_not_issued"] * 3
+
+
+def test_e73a44_instancia_nova_comeca_vazia_e_falha_fechada(cliente) -> None:
+    """Sem armazenamento compartilhado, outro processo é fail-closed.
+
+    ```text
+    REGISTRY_LIFETIME = REQUEST_SCOPED
+    NO_SHARED_STORE -> CROSS_PROCESS_IS_CLOSED_BY_CONSTRUCTION
+    ```
+    """
+    from app.orchestration.repositories.orchestration_repository import (
+        OrchestrationRepository,
+    )
+    from app.repositories.unit_of_work import UnitOfWork
+
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        primeiro = _servico_de_export(repositorio)
+        segundo = _servico_de_export(repositorio)
+        assert primeiro._autorizacoes_emitidas == {}
+        assert segundo._autorizacoes_emitidas == {}
+        assert primeiro._autorizacoes_emitidas is not segundo._autorizacoes_emitidas
+
+
+def test_e73a45_autorizacoes_pendentes_tem_teto_explicito(cliente) -> None:
+    """`UNBOUNDED_REGISTRY = A_LEAK_WAITING_FOR_A_LOOP`."""
+    from app.orchestration.errors.exceptions import DispatchBlockedError
+    from app.orchestration.repositories.orchestration_repository import (
+        OrchestrationRepository,
+    )
+    from app.orchestration.services.manual_handoff_export_service import (
+        MAX_AUTORIZACOES_PENDENTES,
+    )
+    from app.repositories.unit_of_work import UnitOfWork
+
+    headers = _principal()
+    sid, step = _criar(cliente, headers, {})
+    with engine.connect() as conexao:
+        principal_ref = conexao.execute(
+            sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
+        ).scalar_one()
+    with UnitOfWork() as uow:
+        servico = _servico_de_export(OrchestrationRepository(uow.session))
+        for _ in range(MAX_AUTORIZACOES_PENDENTES):
+            servico.preflight(
+                control_principal_ref=principal_ref,
+                schedule_id=uuid.UUID(sid),
+                step_id=uuid.UUID(step),
+            )
+        assert len(servico._autorizacoes_emitidas) == MAX_AUTORIZACOES_PENDENTES
+        with pytest.raises(DispatchBlockedError) as capturado:
+            servico.preflight(
+                control_principal_ref=principal_ref,
+                schedule_id=uuid.UUID(sid),
+                step_id=uuid.UUID(step),
+            )
+    assert capturado.value.detail["reason_code"] == "too_many_pending_authorizations"

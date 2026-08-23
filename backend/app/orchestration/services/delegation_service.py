@@ -110,6 +110,13 @@ class DelegationService:
                 message="etapa sem gate declarado não admite delegação",
                 detail={"step_id": str(step_id)},
             )
+        if valid_until.tzinfo is None or valid_until.tzinfo.utcoffset(valid_until) is None:
+            # O DTO já recusa com 422; aqui é a fronteira do domínio, para
+            # chamada direta. Comparar naive com aware levanta `TypeError`,
+            # que viraria 500 para um erro de entrada.
+            raise OrchestrationContractViolationError(
+                message="valid_until exige fuso horário explícito"
+            )
         agora = self._repository.database_now()
         if valid_until <= agora:
             raise OrchestrationContractViolationError(
@@ -153,9 +160,21 @@ class DelegationService:
         *,
         control_principal_ref: str,
         schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
         delegation_id: uuid.UUID,
     ) -> DelegationView:
-        """Revoga uma delegação `ACTIVE`. Terminal não regride."""
+        """Revoga uma delegação `ACTIVE` **desta** etapa. Terminal não regride.
+
+        ```text
+        NO_AUTHORIZATION_DERIVED_FROM_THE_AUTHORIZED_OBJECT
+        ```
+
+        Corretivo R1 (Chain117): `step_id` entrava na impressão digital mas
+        não chegava até aqui, então uma URL com a etapa B revogava
+        delegação da etapa A do mesmo Schedule. A etapa declarada no path
+        passa a ser comparada com a da delegação — mesma lição da
+        Chain112, aplicada a um objeto novo.
+        """
         delegacao = self._repository.get_delegation(
             control_principal_ref=control_principal_ref,
             schedule_id=schedule_id,
@@ -165,6 +184,11 @@ class DelegationService:
             raise OrchestrationScopeViolationError(
                 message="delegação inexistente neste Schedule sob este principal",
                 detail={"schedule_id": str(schedule_id), "delegation_id": str(delegation_id)},
+            )
+        if delegacao.step_id != step_id:
+            raise OrchestrationScopeViolationError(
+                message="delegação não pertence à etapa declarada no path",
+                detail={"step_id": str(step_id), "delegation_id": str(delegation_id)},
             )
         if delegacao.state is not DelegationState.ACTIVE:
             raise OrchestrationLifecycleViolationError(

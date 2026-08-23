@@ -94,6 +94,11 @@ class ServiceDelegation(BaseModel):
             unique=True,
             postgresql_where=sa_text("state = 'active'"),
         ),
+        CheckConstraint(
+            "state IN ('active', 'consumed', 'revoked', 'expired')",
+            name="ck_service_delegations_state_vocabulary",
+        ),
+        CheckConstraint("scope IN ('dispatch')", name="ck_service_delegations_scope_vocabulary"),
         Index("ix_service_delegations_step", "step_id"),
     )
     """A FK do consumo é **composta e diferida**, e as duas coisas importam.

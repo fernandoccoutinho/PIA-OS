@@ -58,6 +58,7 @@ pytestmark = [
 
 _REVISION_E72 = "c3a75e01d248"
 _REVISION_E73 = "f2c60d8a41b9"
+_REVISION_E73_R1 = "a91d3f7c26be"
 _PARENT = "b8c04e2fd137"
 _HASH = "f" * 64
 _TABELAS_NOVAS = ("handoff_results", "handoff_attributions")
@@ -398,11 +399,11 @@ def test_e72p11_head_unica_e_filha_de_b8c04e2fd137() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `f2c60d8a41b9`.
+    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `a91d3f7c26be`.
     # O que este teste protege é a ANCESTRALIDADE da migration da E7.2,
     # que não mudou; head única é medida por `e72p18`.
     assert script.get_revision(_REVISION_E72).down_revision == _PARENT
-    assert migrations.current_revision() == _REVISION_E73
+    assert migrations.current_revision() == _REVISION_E73_R1
 
 
 def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
@@ -422,7 +423,7 @@ def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
         }
     assert "ix_handoff_attempts_single_open" not in indices
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E73
+    assert migrations.current_revision() == _REVISION_E73_R1
     assert set(_TABELAS_NOVAS) <= set(sa.inspect(engine).get_table_names())
     with engine.connect() as conexao:
         indices = {
@@ -455,7 +456,7 @@ def test_e72p13_downgrade_recusa_com_linha_em_cada_tabela(tabela) -> None:
     # A folha E7.3 recusa antes de chegar à E7.2 — e a recusa é o ponto.
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT)
-    assert migrations.current_revision() == _REVISION_E73
+    assert migrations.current_revision() == _REVISION_E73_R1
 
 
 def test_e72p14_sem_drift_entre_orm_e_schema() -> None:
@@ -568,7 +569,7 @@ def test_e72p18_head_unica_e_filha_de_c3a75e01d248() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == ("f2c60d8a41b9",)
+    assert tuple(script.get_heads()) == ("a91d3f7c26be",)
     assert script.get_revision(_REVISION_E72_R1).down_revision == _REVISION_E72
     assert script.get_revision(_REVISION_E72_R2).down_revision == _REVISION_E72_R1
 
@@ -591,7 +592,7 @@ def test_e72p19_round_trip_da_migration_corretiva() -> None:
         }
     assert "request_sha256" not in colunas
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E73
+    assert migrations.current_revision() == _REVISION_E73_R1
     with engine.connect() as conexao:
         colunas = {
             linha[0]
@@ -617,7 +618,7 @@ def test_e72p20_downgrade_recusa_com_vinculo_de_requisicao_gravado() -> None:
     _exportar_e_importar(schedule_id, step_id, "parecer")
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_REVISION_E72)
-    assert migrations.current_revision() == _REVISION_E73
+    assert migrations.current_revision() == _REVISION_E73_R1
 
 
 # --- corretivo R2: sealer_ref na digital e hexadecimal no banco -------------
@@ -831,12 +832,12 @@ def test_e72p26_o_banco_aceita_null_historico_e_digest_canonico(valor) -> None:
         assert conexao.execute(sa.text("SELECT count(*) FROM command_receipts")).scalar_one() == 1
 
 
-def test_e72p27_head_unica_e_filha_de_f2c60d8a41b9() -> None:
+def test_e72p27_head_unica_e_filha_de_a91d3f7c26be() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == (_REVISION_E73,)
+    assert tuple(script.get_heads()) == (_REVISION_E73_R1,)
     assert script.get_revision(_REVISION_E72_R2).down_revision == "d1f6a83b70c5"
     assert script.get_revision(_REVISION_E73).down_revision == _REVISION_E72_R2
-    assert migrations.current_revision() == _REVISION_E73
+    assert migrations.current_revision() == _REVISION_E73_R1

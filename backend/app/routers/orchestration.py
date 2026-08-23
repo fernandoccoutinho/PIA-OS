@@ -741,10 +741,14 @@ def registrar_controle(
         agenda = ScheduleService(repositorio).get_schedule(
             control_principal_ref=principal_ref, schedule_id=schedule_id
         )
-        eventos = repositorio.list_control_events(
-            control_principal_ref=principal_ref, schedule_id=schedule_id
+        # Replay fiel: o evento é lido pelo id que o recibo guarda, nunca
+        # "o último do Schedule" — que seria a retomada mais recente.
+        evento = repositorio.get_control_event(
+            control_principal_ref=principal_ref,
+            schedule_id=schedule_id,
+            event_id=uuid.UUID(recibo.outcome_ref),
         )
-        if not eventos:  # pragma: no cover - o efeito sempre grava um
+        if evento is None:  # pragma: no cover - o efeito sempre grava um
             raise RuntimeError("controle sem evento registrado")
         resposta = dto.ControlEventResponse(
             schedule_id=schedule_id,
@@ -752,7 +756,7 @@ def registrar_controle(
             replayed=recibo.replayed,
             cancelled_steps=saida.cancelled_steps if saida is not None else 0,
             closed_attempts=saida.closed_attempts if saida is not None else 0,
-            event=_control_event_view(eventos[-1]),
+            event=_control_event_view(evento),
         )
         session.commit()
     except Exception:
@@ -794,14 +798,14 @@ def registrar_parecer(
             reason_codes=tuple(c.value for c in payload.reason_codes),
             auditor_execution_ref=payload.auditor_execution_ref,
         )
-        pareceres = repositorio.list_audit_opinions(
-            control_principal_ref=principal_ref, schedule_id=schedule_id
+        parecer = repositorio.get_audit_opinion(
+            control_principal_ref=principal_ref,
+            schedule_id=schedule_id,
+            opinion_id=uuid.UUID(recibo.outcome_ref),
         )
-        if not pareceres:  # pragma: no cover
+        if parecer is None:  # pragma: no cover
             raise RuntimeError("parecer sem registro")
-        resposta = dto.AuditOpinionResponse(
-            replayed=recibo.replayed, opinion=_audit_view(pareceres[-1])
-        )
+        resposta = dto.AuditOpinionResponse(replayed=recibo.replayed, opinion=_audit_view(parecer))
         session.commit()
     except Exception:
         session.rollback()

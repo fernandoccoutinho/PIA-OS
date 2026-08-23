@@ -46,7 +46,7 @@ _REVISION_E71 = "a7f31c05be24"
 _REVISION_E71_R1 = "b8c04e2fd137"
 _REVISION_E72 = "c3a75e01d248"
 _REVISION_E72_R1 = "d1f6a83b70c5"
-_REVISION_E72_R2 = "f2c60d8a41b9"
+_REVISION_E72_R2 = "a91d3f7c26be"
 """ATUALIZADO PELA E7.2: a folha da cadeia passou a ser a orquestração
 de retorno. As asserções de ANCESTRAL desta suíte (filha de
 `b4d71c58ae02`, filha de `a7f31c05be24`) seguem intactas — o que mudou
