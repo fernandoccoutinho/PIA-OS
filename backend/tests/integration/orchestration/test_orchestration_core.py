@@ -24,7 +24,7 @@ from app.database.engine import engine
 from app.database.session import SessionLocal
 from app.orchestration.errors.exceptions import OrchestrationScopeViolationError
 from app.orchestration.models.command_receipt import CommandReceipt
-from app.orchestration.models.enums import CommandOperation, HandoffMode
+from app.orchestration.models.enums import CommandOperation, HandoffMode, ScheduleState
 from app.orchestration.repositories.orchestration_repository import OrchestrationRepository
 from app.orchestration.schemas.envelope import ContextRef, ScheduleDraft, StepDraft
 from app.orchestration.services.command_receipt_service import (
@@ -38,6 +38,7 @@ from app.repositories.unit_of_work import UnitOfWork
 pytestmark = pytest.mark.integration
 
 _REVISION_E71 = "a7f31c05be24"
+_REVISION_E71_R1 = "b8c04e2fd137"
 _PARENT_REVISION = "b4d71c58ae02"
 _HASH = "d" * 64
 
@@ -72,6 +73,20 @@ def _base_limpa():
     _limpar()
     yield
     _limpar()
+
+
+def _nomes_de_restricao(tabela: str) -> set[str]:
+    """Restrições reais da tabela, lidas do catálogo do PostgreSQL."""
+    with engine.connect() as conexao:
+        return {
+            linha[0]
+            for linha in conexao.execute(
+                sa.text(
+                    "SELECT conname FROM pg_constraint " "WHERE conrelid = CAST(:t AS regclass)"
+                ),
+                {"t": tabela},
+            )
+        }
 
 
 def _rascunho(titulo: str = "revisão cruzada") -> ScheduleDraft:
@@ -127,9 +142,11 @@ def test_e71i01_head_unico_e_filha_de_b4d71c58ae02() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == (_REVISION_E71,)
+    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `b8c04e2fd137`.
+    # O que este teste protege é a ancestralidade da migration da E7.1,
+    # que não mudou; head único é medido por `e71i36`.
     assert script.get_revision(_REVISION_E71).down_revision == _PARENT_REVISION
-    assert migrations.current_revision() == _REVISION_E71
+    assert migrations.current_revision() == _REVISION_E71_R1
 
 
 def test_e71i02_as_cinco_tabelas_existem() -> None:
@@ -144,7 +161,7 @@ def test_e71i03_round_trip_upgrade_downgrade_upgrade_em_postgres_real() -> None:
     tabelas = set(sa.inspect(engine).get_table_names())
     assert not (set(_TABELAS_E71) & tabelas)
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E71
+    assert migrations.current_revision() == _REVISION_E71_R1
     assert set(_TABELAS_E71) <= set(sa.inspect(engine).get_table_names())
 
 
@@ -162,7 +179,7 @@ def test_e71i04_downgrade_com_recibo_recusa_antes_de_qualquer_ddl() -> None:
         uow.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == _REVISION_E71
+    assert migrations.current_revision() == _REVISION_E71_R1
     assert set(_TABELAS_E71) <= set(sa.inspect(engine).get_table_names())
 
 
@@ -866,3 +883,215 @@ def test_e71i27_replay_concorrente_nao_muta_o_recibo_nem_duplica_efeito() -> Non
     assert {r.outcome_ref for r in resultados} == {original.outcome_ref}
     assert all(r.replayed for r in resultados)
     assert _snapshot_efeitos()[:3] == (1, 1, 1)
+
+
+# --- corretivo R1: o vínculo em TODO caminho de tentativa e recibo ----------
+
+
+def _agenda_selada(principal: str) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Devolve `(schedule_id, step_id, attempt_id, receipt_id)` de um principal."""
+    schedule_id, step_id = _criar_agenda_ativa(principal=principal)
+    with UnitOfWork() as uow:
+        resultado = _Contexto(uow).handoff.seal_step(
+            attempt_id=uuid.uuid4(),
+            control_principal_ref=principal,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            sealer_ref="selador",
+        )
+        uow.commit()
+    return schedule_id, step_id, resultado.attempt_id, resultado.receipt_id
+
+
+def test_e71i28_b_nao_le_recibo_nem_tentativa_de_a() -> None:
+    """`OPAQUE_ID != SECRET_ID` — conhecer o id não autoriza a leitura."""
+    schedule_id, _, attempt_id, _ = _agenda_selada("principal-a")
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        # A vê o que é dele.
+        assert (
+            repositorio.get_seal_receipt_by_attempt(
+                control_principal_ref="principal-a", attempt_id=attempt_id
+            )
+            is not None
+        )
+        assert (
+            repositorio.get_attempt(control_principal_ref="principal-a", attempt_id=attempt_id)
+            is not None
+        )
+        # B, com o mesmo attempt_id em mãos, não vê nada.
+        assert (
+            repositorio.get_seal_receipt_by_attempt(
+                control_principal_ref="principal-b", attempt_id=attempt_id
+            )
+            is None
+        )
+        assert (
+            repositorio.get_attempt(control_principal_ref="principal-b", attempt_id=attempt_id)
+            is None
+        )
+        assert (
+            repositorio.list_attempts(control_principal_ref="principal-b", schedule_id=schedule_id)
+            == []
+        )
+
+
+def test_e71i29_b_nao_numera_nem_cria_tentativa_em_schedule_de_a() -> None:
+    schedule_id, step_id, _, _ = _agenda_selada("principal-a")
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.next_attempt_number(
+                control_principal_ref="principal-b",
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.create_attempt(
+                control_principal_ref="principal-b",
+                attempt_id=uuid.uuid4(),
+                schedule_id=schedule_id,
+                step_id=step_id,
+                attempt_number=99,
+                envelope_version="1",
+                content_sha256=_HASH,
+            )
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_attempts")).scalar_one() == 1
+
+
+def test_e71i30_b_nao_cria_recibo_para_tentativa_de_a() -> None:
+    _, _, attempt_id, _ = _agenda_selada("principal-a")
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.create_seal_receipt(
+                control_principal_ref="principal-b",
+                attempt_id=attempt_id,
+                content_sha256=_HASH,
+                sealed_at=repositorio.database_now(),
+                sealer_ref="intruso",
+            )
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM seal_receipts")).scalar_one() == 1
+        assert (
+            conexao.execute(
+                sa.text("SELECT count(*) FROM seal_receipts WHERE sealer_ref = 'intruso'")
+            ).scalar_one()
+            == 0
+        )
+
+
+def test_e71i31_b_nao_altera_o_estado_do_schedule_de_a_e_o_estado_permanece() -> None:
+    schedule_id, _ = _criar_agenda_ativa(principal="principal-a")
+    with engine.connect() as conexao:
+        antes = conexao.execute(
+            sa.text("SELECT state, updated_at FROM schedules WHERE id = :i"), {"i": schedule_id}
+        ).one()
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.set_schedule_state(
+                control_principal_ref="principal-b",
+                schedule_id=schedule_id,
+                state=ScheduleState.CANCELLED,
+            )
+        uow.commit()
+    with engine.connect() as conexao:
+        depois = conexao.execute(
+            sa.text("SELECT state, updated_at FROM schedules WHERE id = :i"), {"i": schedule_id}
+        ).one()
+    assert tuple(antes) == tuple(depois)
+    assert depois[0] == ScheduleState.ACTIVE.value
+
+
+def test_e71i32_schedule_a_com_step_b_e_recusado_pelo_repositorio() -> None:
+    """A combinação incoerente não passa nem quando o principal é o dono dos dois."""
+    schedule_a, _step_a = _criar_agenda_ativa(principal="principal-a")
+    schedule_b, step_b = _criar_agenda_ativa(principal="principal-a")
+    assert schedule_a != schedule_b
+    with UnitOfWork() as uow:
+        repositorio = OrchestrationRepository(uow.session)
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.create_attempt(
+                control_principal_ref="principal-a",
+                attempt_id=uuid.uuid4(),
+                schedule_id=schedule_a,
+                step_id=step_b,
+                attempt_number=1,
+                envelope_version="1",
+                content_sha256=_HASH,
+            )
+        with pytest.raises(OrchestrationScopeViolationError):
+            repositorio.next_attempt_number(
+                control_principal_ref="principal-a",
+                schedule_id=schedule_a,
+                step_id=step_b,
+            )
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_attempts")).scalar_one() == 0
+
+
+def test_e71i33_schedule_a_com_step_b_e_recusado_por_sql_bruto() -> None:
+    """`TWO_VALID_REFERENCES != ONE_COHERENT_REFERENCE`.
+
+    As duas FKs simples continuam satisfeitas isoladamente; é a chave
+    estrangeira COMPOSTA do corretivo R1 que recusa a combinação.
+    """
+    schedule_a, _ = _criar_agenda_ativa(principal="principal-a")
+    schedule_b, step_b = _criar_agenda_ativa(principal="principal-a")
+    with (
+        pytest.raises(Exception, match="fk_handoff_attempts_step_within_schedule"),
+        engine.begin() as conexao,
+    ):
+        conexao.execute(
+            sa.text(
+                "INSERT INTO handoff_attempts (id, schedule_id, step_id, attempt_number, "
+                "envelope_version, content_sha256, state) "
+                "VALUES (:i, :s, :p, 1, '1', :h, 'open')"
+            ),
+            {"i": uuid.uuid4(), "s": schedule_a, "p": step_b, "h": _HASH},
+        )
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_attempts")).scalar_one() == 0
+        # A combinação COERENTE é aceita pelo mesmo caminho de SQL bruto.
+        assert schedule_b is not None
+
+
+def test_e71i34_a_combinacao_coerente_continua_aceita_por_sql_bruto() -> None:
+    """Não-vacuidade de e71i33: a FK composta recusa o incoerente, não tudo."""
+    schedule_id, step_id = _criar_agenda_ativa(principal="principal-a")
+    with engine.begin() as conexao:
+        conexao.execute(
+            sa.text(
+                "INSERT INTO handoff_attempts (id, schedule_id, step_id, attempt_number, "
+                "envelope_version, content_sha256, state) "
+                "VALUES (:i, :s, :p, 1, '1', :h, 'open')"
+            ),
+            {"i": uuid.uuid4(), "s": schedule_id, "p": step_id, "h": _HASH},
+        )
+    with engine.connect() as conexao:
+        assert conexao.execute(sa.text("SELECT count(*) FROM handoff_attempts")).scalar_one() == 1
+
+
+def test_e71i35_round_trip_da_migration_corretiva() -> None:
+    schedule_id, step_id = _criar_agenda_ativa(principal="principal-a")
+    _limpar()
+    migrations.downgrade(_REVISION_E71)
+    assert migrations.current_revision() == _REVISION_E71
+    restricoes = _nomes_de_restricao("handoff_attempts")
+    assert "fk_handoff_attempts_step_within_schedule" not in restricoes
+    migrations.upgrade("head")
+    assert migrations.current_revision() == _REVISION_E71_R1
+    assert "fk_handoff_attempts_step_within_schedule" in _nomes_de_restricao("handoff_attempts")
+    assert "uq_schedule_steps_id_schedule" in _nomes_de_restricao("schedule_steps")
+    assert (schedule_id, step_id) is not None
+
+
+def test_e71i36_head_unico_e_filha_de_a7f31c05be24() -> None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert tuple(script.get_heads()) == (_REVISION_E71_R1,)
+    assert script.get_revision(_REVISION_E71_R1).down_revision == _REVISION_E71

@@ -166,7 +166,11 @@ class ScheduleService:
                 message=f"transição {agenda.state.value} -> active não pertence à E7.1",
                 detail={"current_state": agenda.state.value},
             )
-        self._repository.set_schedule_state(schedule=agenda, state=ScheduleState.ACTIVE)
+        self._repository.set_schedule_state(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            state=ScheduleState.ACTIVE,
+        )
         return self.get_schedule(
             control_principal_ref=control_principal_ref, schedule_id=schedule_id
         )

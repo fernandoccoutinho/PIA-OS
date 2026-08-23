@@ -17,6 +17,29 @@ para quem passa por aquele caminho.
 ```text
 CALLER_VALIDATION != WRITER_INVARIANT
 ```
+
+## Corretivo R1 (Chain111)
+
+A Chain110 impunha o vínculo apenas nos **cinco** métodos de leitura de
+Schedule e Step. Os caminhos de tentativa e de recibo — numerar, criar
+tentativa, criar recibo, ler recibo e gravar estado — recebiam
+identidades já resolvidas e confiavam em quem chamava.
+
+```text
+SCOPED_READ_PATH != SCOPED_WRITE_PATH
+CALLER_RESOLVED_ID != AUTHORIZED_ID
+```
+
+Um `attempt_id` ou `step_id` é opaco, mas não é secreto: quem o obtiver
+por qualquer via passava a operar sobre o trabalho de outro principal
+sem que o repositório notasse. O vínculo agora é imposto em **todo**
+caminho que leia ou altere `Schedule`, `Step`, `HandoffAttempt` ou
+`SealReceipt`, e um gate estático exaustivo classifica cada método
+público — nenhum método novo escapa por omissão.
+
+Caminho de escrita não devolve `None` em caso de escopo alheio: levanta
+`OrchestrationScopeViolationError`. Devolver `None` num escritor
+convidaria o chamador a tratar recusa como ausência.
 """
 
 import uuid
@@ -25,7 +48,10 @@ from datetime import datetime
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from app.orchestration.errors.exceptions import SealReceiptImmutableError
+from app.orchestration.errors.exceptions import (
+    OrchestrationScopeViolationError,
+    SealReceiptImmutableError,
+)
 from app.orchestration.models.attempt import HandoffAttempt
 from app.orchestration.models.command_receipt import CommandReceipt
 from app.orchestration.models.enums import AttemptState, HandoffMode, ScheduleState, StepState
@@ -123,11 +149,27 @@ class OrchestrationRepository:
             .with_for_update()
         ).one_or_none()
 
-    def set_schedule_state(self, *, schedule: Schedule, state: ScheduleState) -> Schedule:
-        """Grava um estado já decidido pelo serviço, sobre a linha bloqueada."""
-        schedule.state = state
+    def set_schedule_state(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, state: ScheduleState
+    ) -> Schedule:
+        """Grava um estado já decidido pelo serviço, sob escopo e sob lock.
+
+        Recebe `schedule_id` em vez da instância: aceitar a linha pronta
+        deixava a autorização a cargo de quem a carregou. Reresolver aqui
+        custa uma consulta na mesma transação — a linha já está no mapa de
+        identidade e continua bloqueada — e fecha o caminho.
+        """
+        agenda = self.lock_schedule(
+            control_principal_ref=control_principal_ref, schedule_id=schedule_id
+        )
+        if agenda is None:
+            raise OrchestrationScopeViolationError(
+                message="Schedule inexistente sob este principal de controle",
+                detail={"schedule_id": str(schedule_id)},
+            )
+        agenda.state = state
         self._session.flush()
-        return schedule
+        return agenda
 
     def list_steps(
         self, *, control_principal_ref: str, schedule_id: uuid.UUID
@@ -160,16 +202,36 @@ class OrchestrationRepository:
 
     # --- tentativas e recibos ----------------------------------------------
 
-    def next_attempt_number(self, *, step_id: uuid.UUID) -> int:
-        """Próximo número de tentativa, com a etapa bloqueada.
+    def next_attempt_number(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, step_id: uuid.UUID
+    ) -> int:
+        """Próximo número de tentativa, com a etapa bloqueada e sob escopo.
 
         Sem o lock, dois selamentos concorrentes da mesma etapa leriam o
         mesmo máximo e um deles morreria na unicidade — a numeração seria
         correta por acidente de constraint, não por construção.
+
+        O `FOR UPDATE` recai sobre `schedule_steps`; o `JOIN` com
+        `schedules` entra como `EXISTS` para que o lock não se espalhe
+        para a linha do Schedule, que a numeração não precisa bloquear.
         """
-        self._session.execute(
-            sa.select(ScheduleStep.id).where(ScheduleStep.id == step_id).with_for_update()
-        ).one()
+        etapa = self._session.execute(
+            sa.select(ScheduleStep.id)
+            .where(
+                ScheduleStep.id == step_id,
+                ScheduleStep.schedule_id == schedule_id,
+                sa.exists().where(
+                    Schedule.id == schedule_id,
+                    Schedule.control_principal_ref == control_principal_ref,
+                ),
+            )
+            .with_for_update()
+        ).one_or_none()
+        if etapa is None:
+            raise OrchestrationScopeViolationError(
+                message="etapa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
+            )
         maximo = self._session.execute(
             sa.select(sa.func.coalesce(sa.func.max(HandoffAttempt.attempt_number), 0)).where(
                 HandoffAttempt.step_id == step_id
@@ -180,6 +242,7 @@ class OrchestrationRepository:
     def create_attempt(
         self,
         *,
+        control_principal_ref: str,
         attempt_id: uuid.UUID,
         schedule_id: uuid.UUID,
         step_id: uuid.UUID,
@@ -187,6 +250,24 @@ class OrchestrationRepository:
         envelope_version: str,
         content_sha256: str,
     ) -> HandoffAttempt:
+        """Abre a tentativa **depois** de provar etapa, Schedule e dono.
+
+        A prova é feita aqui e reforçada no banco pela chave estrangeira
+        composta `(step_id, schedule_id)` da migration corretiva: mesmo
+        que este método fosse contornado, `Schedule A + Step B` não entra.
+        """
+        if (
+            self.get_step(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="etapa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
+            )
         tentativa = HandoffAttempt(
             id=attempt_id,
             schedule_id=schedule_id,
@@ -203,11 +284,23 @@ class OrchestrationRepository:
     def create_seal_receipt(
         self,
         *,
+        control_principal_ref: str,
         attempt_id: uuid.UUID,
         content_sha256: str,
         sealed_at: datetime,
         sealer_ref: str,
     ) -> SealReceipt:
+        """Emite o recibo só para tentativa que pertence ao principal."""
+        if (
+            self._attempt_under_scope(
+                control_principal_ref=control_principal_ref, attempt_id=attempt_id
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="tentativa inexistente sob este principal de controle",
+                detail={"attempt_id": str(attempt_id)},
+            )
         recibo = SealReceipt(
             attempt_id=attempt_id,
             content_sha256=content_sha256,
@@ -232,9 +325,58 @@ class OrchestrationRepository:
             detail={"receipt_id": str(receipt.id)},
         )
 
-    def get_seal_receipt_by_attempt(self, *, attempt_id: uuid.UUID) -> SealReceipt | None:
+    def _attempt_under_scope(
+        self, *, control_principal_ref: str, attempt_id: uuid.UUID
+    ) -> uuid.UUID | None:
+        """Identidade da tentativa **se** ela pertencer ao principal.
+
+        Ponto único por onde tentativa e recibo alcançam o Schedule; o
+        gate estático exige que todo caminho de tentativa/recibo passe
+        por aqui ou por um `JOIN` equivalente.
+        """
         return self._session.scalars(
-            sa.select(SealReceipt).where(SealReceipt.attempt_id == attempt_id)
+            sa.select(HandoffAttempt.id)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                HandoffAttempt.id == attempt_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()
+
+    def get_attempt(
+        self, *, control_principal_ref: str, attempt_id: uuid.UUID
+    ) -> HandoffAttempt | None:
+        """Leitura escopada de uma tentativa. `None` quando é de outro."""
+        return self._session.scalars(
+            sa.select(HandoffAttempt)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                HandoffAttempt.id == attempt_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()
+
+    def get_seal_receipt_by_attempt(
+        self, *, control_principal_ref: str, attempt_id: uuid.UUID
+    ) -> SealReceipt | None:
+        """Recibo de uma tentativa do principal. `None` quando é de outro.
+
+        ```text
+        OPAQUE_ID != SECRET_ID
+        ```
+
+        Um `attempt_id` vazado deixava de ser opaco e virava chave de
+        leitura do trabalho alheio enquanto esta consulta não atravessava
+        o Schedule.
+        """
+        return self._session.scalars(
+            sa.select(SealReceipt)
+            .join(HandoffAttempt, HandoffAttempt.id == SealReceipt.attempt_id)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                SealReceipt.attempt_id == attempt_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
         ).one_or_none()
 
     def list_attempts(

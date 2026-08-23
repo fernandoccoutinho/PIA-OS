@@ -17,7 +17,15 @@ enquanto o recibo descreve um ato instantâneo que já terminou.
 
 import uuid
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,6 +43,11 @@ class HandoffAttempt(BaseModel):
 
     __table_args__ = (
         UniqueConstraint("step_id", "attempt_number", name="uq_handoff_attempts_step_number"),
+        ForeignKeyConstraint(
+            ["step_id", "schedule_id"],
+            ["schedule_steps.id", "schedule_steps.schedule_id"],
+            name="fk_handoff_attempts_step_within_schedule",
+        ),
         CheckConstraint("attempt_number >= 1", name="ck_handoff_attempts_number_positive"),
         CheckConstraint(
             f"length(content_sha256) = {SHA256_HEX_LENGTH}",
@@ -62,6 +75,16 @@ class HandoffAttempt(BaseModel):
     """Redundante com `step.schedule_id`, e de propósito: toda consulta é
     escopada por `schedule_id` (§17), e depender do join para aplicar o
     escopo deixaria a garantia à mercê de quem escrever a próxima query.
+
+    ```text
+    TWO_VALID_REFERENCES != ONE_COHERENT_REFERENCE
+    ```
+
+    Corretivo R1: a redundância só é segura se as duas referências forem
+    **coerentes**. A chave estrangeira composta
+    `fk_handoff_attempts_step_within_schedule` recusa no banco a
+    combinação `Schedule A + Step B`, que a Chain110 aceitava porque cada
+    FK era válida isoladamente.
     """
 
     step_id: Mapped[uuid.UUID] = mapped_column(

@@ -143,9 +143,20 @@ class RepositorioDuble:
             control_principal_ref=control_principal_ref, schedule_id=schedule_id
         )
 
-    def set_schedule_state(self, *, schedule, state):
-        schedule.state = state
-        return schedule
+    def set_schedule_state(self, *, control_principal_ref, schedule_id, state):
+        """Escopado como o real: o dublê não pode ser mais permissivo.
+
+        ```text
+        FAKE_LOOSER_THAN_REAL = TEST_THAT_PROVES_NOTHING
+        ```
+        """
+        agenda = self.get_schedule(
+            control_principal_ref=control_principal_ref, schedule_id=schedule_id
+        )
+        if agenda is None:
+            raise OrchestrationScopeViolationError(message="fora do escopo")
+        agenda.state = state
+        return agenda
 
     def list_steps(self, *, control_principal_ref, schedule_id):
         if (
@@ -169,12 +180,22 @@ class RepositorioDuble:
             return None
         return etapa
 
-    def next_attempt_number(self, *, step_id):
+    def next_attempt_number(self, *, control_principal_ref, schedule_id, step_id):
+        if (
+            self.get_step(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(message="fora do escopo")
         return 1 + sum(1 for t in self.tentativas if t.step_id == step_id)
 
     def create_attempt(
         self,
         *,
+        control_principal_ref,
         attempt_id,
         schedule_id,
         step_id,
@@ -182,6 +203,15 @@ class RepositorioDuble:
         envelope_version,
         content_sha256,
     ):
+        if (
+            self.get_step(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(message="fora do escopo")
         tentativa = _Tentativa(
             id=attempt_id,
             schedule_id=schedule_id,
@@ -194,7 +224,11 @@ class RepositorioDuble:
         self.tentativas.append(tentativa)
         return tentativa
 
-    def create_seal_receipt(self, *, attempt_id, content_sha256, sealed_at, sealer_ref):
+    def create_seal_receipt(
+        self, *, control_principal_ref, attempt_id, content_sha256, sealed_at, sealer_ref
+    ):
+        if self._tentativa_no_escopo(control_principal_ref, attempt_id) is None:
+            raise OrchestrationScopeViolationError(message="fora do escopo")
         recibo = _Recibo(
             id=uuid.uuid4(),
             attempt_id=attempt_id,
@@ -204,6 +238,37 @@ class RepositorioDuble:
         )
         self.recibos.append(recibo)
         return recibo
+
+    def _tentativa_no_escopo(self, control_principal_ref, attempt_id):
+        for tentativa in self.tentativas:
+            if tentativa.id != attempt_id:
+                continue
+            agenda = self.get_schedule(
+                control_principal_ref=control_principal_ref,
+                schedule_id=tentativa.schedule_id,
+            )
+            return tentativa if agenda is not None else None
+        return None
+
+    def get_attempt(self, *, control_principal_ref, attempt_id):
+        return self._tentativa_no_escopo(control_principal_ref, attempt_id)
+
+    def get_seal_receipt_by_attempt(self, *, control_principal_ref, attempt_id):
+        if self._tentativa_no_escopo(control_principal_ref, attempt_id) is None:
+            return None
+        return next((r for r in self.recibos if r.attempt_id == attempt_id), None)
+
+    def list_attempts(self, *, control_principal_ref, schedule_id, step_id=None):
+        if (
+            self.get_schedule(control_principal_ref=control_principal_ref, schedule_id=schedule_id)
+            is None
+        ):
+            return []
+        return [
+            t
+            for t in self.tentativas
+            if t.schedule_id == schedule_id and (step_id is None or t.step_id == step_id)
+        ]
 
     def claim_command(
         self, *, technical_principal_ref, operation, command_key, proposed_outcome_ref

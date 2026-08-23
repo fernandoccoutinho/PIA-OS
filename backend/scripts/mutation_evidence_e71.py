@@ -13,6 +13,11 @@ mutante é executado em **cópia isolada** da árvore, e o alvo é a guarda
 conta. Por isso cada mutante declara o teste específico que deve reprová-lo,
 e não a suíte inteira.
 
+Corretivo R1 (Chain111): os seis mutantes da Chain110 são **preservados**
+sem alteração, e três novos medem as guardas que o corretivo criou —
+binding na leitura de recibo, binding no escritor de tentativa e a
+integridade Schedule<->Step no banco.
+
 Uso:
 
     python -m scripts.mutation_evidence_e71
@@ -129,6 +134,59 @@ MUTANTES: tuple[Mutante, ...] = (
         "app/orchestration/repositories/orchestration_repository.py",
         '                "technical_principal_ref": technical_principal_ref,',
         '                "technical_principal_ref": "global",',
+        ("tests/integration/orchestration/test_orchestration_core.py",),
+    ),
+    Mutante(
+        "M-s3",
+        "remover o binding na leitura de recibo (get_seal_receipt_by_attempt)",
+        "app/orchestration/repositories/orchestration_repository.py",
+        "            .where(\n"
+        "                SealReceipt.attempt_id == attempt_id,\n"
+        "                Schedule.control_principal_ref == control_principal_ref,\n"
+        "            )",
+        "            .where(\n"
+        "                SealReceipt.attempt_id == attempt_id,\n"
+        "            )",
+        (
+            "tests/integration/orchestration/test_orchestration_core.py",
+            "tests/static/test_e7_orchestration_boundary.py",
+        ),
+    ),
+    Mutante(
+        "M-s4",
+        "remover o binding no escritor de tentativa (create_attempt)",
+        "app/orchestration/repositories/orchestration_repository.py",
+        "        if (\n"
+        "            self.get_step(\n"
+        "                control_principal_ref=control_principal_ref,\n"
+        "                schedule_id=schedule_id,\n"
+        "                step_id=step_id,\n"
+        "            )\n"
+        "            is None\n"
+        "        ):\n"
+        "            raise OrchestrationScopeViolationError(\n"
+        '                message="etapa inexistente neste Schedule sob este principal",\n'
+        '                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},\n'
+        "            )\n"
+        "        tentativa = HandoffAttempt(",
+        "        tentativa = HandoffAttempt(",
+        (
+            "tests/integration/orchestration/test_orchestration_core.py",
+            "tests/static/test_e7_orchestration_boundary.py",
+        ),
+    ),
+    Mutante(
+        "M-s5",
+        "remover a integridade Schedule<->Step do banco (FK composta)",
+        "alembic/versions/b8c04e2fd137_enforce_schedule_step_integrity_e7_1_r1.py",
+        "    op.create_foreign_key(\n"
+        "        _FK_COMPOSTA,\n"
+        "        _ATTEMPTS,\n"
+        "        _STEPS,\n"
+        '        ["step_id", "schedule_id"],\n'
+        '        ["id", "schedule_id"],\n'
+        "    )",
+        "    pass",
         ("tests/integration/orchestration/test_orchestration_core.py",),
     ),
 )

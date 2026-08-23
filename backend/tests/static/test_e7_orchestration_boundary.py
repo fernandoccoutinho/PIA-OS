@@ -341,25 +341,120 @@ def test_e71b17_a_e7_1_nao_antecipa_objetos_da_e7_2_nem_da_e7_3() -> None:
         assert not (_nomes(caminho) & proibidos), caminho.name
 
 
-def test_e71b18_o_escopo_por_principal_de_controle_e_imposto_no_repositorio() -> None:
-    """`M-s1`: toda leitura de Schedule filtra por `control_principal_ref`."""
-    repositorio = REPOSITORIOS / "orchestration_repository.py"
-    arvore = _arvore(repositorio)
-    metodos_escopados = {
+REPOSITORIO = REPOSITORIOS / "orchestration_repository.py"
+
+#: Classificação EXAUSTIVA dos métodos públicos do repositório.
+#:
+#: ```text
+#: PARTIAL_ENUMERATION = GUARD_WITH_A_HOLE
+#: ```
+#:
+#: A Chain110 listava cinco métodos escopados e nada dizia sobre os
+#: demais — os cinco caminhos de tentativa e recibo passaram pelo gate
+#: sem serem medidos. Agora todo método público cai em exatamente uma
+#: categoria, e um método novo que não esteja classificado REPROVA o
+#: gate em vez de ser ignorado por omissão.
+CONTROL_BOUND = frozenset(
+    {
+        "create_schedule",
         "get_schedule",
         "lock_schedule",
+        "set_schedule_state",
         "list_steps",
         "get_step",
+        "next_attempt_number",
+        "create_attempt",
+        "create_seal_receipt",
+        "get_attempt",
+        "get_seal_receipt_by_attempt",
         "list_attempts",
     }
-    encontrados = {
+)
+"""Exigem `control_principal_ref` na assinatura E o impõem no corpo."""
+
+PRINCIPAL_BOUND = frozenset({"claim_command", "get_command_receipt"})
+"""Escopados pelo principal TÉCNICO do comando, não pelo de controle."""
+
+REFUSAL_ONLY = frozenset({"update_seal_receipt", "delete_seal_receipt"})
+"""Recusam incondicionalmente; escopo é irrelevante porque nada executam."""
+
+SCOPE_EXEMPT = frozenset({"database_now"})
+"""Não tocam entidade alguma. Única isenção admitida."""
+
+
+def _metodos_publicos_do_repositorio() -> dict[str, ast.FunctionDef]:
+    arvore = _arvore(REPOSITORIO)
+    classes = [no for no in arvore.body if isinstance(no, ast.ClassDef)]
+    assert [c.name for c in classes] == ["OrchestrationRepository"]
+    return {
         no.name: no
-        for no in ast.walk(arvore)
-        if isinstance(no, ast.FunctionDef) and no.name in metodos_escopados
+        for no in classes[0].body
+        if isinstance(no, ast.FunctionDef) and not no.name.startswith("_")
     }
-    assert set(encontrados) == metodos_escopados
-    for nome, no in encontrados.items():
+
+
+def test_e71b18_a_classificacao_dos_metodos_do_repositorio_e_exaustiva() -> None:
+    """Nenhum método público escapa por omissão."""
+    metodos = set(_metodos_publicos_do_repositorio())
+    classificados = CONTROL_BOUND | PRINCIPAL_BOUND | REFUSAL_ONLY | SCOPE_EXEMPT
+    nao_classificados = metodos - classificados
+    fantasmas = classificados - metodos
+    assert not nao_classificados, f"método público sem classificação: {sorted(nao_classificados)}"
+    assert not fantasmas, f"classificação aponta para método inexistente: {sorted(fantasmas)}"
+    todas = (CONTROL_BOUND, PRINCIPAL_BOUND, REFUSAL_ONLY, SCOPE_EXEMPT)
+    assert sum(len(c) for c in todas) == len(classificados)
+
+
+def test_e71b19_todo_metodo_control_bound_exige_e_impoe_o_vinculo() -> None:
+    """Assinatura **e** corpo. Receber o parâmetro e ignorá-lo é pior que não recebê-lo."""
+    metodos = _metodos_publicos_do_repositorio()
+    for nome in sorted(CONTROL_BOUND):
+        no = metodos[nome]
         argumentos = {arg.arg for arg in no.args.kwonlyargs} | {arg.arg for arg in no.args.args}
-        assert "control_principal_ref" in argumentos, nome
+        assert "control_principal_ref" in argumentos, f"{nome}: assinatura sem o vínculo"
         corpo = ast.unparse(no)
-        assert "control_principal_ref ==" in corpo, nome
+        impoe = (
+            "control_principal_ref ==" in corpo
+            or "control_principal_ref=control_principal_ref" in corpo
+        )
+        assert impoe, f"{nome}: recebe o vínculo e não o usa"
+
+
+def test_e71b20_todo_caminho_de_escrita_recusa_em_vez_de_devolver_none() -> None:
+    """Escritor que devolve `None` convida a tratar recusa como ausência."""
+    escritores = (
+        "set_schedule_state",
+        "next_attempt_number",
+        "create_attempt",
+        "create_seal_receipt",
+    )
+    metodos = _metodos_publicos_do_repositorio()
+    for nome in escritores:
+        corpo = ast.unparse(metodos[nome])
+        assert "OrchestrationScopeViolationError" in corpo, nome
+
+
+def test_e71b21_os_metodos_de_recusa_levantam_incondicionalmente() -> None:
+    metodos = _metodos_publicos_do_repositorio()
+    for nome in sorted(REFUSAL_ONLY):
+        corpo = ast.unparse(metodos[nome])
+        assert "SealReceiptImmutableError" in corpo, nome
+        assert "if " not in corpo, f"{nome}: recusa condicional não é recusa"
+
+
+def test_e71b22_tentativa_e_recibo_alcancam_o_schedule_por_join_ou_helper() -> None:
+    """Nenhum caminho de tentativa/recibo lê a tabela sem atravessar o Schedule."""
+    metodos = _metodos_publicos_do_repositorio()
+    for nome in ("get_attempt", "get_seal_receipt_by_attempt", "list_attempts"):
+        corpo = ast.unparse(metodos[nome])
+        assert ".join(Schedule" in corpo, f"{nome}: não atravessa Schedule"
+    assert "_attempt_under_scope" in ast.unparse(metodos["create_seal_receipt"])
+
+
+def test_e71b23_a_integridade_schedule_step_vive_no_schema() -> None:
+    """FK composta declarada no modelo, e não só na migration."""
+    modelo = (ORQUESTRACAO / "models" / "attempt.py").read_text(encoding="utf-8")
+    assert "ForeignKeyConstraint" in modelo
+    assert "fk_handoff_attempts_step_within_schedule" in modelo
+    alvo = (ORQUESTRACAO / "models" / "step.py").read_text(encoding="utf-8")
+    assert "uq_schedule_steps_id_schedule" in alvo

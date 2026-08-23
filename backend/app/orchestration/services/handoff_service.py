@@ -9,6 +9,16 @@ SEALED_AT_IN_CONTENT_HASH = FALSE
 SEALED != DISPATCHED
 ```
 
+O `control_principal_ref` atravessa **todas** as chamadas ao
+repositório, inclusive as de escrita. A verificação que este serviço faz
+antes é recusa antecipada, com mensagem melhor; a **garantia** vive no
+repositório e na chave estrangeira composta do banco, que continuam
+valendo se alguém chamar o repositório direto.
+
+```text
+EARLY_REFUSAL != THE_GUARANTEE
+```
+
 Selar é montar o conteúdo congelado da etapa, calcular seu hash, abrir uma
 tentativa e registrar o recibo daquele ato. Não há transporte: o envelope
 não atravessa fronteira nenhuma nesta entrega, e por isso a etapa
@@ -152,8 +162,13 @@ class HandoffService:
         )
         content_sha256 = conteudo.content_sha256()
 
-        numero = self._repository.next_attempt_number(step_id=step_id)
+        numero = self._repository.next_attempt_number(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+        )
         tentativa = self._repository.create_attempt(
+            control_principal_ref=control_principal_ref,
             attempt_id=attempt_id,
             schedule_id=schedule_id,
             step_id=step_id,
@@ -163,6 +178,7 @@ class HandoffService:
         )
         sealed_at = self._repository.database_now()
         recibo = self._repository.create_seal_receipt(
+            control_principal_ref=control_principal_ref,
             attempt_id=tentativa.id,
             content_sha256=content_sha256,
             sealed_at=sealed_at,

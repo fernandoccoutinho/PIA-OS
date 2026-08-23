@@ -94,6 +94,7 @@ class ScheduleStep(BaseModel):
 
     __table_args__ = (
         UniqueConstraint("schedule_id", "position", name="uq_schedule_steps_position"),
+        UniqueConstraint("id", "schedule_id", name="uq_schedule_steps_id_schedule"),
         CheckConstraint("position >= 1", name="ck_schedule_steps_position_positive"),
         CheckConstraint("length(btrim(role)) > 0", name="ck_schedule_steps_role_not_blank"),
         CheckConstraint(
@@ -107,6 +108,11 @@ class ScheduleStep(BaseModel):
     )
     """A unicidade `(schedule_id, position)` é o que torna a composição uma
     **ordem**, e não um conjunto com um número decorativo ao lado.
+
+    `uq_schedule_steps_id_schedule` é redundante em cardinalidade — `id`
+    já é a chave primária — e obrigatória em referência: é o alvo da
+    chave estrangeira composta que `handoff_attempts` usa para provar,
+    no banco, que a etapa pertence àquele Schedule (corretivo R1).
 
     O `CHECK` de canonicidade de `context_refs` é criado pela migration e
     não aparece aqui: ele chama uma função PL/pgSQL, e `CHECK` do
