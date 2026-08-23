@@ -6,6 +6,7 @@ from app.orchestration.errors.codes import (
     PIA_8058_ORCHESTRATION_SCOPE_VIOLATION,
     PIA_8059_ORCHESTRATION_LIFECYCLE_VIOLATION,
     PIA_8060_SEAL_RECEIPT_IMMUTABLE,
+    PIA_8061_HANDOFF_RECORD_IMMUTABLE,
 )
 
 
@@ -31,3 +32,9 @@ class SealReceiptImmutableError(PIAOSException):
     """Recibo de selamento não é alterável nem removível."""
 
     error_code = PIA_8060_SEAL_RECEIPT_IMMUTABLE
+
+
+class HandoffRecordImmutableError(PIAOSException):
+    """Veredito e atribuição não são alteráveis nem removíveis."""
+
+    error_code = PIA_8061_HANDOFF_RECORD_IMMUTABLE

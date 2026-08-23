@@ -24,7 +24,12 @@ from app.database.engine import engine
 from app.database.session import SessionLocal
 from app.orchestration.errors.exceptions import OrchestrationScopeViolationError
 from app.orchestration.models.command_receipt import CommandReceipt
-from app.orchestration.models.enums import CommandOperation, HandoffMode, ScheduleState
+from app.orchestration.models.enums import (
+    AttemptState,
+    CommandOperation,
+    HandoffMode,
+    ScheduleState,
+)
 from app.orchestration.repositories.orchestration_repository import OrchestrationRepository
 from app.orchestration.schemas.envelope import ContextRef, ScheduleDraft, StepDraft
 from app.orchestration.services.command_receipt_service import (
@@ -39,6 +44,11 @@ pytestmark = pytest.mark.integration
 
 _REVISION_E71 = "a7f31c05be24"
 _REVISION_E71_R1 = "b8c04e2fd137"
+_REVISION_E72 = "c3a75e01d248"
+"""ATUALIZADO PELA E7.2: a folha da cadeia passou a ser a orquestração
+de retorno. As asserções de ANCESTRAL desta suíte (filha de
+`b4d71c58ae02`, filha de `a7f31c05be24`) seguem intactas — o que mudou
+foi a folha, não a linhagem."""
 _PARENT_REVISION = "b4d71c58ae02"
 _HASH = "d" * 64
 
@@ -59,6 +69,12 @@ def _limpar() -> None:
     permanente — o append-only continua valendo para todo o resto.
     """
     with engine.begin() as conexao:
+        # ATUALIZADO PELA E7.2: veredito e atribuição referenciam tentativa
+        # e são append-only; entram primeiro na ordem de remoção.
+        for tabela_e72 in ("handoff_results", "handoff_attributions"):
+            conexao.execute(sa.text(f"ALTER TABLE {tabela_e72} DISABLE TRIGGER USER"))
+            conexao.execute(sa.text(f"DELETE FROM {tabela_e72}"))
+            conexao.execute(sa.text(f"ALTER TABLE {tabela_e72} ENABLE TRIGGER USER"))
         conexao.execute(sa.text("ALTER TABLE seal_receipts DISABLE TRIGGER USER"))
         conexao.execute(sa.text("DELETE FROM seal_receipts"))
         conexao.execute(sa.text("ALTER TABLE seal_receipts ENABLE TRIGGER USER"))
@@ -87,6 +103,30 @@ def _nomes_de_restricao(tabela: str) -> set[str]:
                 {"t": tabela},
             )
         }
+
+
+def _fechar_tentativas_abertas() -> None:
+    """Fecha tentativas `OPEN` entre dois selamentos da mesma etapa.
+
+    ```text
+    ONE_OPEN_ATTEMPT_PER_STEP = TRUE   (E7.2)
+    ```
+
+    A E7.2 passou a impor, por índice parcial no PostgreSQL, no máximo uma
+    tentativa aberta por etapa. As provas da E7.1 selavam duas vezes em
+    sequência, o que deixava duas abertas — cenário que o novo invariante
+    torna **impossível**, não apenas indesejado.
+
+    A propriedade que a E7.1 provava continua intacta e continua provada:
+    o mesmo conteúdo produz o mesmo `content_sha256` e recibos distintos.
+    O que mudou foi o caminho até duas tentativas — agora é preciso fechar
+    a anterior, exatamente como o retry real faz. Afrouxar o índice para
+    manter o roteiro antigo trocaria uma garantia por um teste.
+    """
+    with engine.begin() as conexao:
+        conexao.execute(
+            sa.text("UPDATE handoff_attempts SET state = 'closed_ok' WHERE state = 'open'")
+        )
 
 
 def _rascunho(titulo: str = "revisão cruzada") -> ScheduleDraft:
@@ -146,7 +186,7 @@ def test_e71i01_head_unico_e_filha_de_b4d71c58ae02() -> None:
     # O que este teste protege é a ancestralidade da migration da E7.1,
     # que não mudou; head único é medido por `e71i36`.
     assert script.get_revision(_REVISION_E71).down_revision == _PARENT_REVISION
-    assert migrations.current_revision() == _REVISION_E71_R1
+    assert migrations.current_revision() == _REVISION_E72
 
 
 def test_e71i02_as_cinco_tabelas_existem() -> None:
@@ -155,13 +195,17 @@ def test_e71i02_as_cinco_tabelas_existem() -> None:
 
 
 def test_e71i03_round_trip_upgrade_downgrade_upgrade_em_postgres_real() -> None:
-    """Base vazia: `downgrade` derruba as cinco e `upgrade` as recria."""
+    """Base vazia: `downgrade` derruba as cinco e `upgrade` as recria.
+
+    O caminho até `b4d71c58ae02` atravessa a E7.2 e o corretivo R1; a
+    prova continua sendo a da E7.1, agora sobre a cadeia mais longa.
+    """
     migrations.downgrade(_PARENT_REVISION)
     assert migrations.current_revision() == _PARENT_REVISION
     tabelas = set(sa.inspect(engine).get_table_names())
     assert not (set(_TABELAS_E71) & tabelas)
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E71_R1
+    assert migrations.current_revision() == _REVISION_E72
     assert set(_TABELAS_E71) <= set(sa.inspect(engine).get_table_names())
 
 
@@ -179,7 +223,7 @@ def test_e71i04_downgrade_com_recibo_recusa_antes_de_qualquer_ddl() -> None:
         uow.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == _REVISION_E71_R1
+    assert migrations.current_revision() == _REVISION_E72
     assert set(_TABELAS_E71) <= set(sa.inspect(engine).get_table_names())
 
 
@@ -297,6 +341,7 @@ def test_e71i11_dois_selamentos_do_mesmo_conteudo_um_hash_dois_recibos() -> None
     schedule_id, step_id = _criar_agenda_ativa()
     resultados = []
     for _ in range(2):
+        _fechar_tentativas_abertas()
         with UnitOfWork() as uow:
             resultados.append(
                 _Contexto(uow).handoff.seal_step(
@@ -326,6 +371,7 @@ def test_e71i12_o_hash_nao_muda_com_o_instante_do_selamento() -> None:
     """Dois recibos com `sealed_at` distintos e o mesmo `content_sha256`."""
     schedule_id, step_id = _criar_agenda_ativa()
     for _ in range(2):
+        _fechar_tentativas_abertas()
         with UnitOfWork() as uow:
             _Contexto(uow).handoff.seal_step(
                 attempt_id=uuid.uuid4(),
@@ -458,6 +504,7 @@ def test_e71i17_mesma_chave_em_operacoes_diferentes_nao_colide() -> None:
             technical_principal_ref="principal-a", command_key="k", draft=_rascunho()
         )
         uow.commit()
+    _fechar_tentativas_abertas()
     with UnitOfWork() as uow:
         selamento = _Contexto(uow).comandos.seal_handoff_once(
             technical_principal_ref="principal-a",
@@ -475,7 +522,12 @@ def test_e71i17_mesma_chave_em_operacoes_diferentes_nao_colide() -> None:
     with UnitOfWork() as uow:
         repositorio = OrchestrationRepository(uow.session)
         persistidos = {}
-        for operacao in CommandOperation:
+        # ATUALIZADO PELA E7.2: o vocabulário passou de duas para quatro
+        # operações. Este teste mede que a MESMA chave em operações
+        # diferentes não colide, e mede isso nas duas que ele exerce —
+        # iterar o enum inteiro exigiria recibo para operações que este
+        # cenário nunca executou.
+        for operacao in (CommandOperation.CREATE_SCHEDULE, CommandOperation.SEAL_HANDOFF):
             recibo = repositorio.get_command_receipt(
                 technical_principal_ref="principal-a",
                 operation=operacao.value,
@@ -498,6 +550,7 @@ def test_e71i17_mesma_chave_em_operacoes_diferentes_nao_colide() -> None:
 def test_e71i18_retry_com_chave_nova_cria_tentativa_nova_e_preserva_a_anterior() -> None:
     schedule_id, step_id = _criar_agenda_ativa()
     for chave in ("cmd-1", "cmd-2"):
+        _fechar_tentativas_abertas()
         with UnitOfWork() as uow:
             _Contexto(uow).comandos.seal_handoff_once(
                 technical_principal_ref="principal-a",
@@ -705,6 +758,14 @@ def test_e71i25_todo_retorno_publico_de_service_sobrevive_ao_fim_da_unit_of_work
             schedule_id=schedule_id,
             step_id=step_id,
             sealer_ref="selador",
+        )
+        # E7.2: uma tentativa OPEN por etapa. A anterior fecha antes da
+        # próxima, como no retry real.
+        contexto.repositorio.set_attempt_state(
+            control_principal_ref="principal-a",
+            schedule_id=schedule_id,
+            attempt_id=selado.attempt_id,
+            state=AttemptState.CLOSED_OK,
         )
         comando = contexto.comandos.seal_handoff_once(
             technical_principal_ref="principal-a",
@@ -1136,7 +1197,7 @@ def test_e71i35_round_trip_da_migration_corretiva() -> None:
     restricoes = _nomes_de_restricao("handoff_attempts")
     assert "fk_handoff_attempts_step_within_schedule" not in restricoes
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E71_R1
+    assert migrations.current_revision() == _REVISION_E72
     assert "fk_handoff_attempts_step_within_schedule" in _nomes_de_restricao("handoff_attempts")
     assert "uq_schedule_steps_id_schedule" in _nomes_de_restricao("schedule_steps")
     assert (schedule_id, step_id) is not None
@@ -1147,7 +1208,7 @@ def test_e71i36_head_unico_e_filha_de_a7f31c05be24() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == (_REVISION_E71_R1,)
+    assert tuple(script.get_heads()) == (_REVISION_E72,)
     assert script.get_revision(_REVISION_E71_R1).down_revision == _REVISION_E71
 
 
@@ -1220,6 +1281,12 @@ def test_e71i37_mesmo_dono_nao_alcanca_tentativa_de_outro_schedule_seu() -> None
             attempt_id=attempt_b,
         )
         assert recibo is not None and recibo.id == receipt_b
+        _Contexto(uow).repositorio.set_attempt_state(
+            control_principal_ref="principal-p",
+            schedule_id=schedule_b,
+            attempt_id=attempt_b,
+            state=AttemptState.CLOSED_OK,
+        )
         segundo = _Contexto(uow).handoff.seal_step(
             attempt_id=uuid.uuid4(),
             control_principal_ref="principal-p",

@@ -18,7 +18,9 @@ from app.database.session import get_db as _get_db
 from app.exceptions.api import TooManyRequestsException
 from app.exceptions.database import DatabaseUnavailableException
 from app.models.programmatic_service_principal import (
+    OPERATION_ORCHESTRATION_API,
     OPERATION_PREDICTIVE_EVALUATE,
+    SCOPE_ORCHESTRATION_OPERATE,
     SCOPE_PREDICTIVE_EVALUATE,
 )
 from app.repositories.programmatic_access_repository import ProgrammaticAccessRepository
@@ -177,5 +179,49 @@ def require_predictive_evaluate_access(
     if not liberado:
         # Único caminho legítimo para 429: o incremento condicional
         # atômico recusou porque o teto foi atingido de fato.
+        raise TooManyRequestsException(detail=QUOTA_EXCEEDED_DETAIL)
+    return principal
+
+
+def require_orchestration_operate_access(
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> ProgrammaticPrincipal:
+    """`AUTH -> SCOPE -> QUOTA -> ORCHESTRATION`, nesta ordem (E7.2).
+
+    Mesma disciplina fail-closed da rota preditiva, com escopo e bucket
+    **próprios**:
+
+    ```text
+    PREDICTIVE_SCOPE != ORCHESTRATION_SCOPE
+    PREDICTIVE_QUOTA != ORCHESTRATION_QUOTA
+    ```
+
+    Reaproveitar `require_predictive_evaluate_access` faria toda credencial
+    já emitida para ciência passar a operar trabalho multi-IA sem que
+    ninguém tivesse decidido isso, e o consumo de uma família esgotaria a
+    outra. Um principal com apenas `predictive:evaluate` recebe 403 aqui —
+    **antes** de consumir cota e antes de qualquer efeito E7.
+
+    A distinção entre 429 e 503 é a mesma da E6.2 e pela mesma razão:
+
+    ```text
+    QUOTA_EXCEEDED != QUOTA_AUTHORITY_UNAVAILABLE
+    ```
+    """
+    require_scope(principal, SCOPE_ORCHESTRATION_OPERATE)
+    repositorio = ProgrammaticAccessRepository(session)
+    try:
+        liberado = repositorio.consume_quota(
+            principal_id=principal.id,
+            operation=OPERATION_ORCHESTRATION_API,
+            quota_limit=principal.quota_limit,
+            quota_window_seconds=principal.quota_window_seconds,
+        )
+    except Exception as exc:
+        session.rollback()
+        raise DatabaseUnavailableException(detail=QUOTA_AUTHORITY_UNAVAILABLE_DETAIL) from exc
+    session.commit()
+    if not liberado:
         raise TooManyRequestsException(detail=QUOTA_EXCEEDED_DETAIL)
     return principal

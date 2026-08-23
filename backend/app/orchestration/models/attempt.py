@@ -17,6 +17,7 @@ enquanto o recibo descreve um ato instantâneo que já terminou.
 
 import uuid
 
+import sqlalchemy as sa
 from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
@@ -59,6 +60,12 @@ class HandoffAttempt(BaseModel):
         ),
         Index("ix_handoff_attempts_schedule", "schedule_id"),
         Index("ix_handoff_attempts_content_sha256", "content_sha256"),
+        Index(
+            "ix_handoff_attempts_single_open",
+            "step_id",
+            unique=True,
+            postgresql_where=sa.text("state = 'open'"),
+        ),
     )
     """`(step_id, attempt_number)` único é o que dá ordem legível às
     tentativas; o índice por `content_sha256` é o que torna barato
@@ -67,6 +74,25 @@ class HandoffAttempt(BaseModel):
     O formato hexadecimal do hash é verificado por regex na migration —
     `~` é PostgreSQL, e o metadata precisa criar tabela em qualquer
     dialeto. Aqui fica o comprimento, que é portátil.
+
+    ## E7.2 — `ix_handoff_attempts_single_open`
+
+    Índice **parcial** único: no máximo uma tentativa `OPEN` por etapa.
+
+    ```text
+    APPLICATION_CHECK != DATABASE_GUARANTEE
+    ```
+
+    O serviço também verifica sob `FOR UPDATE`, e as duas coisas não são
+    redundantes: o lock serializa quem passa pelo serviço, o índice recusa
+    quem chegar por SQL bruto ou por um caminho que ainda não existe.
+
+    Parcial, e não total, porque tentativas fechadas se acumulam por
+    design — o histórico de retries é o produto, não lixo.
+
+    Declarado aqui **e** na migration porque a guarda de drift compara o
+    metadata com o schema real; declarar só na migration faria o índice
+    parecer deriva a cada execução do gate.
     """
 
     schedule_id: Mapped[uuid.UUID] = mapped_column(

@@ -31,9 +31,19 @@ from dataclasses import dataclass
 
 from app.orchestration.errors.exceptions import OrchestrationContractViolationError
 from app.orchestration.models.enums import CommandOperation, HandoffMode
+from app.orchestration.ports.transport import RawReturn
 from app.orchestration.repositories.orchestration_repository import OrchestrationRepository
 from app.orchestration.schemas.envelope import MAX_REF_LENGTH, ScheduleDraft
 from app.orchestration.services.handoff_service import HandoffService
+from app.orchestration.services.manual_handoff_export_service import (
+    ExportOutcome,
+    ManualHandoffExportService,
+)
+from app.orchestration.services.return_validation_service import (
+    DeclaredAttribution,
+    ReturnOutcome,
+    ReturnValidationService,
+)
 from app.orchestration.services.schedule_service import ScheduleService
 
 MAX_COMMAND_KEY_LENGTH = 255
@@ -64,10 +74,28 @@ class CommandReceiptService:
         repository: OrchestrationRepository,
         schedule_service: ScheduleService,
         handoff_service: HandoffService,
+        export_service: ManualHandoffExportService | None = None,
+        return_validation_service: ReturnValidationService | None = None,
     ) -> None:
         self._repository = repository
         self._schedule_service = schedule_service
         self._handoff_service = handoff_service
+        self._export_service = export_service
+        self._return_validation_service = return_validation_service
+
+    def _exigir_export(self) -> ManualHandoffExportService:
+        if self._export_service is None:
+            raise OrchestrationContractViolationError(
+                message="serviço de exportação não configurado nesta composição"
+            )
+        return self._export_service
+
+    def _exigir_validacao(self) -> ReturnValidationService:
+        if self._return_validation_service is None:
+            raise OrchestrationContractViolationError(
+                message="serviço de validação de retorno não configurado nesta composição"
+            )
+        return self._return_validation_service
 
     # --- comandos do vocabulário fechado -----------------------------------
 
@@ -179,3 +207,91 @@ class CommandReceiptService:
             outcome_ref=recibo.outcome_ref,
             replayed=not reivindicado,
         )
+
+    # --- E7.2 -------------------------------------------------------------
+
+    def export_handoff_once(
+        self,
+        *,
+        technical_principal_ref: str,
+        command_key: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        sealer_ref: str,
+    ) -> tuple[CommandOutcome, ExportOutcome | None]:
+        """Exporta uma etapa uma única vez por tripla.
+
+        Operação **própria** (`EXPORT_HANDOFF`), distinta de `SEAL_HANDOFF`:
+        transporte e transições são efeito maior que selamento, e reusar a
+        chave da E7.1 faria um replay de selamento devolver um repasse que
+        nunca ocorreu.
+
+        ```text
+        SEAL_HANDOFF != EXPORT_HANDOFF
+        SAME_COMMAND_KEY != RETRY
+        ```
+
+        No replay o efeito não roda de novo — por isso o segundo elemento
+        é `None`. O chamador reconstrói a resposta a partir do recibo, e
+        nunca de uma exportação inventada.
+        """
+        attempt_id = uuid.uuid4()
+        resultado: dict[str, ExportOutcome] = {}
+
+        def efeito() -> None:
+            resultado["saida"] = self._exigir_export().export_step(
+                attempt_id=attempt_id,
+                control_principal_ref=technical_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+                sealer_ref=sealer_ref,
+            )
+
+        recibo = self._executar_uma_vez(
+            technical_principal_ref=technical_principal_ref,
+            operation=CommandOperation.EXPORT_HANDOFF,
+            command_key=command_key,
+            proposed_outcome_ref=str(attempt_id),
+            efeito=efeito,
+        )
+        return recibo, resultado.get("saida")
+
+    def import_return_once(
+        self,
+        *,
+        technical_principal_ref: str,
+        command_key: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        raw: RawReturn,
+        attribution: DeclaredAttribution,
+    ) -> tuple[CommandOutcome, ReturnOutcome | None]:
+        """Importa um retorno uma única vez por tripla.
+
+        O `outcome_ref` é o próprio `attempt_id`, que aqui vem do chamador
+        e não é gerado: o efeito recai sobre uma tentativa que já existe.
+        É o que permite detectar reuso da mesma chave para tentativa
+        diferente — o recibo recuperado apontaria para outra tentativa, e
+        o chamador recusa em vez de devolver o recurso errado.
+        """
+        resultado: dict[str, ReturnOutcome] = {}
+
+        def efeito() -> None:
+            resultado["saida"] = self._exigir_validacao().import_return(
+                control_principal_ref=technical_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                raw=raw,
+                attribution=attribution,
+            )
+
+        recibo = self._executar_uma_vez(
+            technical_principal_ref=technical_principal_ref,
+            operation=CommandOperation.IMPORT_RETURN,
+            command_key=command_key,
+            proposed_outcome_ref=str(attempt_id),
+            efeito=efeito,
+        )
+        return recibo, resultado.get("saida")

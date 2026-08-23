@@ -75,3 +75,22 @@ Append-only em três camadas, como a E4.11: value object congelado,
 repositório que recusa, trigger no PostgreSQL. Um recibo alterado faria o
 passado responder por um conteúdo que não era o dele.
 """
+
+PIA_8061_HANDOFF_RECORD_IMMUTABLE = ErrorCode(
+    code="PIA-8061",
+    default_message="handoff_record_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Tentativa de alterar ou remover veredito ou atribuição (`E7.2`).
+
+```text
+RESULT_REJECTED != RESULT_DISCARDED
+```
+
+Código próprio, e não reuso de `PIA-8060`: aquele fala de recibo de
+selamento, e uma mensagem que confunde as duas coisas faria o operador
+procurar o problema na tabela errada. A faixa segue a sequência sem
+reservar códigos sem caminho real.
+"""

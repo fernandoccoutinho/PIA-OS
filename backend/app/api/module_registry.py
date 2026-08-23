@@ -13,4 +13,5 @@ REGISTERED_MODULE_NAMES: tuple[str, ...] = (
     "version",
     "metrics",
     "predictive_evaluations",
+    "orchestration",
 )

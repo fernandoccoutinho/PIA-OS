@@ -54,6 +54,15 @@ TAG_SESSIONS = TagInfo(
     placeholder=True,
 )
 
+TAG_ORCHESTRATION = TagInfo(
+    name="Orchestration",
+    description=(
+        "Orquestração e repasse multi-IA (E7.2). Modo manual apenas: o PIA-OS "
+        "registra e governa o trabalho, nunca chama provedor de IA nem executa "
+        "o retorno recebido."
+    ),
+)
+
 ALL_TAGS: tuple[TagInfo, ...] = (
     TAG_SYSTEM,
     TAG_HEALTH,
@@ -61,6 +70,7 @@ ALL_TAGS: tuple[TagInfo, ...] = (
     TAG_VERSION,
     TAG_METRICS,
     TAG_PREDICTIVE_EVALUATIONS,
+    TAG_ORCHESTRATION,
     TAG_ADMINISTRATION,
     TAG_AUTHENTICATION,
     TAG_OBJECTS,

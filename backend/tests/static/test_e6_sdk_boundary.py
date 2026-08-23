@@ -143,20 +143,156 @@ def _sem_volateis(documento: dict) -> dict:
     return copia
 
 
-def test_e63s06_o_snapshot_corresponde_ao_openapi_vivo() -> None:
-    """O snapshot é derivado, não escrito à mão.
+# --- projeção histórica E6.3 ------------------------------------------------
+#
+# ```text
+# SDK_CHAIN107_R1 = HISTORICAL_IMMUTABLE_ARTIFACT
+# E6_SNAPSHOT = HISTORICAL_CONTRACT
+# E6_GUARD = HISTORICAL_PROJECTION_EXACT
+# E7_ADDITIONS = ALLOWED_OUTSIDE_E6_PROJECTION
+# ```
+#
+# ATUALIZADO PELA E7.2, e a causa importa. A versão anterior exigia
+# igualdade do documento **inteiro** com o snapshot da Chain107-R1. Com
+# cinco rotas novas, restavam duas saídas erradas e uma certa:
+#
+#   1. regenerar o snapshot — falsificaria a proveniência de um artefato
+#      que se declara derivado da Chain107-R1, e `sdk/` é Stop Condition
+#      sem autorização arquitetural;
+#   2. apagar a guarda — perderia a proteção do contrato publicado;
+#   3. medir a PROJEÇÃO: tudo o que o snapshot histórico contém continua
+#      presente e idêntico no documento vivo, e só adições ficam livres.
+#
+# A terceira é a implementada. Ela é mais estrita que a igualdade em um
+# ponto: verifica também o fechamento transitivo dos schemas alcançáveis
+# pelas rotas históricas, de modo que alterar um `$ref` aninhado reprova.
 
-    `generated_at` é o único campo instável do documento; congelá-lo faria
-    o gate de regeneração falhar em toda reexecução. Removê-lo em silêncio
-    seria pior — por isso a remoção é enumerada dos dois lados.
 
-    ```text
-    STRIP_VOLATILE != STRIP_CONTRACT
-    ```
+def _referencias(no: object) -> set[str]:
+    """Todo `$ref` alcançável a partir de um nó, em profundidade."""
+    encontradas: set[str] = set()
+    if isinstance(no, dict):
+        for chave, valor in no.items():
+            if chave == "$ref" and isinstance(valor, str):
+                encontradas.add(valor.rsplit("/", 1)[-1])
+            else:
+                encontradas |= _referencias(valor)
+    elif isinstance(no, list):
+        for item in no:
+            encontradas |= _referencias(item)
+    return encontradas
+
+
+def _fechamento_de_schemas(documento: dict, sementes: set[str]) -> set[str]:
+    """Fecho transitivo dos schemas a partir de um conjunto inicial."""
+    schemas = documento.get("components", {}).get("schemas", {})
+    alcancados: set[str] = set()
+    pendentes = set(sementes)
+    while pendentes:
+        atual = pendentes.pop()
+        if atual in alcancados or atual not in schemas:
+            continue
+        alcancados.add(atual)
+        pendentes |= _referencias(schemas[atual])
+    return alcancados
+
+
+def _projecao_historica(documento: dict, snapshot: dict) -> dict:
+    """Recorta do documento vivo exatamente o que o snapshot cobre."""
+    caminhos = {
+        caminho: operacoes
+        for caminho, operacoes in documento.get("paths", {}).items()
+        if caminho in snapshot.get("paths", {})
+    }
+    sementes = _referencias(caminhos)
+    nomes = _fechamento_de_schemas(documento, sementes)
+    esquemas_vivos = documento.get("components", {}).get("schemas", {})
+    seguranca_usada = {
+        nome
+        for operacoes in caminhos.values()
+        for operacao in operacoes.values()
+        if isinstance(operacao, dict)
+        for entrada in operacao.get("security", [])
+        for nome in entrada
+    }
+    return {
+        "paths": caminhos,
+        "schemas": {n: esquemas_vivos[n] for n in sorted(nomes) if n in esquemas_vivos},
+        "securitySchemes": {
+            nome: documento.get("components", {}).get("securitySchemes", {})[nome]
+            for nome in sorted(seguranca_usada)
+            if nome in documento.get("components", {}).get("securitySchemes", {})
+        },
+    }
+
+
+def test_e63s06_a_projecao_historica_do_openapi_vivo_e_identica_ao_snapshot() -> None:
+    """Toda rota da Chain107-R1 sobrevive byte a byte no documento vivo.
+
+    Segurança, operações, respostas, parâmetros e o fecho transitivo dos
+    schemas referenciados entram na comparação. Adições da E7.2 ficam
+    **fora** da projeção e não a afetam — e são medidas pelas guardas
+    próprias da E7.2, não por esta.
     """
     from main import app
 
-    assert json.loads(SNAPSHOT.read_text(encoding="utf-8")) == _sem_volateis(app.openapi())
+    snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+    vivo = _sem_volateis(app.openapi())
+    assert _projecao_historica(vivo, snapshot) == _projecao_historica(snapshot, snapshot)
+
+
+def test_e63s06a_a_projecao_nao_e_vazia_e_cobre_a_rota_preditiva() -> None:
+    """Não-vacuidade: uma projeção vazia passaria por qualquer coisa."""
+    from main import app
+
+    snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+    projecao = _projecao_historica(_sem_volateis(app.openapi()), snapshot)
+    assert "/api/v1/predictive-evaluations" in projecao["paths"]
+    assert len(projecao["paths"]) == len(snapshot["paths"])
+    assert projecao["schemas"], "o fecho de schemas não pode ser vazio"
+    assert "PIAServiceBearer" in projecao["securitySchemes"]
+
+
+@pytest.mark.parametrize(
+    "sabotagem",
+    ["remover_rota", "alterar_seguranca", "alterar_schema_alcancavel"],
+)
+def test_e63s06c_a_projecao_reprova_quando_o_contrato_historico_muda(sabotagem: str) -> None:
+    """Provas adversariais: a guarda tem de morrer nos três casos.
+
+    Sem elas, "a projeção é igual" poderia ser verdade por a projeção não
+    medir nada.
+    """
+    from main import app
+
+    snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+    vivo = _sem_volateis(app.openapi())
+    adulterado = json.loads(json.dumps(vivo))
+    rota = "/api/v1/predictive-evaluations"
+
+    if sabotagem == "remover_rota":
+        adulterado["paths"].pop(rota)
+    elif sabotagem == "alterar_seguranca":
+        adulterado["paths"][rota]["post"]["security"] = [{"OutroEsquema": []}]
+    else:
+        alvo = sorted(_referencias(adulterado["paths"][rota]))[0]
+        adulterado["components"]["schemas"][alvo]["title"] = "adulterado"
+
+    assert _projecao_historica(adulterado, snapshot) != _projecao_historica(
+        snapshot, snapshot
+    ), f"a guarda não reprovou a sabotagem {sabotagem!r}"
+
+
+def test_e63s06d_o_snapshot_historico_permanece_intocado() -> None:
+    """`SDK_DELTA_E7_2 = NONE`, medido pelo hash do artefato."""
+    assert (
+        hashlib.sha256(SNAPSHOT.read_bytes()).hexdigest()
+        == "961d506c62fdd0acfbbfea2a3a06da547e5b0422a4b4b607ae3c6d60327bf58d"
+    )
+    assert (
+        hashlib.sha256((RUNTIME / "models.py").read_bytes()).hexdigest()
+        == "955c76bdc176bfe05b08bb04ca5bd7610dee9292866f3060bbd97563e426b24c"
+    )
 
 
 def test_e63s06b_o_campo_volatil_realmente_existe_no_documento_vivo() -> None:

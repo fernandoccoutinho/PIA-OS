@@ -10,7 +10,15 @@ prefixo de API); `api_router` agrega os demais e é montado sob
 from fastapi import APIRouter
 
 from app.api.module_registry import REGISTERED_MODULE_NAMES
-from app.routers import health, metrics, predictive_evaluations, root, status, version
+from app.routers import (
+    health,
+    metrics,
+    orchestration,
+    predictive_evaluations,
+    root,
+    status,
+    version,
+)
 
 root_router = APIRouter()
 root_router.include_router(root.router)
@@ -21,6 +29,7 @@ _API_ROUTERS = [
     version.router,
     metrics.router,
     predictive_evaluations.router,
+    orchestration.router,
 ]
 assert len(_API_ROUTERS) == len(REGISTERED_MODULE_NAMES), (
     "api/router.py e api/module_registry.py estão dessincronizados — "

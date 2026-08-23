@@ -46,11 +46,32 @@ from app.models.base_model import BaseModel
 # novo — a constante existe para que "adicionar um escopo" seja uma
 # alteração visível, não um efeito colateral de configuração.
 SCOPE_PREDICTIVE_EVALUATE = "predictive:evaluate"
-PROGRAMMATIC_SCOPES: frozenset[str] = frozenset({SCOPE_PREDICTIVE_EVALUATE})
+SCOPE_ORCHESTRATION_OPERATE = "orchestration:operate"
+PROGRAMMATIC_SCOPES: frozenset[str] = frozenset(
+    {SCOPE_PREDICTIVE_EVALUATE, SCOPE_ORCHESTRATION_OPERATE}
+)
+"""Escopo próprio para a E7.2 — não um alargamento do escopo preditivo.
 
-# Operação sob cota. Uma só nesta etapa; a coluna existe para que a
-# segunda operação não exija migration de chave.
+```text
+PREDICTIVE_SCOPE != ORCHESTRATION_SCOPE
+SCIENCE_AUTHORITY != ORCHESTRATION_AUTHORITY
+```
+
+Reaproveitar `predictive:evaluate` faria toda credencial já emitida para
+ciência passar a operar trabalho multi-IA sem que ninguém tivesse
+decidido isso. Escopos separados tornam a concessão um ato explícito.
+"""
+
+# Operações sob cota. A coluna sempre admitiu várias; a E7.2 exerce isso.
 OPERATION_PREDICTIVE_EVALUATE = "predictive_evaluate"
+OPERATION_ORCHESTRATION_API = "orchestration_api"
+"""Bucket de cota próprio da orquestração.
+
+Um bucket agregado por família de operação, e não um por endpoint: a cota
+protege o recurso compartilhado, e cinco buckets independentes deixariam o
+teto real ser cinco vezes o declarado. Separado do preditivo pelo mesmo
+motivo do escopo — consumir orquestração não deve esgotar ciência.
+"""
 
 
 class CanonicalScopeArray(TypeDecorator[Any]):

@@ -84,6 +84,8 @@ class CommandOperation(StrEnum):
 
     CREATE_SCHEDULE = "orchestration.create_schedule"
     SEAL_HANDOFF = "orchestration.seal_handoff"
+    EXPORT_HANDOFF = "orchestration.export_handoff"
+    IMPORT_RETURN = "orchestration.import_return"
 
 
 E7_1_IMPLEMENTED_SCHEDULE_TRANSITIONS: frozenset[tuple[ScheduleState, ScheduleState]] = frozenset(
@@ -109,3 +111,45 @@ resultado binário exigido: dois selamentos do mesmo conteúdo.
 
 E7_1_IMPLEMENTED_ATTEMPT_TRANSITIONS: frozenset[tuple[AttemptState, AttemptState]] = frozenset()
 """Nenhuma. A tentativa nasce `OPEN` e só fecha com um retorno — E7.2."""
+
+
+class HandoffResultStatus(StrEnum):
+    """Veredito sobre um retorno importado (`E7.2`).
+
+    ```text
+    RESULT_STATUS != STEP_STATE
+    RESULT_REJECTED != RESULT_DISCARDED
+    ```
+
+    Duas palavras, e nenhuma delas é estado de etapa. Um retorno rejeitado
+    fecha a tentativa e **mantém** a etapa em `AWAITING_RETURN`: usar
+    `StepState.REJECTED` aqui obrigaria, no retry, uma transição reversa
+    `REJECTED -> DISPATCHED` que o MAI não congelou.
+    """
+
+    VALIDATED = "validated"
+    REJECTED = "rejected"
+
+
+E7_2_IMPLEMENTED_STEP_TRANSITIONS: frozenset[tuple[StepState, StepState]] = frozenset(
+    {
+        (StepState.PENDING, StepState.DISPATCHED),
+        (StepState.DISPATCHED, StepState.AWAITING_RETURN),
+        (StepState.AWAITING_RETURN, StepState.RETURNED),
+    }
+)
+"""Transições de etapa que a E7.2 executa — e apenas estas.
+
+A E7.1 não executava nenhuma (`SEALED != DISPATCHED`). A E7.2 traz o
+transporte manual, então `DISPATCHED` e `AWAITING_RETURN` passam a ter
+produtor real. `REJECTED`, `FAILED` e `CANCELLED` continuam sem produtor:
+pertencem a decisão terminal e a cancelamento, que são E7.3.
+"""
+
+E7_2_IMPLEMENTED_ATTEMPT_TRANSITIONS: frozenset[tuple[AttemptState, AttemptState]] = frozenset(
+    {
+        (AttemptState.OPEN, AttemptState.CLOSED_OK),
+        (AttemptState.OPEN, AttemptState.CLOSED_REJECTED),
+    }
+)
+"""`CLOSED_TIMEOUT` e `CLOSED_CANCELLED` seguem sem produtor — E7.3."""

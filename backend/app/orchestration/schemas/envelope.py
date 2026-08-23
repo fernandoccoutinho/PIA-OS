@@ -187,13 +187,17 @@ def constraints_as_mapping(pares: ConstraintPairs) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class StepDraft:
-    """Etapa declarada pelo chamador, antes de existir no banco."""
+    """Etapa declarada pelo chamador, antes de existir no banco.
+
+    `constraints` aceita mapa ou pares e é canonicalizada no construtor;
+    a anotação declara isso em vez de mentir que só admite a forma final.
+    """
 
     role: str
     instruction_ref: str
     expected_output_contract: str
     context_refs: tuple[ContextRef, ...] = ()
-    constraints: ConstraintPairs = ()
+    constraints: ConstraintPairs | Mapping[str, str] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "role", _texto_obrigatorio(self.role, "role", MAX_ROLE_LENGTH))

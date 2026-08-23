@@ -43,6 +43,12 @@ def _fresh_e5l_table():
         # descendentes faria o `upgrade` seguinte tentar recriá-los.
         # ATUALIZADO PELA E7.1: as cinco tabelas da orquestração e suas
         # duas funções entram na limpeza, do mais novo para o mais antigo.
+        # ATUALIZADO PELA E7.2: a folha passou a ser handoff_results/
+        # handoff_attributions; ambas caem antes das tabelas da E7.1.
+        for tabela_e72 in ("handoff_results", "handoff_attributions"):
+            connection.execute(sa.text(f"DROP TABLE IF EXISTS {tabela_e72} CASCADE"))
+        connection.execute(sa.text("DROP FUNCTION IF EXISTS reject_handoff_record_mutation()"))
+        connection.execute(sa.text("DROP INDEX IF EXISTS ix_handoff_attempts_single_open"))
         for tabela_e71 in (
             "seal_receipts",
             "handoff_attempts",
@@ -237,7 +243,7 @@ def test_e5l_migration_round_trip_vazio() -> None:
             is None
         )
     migrations.upgrade("head")
-    assert migrations.current_revision() == "b8c04e2fd137"
+    assert migrations.current_revision() == "c3a75e01d248"
     with engine.connect() as connection:
         assert (
             connection.execute(
@@ -254,7 +260,7 @@ def test_e5l_downgrade_com_historico_recusa_antes_de_ddl() -> None:
         session.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == "b8c04e2fd137"
+    assert migrations.current_revision() == "c3a75e01d248"
     with engine.connect() as connection:
         assert (
             connection.execute(

@@ -21,6 +21,7 @@ import pytest
 from app.exceptions.api import AuthenticationException, InsufficientScopeException
 from app.models.programmatic_service_principal import (
     PROGRAMMATIC_SCOPES,
+    SCOPE_ORCHESTRATION_OPERATE,
     SCOPE_PREDICTIVE_EVALUATE,
     canonical_scopes,
 )
@@ -261,7 +262,13 @@ def test_e62a14_escopos_sao_canonicos_e_o_vocabulario_e_fechado() -> None:
         canonical_scopes([])
     with pytest.raises(ValueError):
         canonical_scopes("predictive:evaluate")
-    assert frozenset({SCOPE_PREDICTIVE_EVALUATE}) == PROGRAMMATIC_SCOPES
+    # ATUALIZADO PELA E7.2: o vocabulário passou a ter dois escopos. O que
+    # esta guarda protege é o FECHAMENTO — `admin:*` continua recusado —
+    # e não a quantidade congelada em um. Escopo novo entra por decisão
+    # nomeada, e esta linha é o registro dela.
+    assert (
+        frozenset({SCOPE_PREDICTIVE_EVALUATE, SCOPE_ORCHESTRATION_OPERATE}) == PROGRAMMATIC_SCOPES
+    )
 
 
 # --- mutantes dirigidos -----------------------------------------------------

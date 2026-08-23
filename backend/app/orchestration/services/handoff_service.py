@@ -120,7 +120,63 @@ class HandoffService:
 
         Exige Schedule `ACTIVE` e etapa `PENDING`. Selar um trabalho ainda
         em rascunho registraria um repasse de composição não confirmada.
+
+        **Semântica congelada na E7.1.** A E7.2 não a alterou: o retry de
+        exportação usa `seal_step_for_export`, que admite também
+        `AWAITING_RETURN`. Relaxar a pré-condição aqui faria toda a
+        evidência da E7.1 passar a descrever outro comportamento.
         """
+        return self._seal(
+            attempt_id=attempt_id,
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            sealer_ref=sealer_ref,
+            estados_admitidos=(StepState.PENDING,),
+        )
+
+    def seal_step_for_export(
+        self,
+        *,
+        attempt_id: uuid.UUID,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        sealer_ref: str,
+    ) -> SealOutcome:
+        """Sela para exportação: `PENDING` (primeira) ou `AWAITING_RETURN` (retry).
+
+        ```text
+        SEAL_STEP_SEMANTICS = FROZEN_AT_E7_1
+        RETRY_AFTER_REJECTION -> STEP_IS_AWAITING_RETURN
+        ```
+
+        Método novo em vez de parâmetro novo no antigo: um sinalizador em
+        `seal_step` faria o comportamento congelado depender de quem chama,
+        e a garantia da E7.1 passaria a valer só por convenção.
+
+        O produtor único permanece o mesmo — `HandoffService` continua
+        sendo o único a abrir tentativa e emitir recibo de selamento.
+        """
+        return self._seal(
+            attempt_id=attempt_id,
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            sealer_ref=sealer_ref,
+            estados_admitidos=(StepState.PENDING, StepState.AWAITING_RETURN),
+        )
+
+    def _seal(
+        self,
+        *,
+        attempt_id: uuid.UUID,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        sealer_ref: str,
+        estados_admitidos: tuple[StepState, ...],
+    ) -> SealOutcome:
         agenda = self._repository.get_schedule(
             control_principal_ref=control_principal_ref, schedule_id=schedule_id
         )
@@ -149,9 +205,12 @@ class HandoffService:
                 message="etapa inexistente neste Schedule sob este principal",
                 detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
             )
-        if etapa.state is not StepState.PENDING:
+        if etapa.state not in estados_admitidos:
+            admitidos = ", ".join(estado.value for estado in estados_admitidos)
             raise OrchestrationLifecycleViolationError(
-                message=f"selamento exige etapa PENDING; estado atual {etapa.state.value}",
+                message=(
+                    f"selamento admite etapa em [{admitidos}]; " f"estado atual {etapa.state.value}"
+                ),
                 detail={"current_state": etapa.state.value},
             )
         if not sealer_ref.strip():

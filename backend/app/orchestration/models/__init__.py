@@ -13,9 +13,12 @@ from app.orchestration.models.enums import (
     AttemptState,
     CommandOperation,
     HandoffMode,
+    HandoffResultStatus,
     ScheduleState,
     StepState,
 )
+from app.orchestration.models.handoff_attribution import HandoffAttribution
+from app.orchestration.models.handoff_result import HandoffResult
 from app.orchestration.models.schedule import Schedule
 from app.orchestration.models.seal_receipt import SealReceipt
 from app.orchestration.models.step import ScheduleStep
@@ -25,7 +28,10 @@ __all__ = [
     "CommandOperation",
     "CommandReceipt",
     "HandoffAttempt",
+    "HandoffAttribution",
     "HandoffMode",
+    "HandoffResult",
+    "HandoffResultStatus",
     "Schedule",
     "ScheduleState",
     "ScheduleStep",

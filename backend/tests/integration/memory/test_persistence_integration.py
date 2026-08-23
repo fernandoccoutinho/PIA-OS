@@ -93,11 +93,15 @@ _E7_ORCHESTRATION_TABLES = (
     "handoff_attempts",
     "seal_receipts",
     "command_receipts",
+    # --- E7.2, autorizadas pela Chain113 ---
+    "handoff_results",
+    "handoff_attributions",
 )
 """Tabelas de orquestração **autorizadas pela Chain110** (E7.1).
 
 ```text
 AUTHORIZED_BY_CHAIN110 = TRUE
+AUTHORIZED_BY_CHAIN113 = TRUE
 E7_1_TABLES != E4_4_TABLES
 ```
 

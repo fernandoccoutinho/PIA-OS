@@ -67,12 +67,21 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.orchestration.errors.exceptions import (
+    HandoffRecordImmutableError,
     OrchestrationScopeViolationError,
     SealReceiptImmutableError,
 )
 from app.orchestration.models.attempt import HandoffAttempt
 from app.orchestration.models.command_receipt import CommandReceipt
-from app.orchestration.models.enums import AttemptState, HandoffMode, ScheduleState, StepState
+from app.orchestration.models.enums import (
+    AttemptState,
+    HandoffMode,
+    HandoffResultStatus,
+    ScheduleState,
+    StepState,
+)
+from app.orchestration.models.handoff_attribution import HandoffAttribution
+from app.orchestration.models.handoff_result import HandoffResult
 from app.orchestration.models.schedule import Schedule
 from app.orchestration.models.seal_receipt import SealReceipt
 from app.orchestration.models.step import ScheduleStep
@@ -513,3 +522,277 @@ class OrchestrationRepository:
                 CommandReceipt.command_key == command_key,
             )
         ).one_or_none()
+
+    # --- E7.2: transporte, veredito e atribuição ---------------------------
+    #
+    # Todo método abaixo recebe control_principal_ref E o schedule_id
+    # DECLARADO pelo chamador, e impõe os dois.
+    #
+    # ```text
+    # OWNER_BINDING != SCHEDULE_BINDING
+    # DERIVED_SCHEDULE != CALLER_DECLARED_SCHEDULE
+    # NO_AUTHORIZATION_DERIVED_FROM_THE_AUTHORIZED_OBJECT
+    # ```
+
+    def lock_step(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, step_id: uuid.UUID
+    ) -> ScheduleStep | None:
+        """Etapa bloqueada sob escopo. Segundo elo da ordem de locks.
+
+        ```text
+        LOCK_ORDER = Schedule -> Step(s) -> Attempt
+        ```
+
+        Ordem fixa e sempre a mesma porque duas transações que travam os
+        mesmos recursos em ordens opostas produzem deadlock — e deadlock
+        sob decisão de ciclo de vida apareceria como falha intermitente
+        de negócio.
+        """
+        return self._session.scalars(
+            sa.select(ScheduleStep)
+            .join(Schedule, Schedule.id == ScheduleStep.schedule_id)
+            .where(
+                ScheduleStep.id == step_id,
+                ScheduleStep.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+            .with_for_update(of=ScheduleStep)
+        ).one_or_none()
+
+    def set_step_state(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        state: StepState,
+    ) -> ScheduleStep:
+        """Grava estado de etapa já decidido pelo serviço, sob escopo e lock."""
+        etapa = self.lock_step(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+        )
+        if etapa is None:
+            raise OrchestrationScopeViolationError(
+                message="etapa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
+            )
+        etapa.state = state
+        self._session.flush()
+        return etapa
+
+    def lock_attempt(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, attempt_id: uuid.UUID
+    ) -> HandoffAttempt | None:
+        """Tentativa bloqueada sob escopo. Terceiro elo da ordem de locks."""
+        return self._session.scalars(
+            sa.select(HandoffAttempt)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                HandoffAttempt.id == attempt_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+            .with_for_update(of=HandoffAttempt)
+        ).one_or_none()
+
+    def set_attempt_state(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        state: AttemptState,
+    ) -> HandoffAttempt:
+        tentativa = self.lock_attempt(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            attempt_id=attempt_id,
+        )
+        if tentativa is None:
+            raise OrchestrationScopeViolationError(
+                message="tentativa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "attempt_id": str(attempt_id)},
+            )
+        tentativa.state = state
+        self._session.flush()
+        return tentativa
+
+    def get_open_attempt(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, step_id: uuid.UUID
+    ) -> HandoffAttempt | None:
+        """Tentativa `OPEN` da etapa, se houver. No máximo uma, por índice."""
+        return self._session.scalars(
+            sa.select(HandoffAttempt)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                HandoffAttempt.step_id == step_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                HandoffAttempt.state == AttemptState.OPEN,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()
+
+    def list_unreturned_predecessors(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, position: int
+    ) -> list[int]:
+        """Posições anteriores que ainda não estão `RETURNED`.
+
+        ```text
+        REJECTED_RESULT BLOCKS ADVANCE
+        ```
+
+        É isto que impede o cliente de pular a etapa recusada chamando
+        direto o endpoint da próxima: sem a checagem, "bloqueia avanço"
+        valeria apenas para quem seguisse a ordem por educação.
+        """
+        return [
+            linha[0]
+            for linha in self._session.execute(
+                sa.select(ScheduleStep.position)
+                .join(Schedule, Schedule.id == ScheduleStep.schedule_id)
+                .where(
+                    ScheduleStep.schedule_id == schedule_id,
+                    ScheduleStep.position < position,
+                    ScheduleStep.state != StepState.RETURNED,
+                    Schedule.id == schedule_id,
+                    Schedule.control_principal_ref == control_principal_ref,
+                )
+                .order_by(ScheduleStep.position.asc())
+            ).all()
+        ]
+
+    def create_handoff_result(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        status: HandoffResultStatus,
+        expected_output_contract: str,
+        output_media_type: str,
+        output_sha256: str,
+        output_bytes: int,
+        declared_output_ref: str | None,
+        validation_codes: tuple[str, ...],
+    ) -> HandoffResult:
+        """Veredito de uma tentativa deste Schedule e deste dono."""
+        if (
+            self._attempt_under_scope(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                attempt_id=attempt_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="tentativa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "attempt_id": str(attempt_id)},
+            )
+        resultado = HandoffResult(
+            attempt_id=attempt_id,
+            status=status,
+            expected_output_contract=expected_output_contract,
+            output_media_type=output_media_type,
+            output_sha256=output_sha256,
+            output_bytes=output_bytes,
+            declared_output_ref=declared_output_ref,
+            validation_codes=validation_codes,
+        )
+        self._session.add(resultado)
+        self._session.flush()
+        return resultado
+
+    def create_handoff_attribution(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        role: str,
+        declared_provider_id: str | None,
+        declared_model_id: str | None,
+        declared_instance_id: str,
+        declared_at: datetime,
+    ) -> HandoffAttribution:
+        """Atribuição declarada. `provenance_record_ref` fica `NULL`.
+
+        ```text
+        E7_WRITES_PROVENANCE = FALSE
+        ```
+
+        A coluna sequer é parâmetro deste método: não há como preenchê-la
+        por descuido de chamador, porque não existe caminho para isso.
+        """
+        if (
+            self._attempt_under_scope(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                attempt_id=attempt_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="tentativa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "attempt_id": str(attempt_id)},
+            )
+        atribuicao = HandoffAttribution(
+            attempt_id=attempt_id,
+            role=role,
+            declared_provider_id=declared_provider_id,
+            declared_model_id=declared_model_id,
+            declared_instance_id=declared_instance_id,
+            declared_at=declared_at,
+            self_declared=True,
+        )
+        self._session.add(atribuicao)
+        self._session.flush()
+        return atribuicao
+
+    def get_handoff_result(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, attempt_id: uuid.UUID
+    ) -> HandoffResult | None:
+        return self._session.scalars(
+            sa.select(HandoffResult)
+            .join(HandoffAttempt, HandoffAttempt.id == HandoffResult.attempt_id)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                HandoffResult.attempt_id == attempt_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()
+
+    def get_handoff_attribution(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, attempt_id: uuid.UUID
+    ) -> HandoffAttribution | None:
+        return self._session.scalars(
+            sa.select(HandoffAttribution)
+            .join(HandoffAttempt, HandoffAttempt.id == HandoffAttribution.attempt_id)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                HandoffAttribution.attempt_id == attempt_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()
+
+    def update_handoff_record(self, *, record_id: uuid.UUID) -> None:
+        """Recusa explícita — segunda camada do append-only da E7.2."""
+        raise HandoffRecordImmutableError(
+            message="veredito e atribuição são append-only: UPDATE recusado",
+            detail={"record_id": str(record_id)},
+        )
+
+    def delete_handoff_record(self, *, record_id: uuid.UUID) -> None:
+        """Recusa explícita — segunda camada do append-only da E7.2."""
+        raise HandoffRecordImmutableError(
+            message="veredito e atribuição são append-only: DELETE recusado",
+            detail={"record_id": str(record_id)},
+        )

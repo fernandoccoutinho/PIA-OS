@@ -192,14 +192,26 @@ def test_e71b04_nenhuma_dependencia_de_runtime_nova_em_base_txt() -> None:
         assert pacote not in conteudo, f"base.txt passou a conter {pacote}"
 
 
-def test_e71b05_a_e7_nao_cria_rota_nem_schema_publico() -> None:
-    """API é E7.2. Aqui não há router, dependency nem `APIRouter`."""
+def test_e71b05_o_dominio_da_orquestracao_nao_cria_rota() -> None:
+    """O DOMÍNIO segue sem API; a rota vive em `app/routers/`.
+
+    ```text
+    DOMAIN_PACKAGE != TRANSPORT_LAYER
+    ```
+
+    ATUALIZADO PELA E7.2: a versão anterior exigia que `api/router.py`
+    sequer mencionasse orquestração, porque na E7.1 **nenhuma** rota
+    existia. A E7.2 criou cinco, autorizadas por plano próprio. O que esta
+    guarda protege continua valendo e ficou mais preciso: nenhum arquivo
+    de `app/orchestration/**` declara rota ou dependency — se declarasse,
+    o domínio passaria a conhecer FastAPI e a fronteira se dissolveria.
+    """
     for caminho in _arquivos_de_producao():
         chamados = _chamados(caminho)
         assert "APIRouter" not in chamados, caminho.name
         assert "Depends" not in chamados, caminho.name
-    router = BACKEND / "app" / "api" / "router.py"
-    assert "orchestration" not in router.read_text(encoding="utf-8")
+        for modulo in _imports(caminho):
+            assert not modulo.startswith("fastapi"), f"{caminho.name} importa {modulo}"
 
 
 # --- fronteira de persistência ----------------------------------------------
@@ -326,16 +338,21 @@ def test_e71b16_o_selamento_nao_altera_estado_de_etapa() -> None:
     assert not E7_1_IMPLEMENTED_STEP_TRANSITIONS
 
 
-def test_e71b17_a_e7_1_nao_antecipa_objetos_da_e7_2_nem_da_e7_3() -> None:
-    """Nada de retorno, validação, atribuição, delegação, gate ou auditoria."""
+def test_e71b17_a_orquestracao_nao_antecipa_a_e7_3() -> None:
+    """Nada de delegação, gate, auditoria, cancelamento ou Stop Condition runtime."""
+    # ATUALIZADO PELA E7.2: `HandoffResult`, `HandoffAttribution` e
+    # `ReturnValidationService` saíram da lista porque deixaram de ser
+    # antecipação e passaram a ser entrega autorizada. Os objetos da E7.3
+    # permanecem proibidos — a lista mede o que ainda NÃO foi autorizado,
+    # não o que um dia esteve fora do escopo.
     proibidos = {
-        "HandoffResult",
-        "HandoffAttribution",
         "ServiceDelegation",
         "GateAuthorizationPort",
         "AuditOpinion",
-        "ReturnValidationService",
+        "AuditService",
         "ExecutionObservation",
+        "CancellationService",
+        "StopConditionRuntime",
     }
     for caminho in _arquivos_de_producao():
         assert not (_nomes(caminho) & proibidos), caminho.name
@@ -368,14 +385,37 @@ CONTROL_BOUND = frozenset(
         "get_attempt",
         "get_seal_receipt_by_attempt",
         "list_attempts",
+        # --- E7.2 ---
+        "lock_step",
+        "set_step_state",
+        "lock_attempt",
+        "set_attempt_state",
+        "get_open_attempt",
+        "list_unreturned_predecessors",
+        "create_handoff_result",
+        "create_handoff_attribution",
+        "get_handoff_result",
+        "get_handoff_attribution",
     }
 )
-"""Exigem `control_principal_ref` na assinatura E o impõem no corpo."""
+"""Exigem `control_principal_ref` na assinatura E o impõem no corpo.
+
+ATUALIZADO PELA E7.2: dez métodos novos entraram, e a contagem total do
+repositório subiu. Nenhum entrou por omissão — o teste de exaustividade
+reprova qualquer método público sem categoria.
+"""
 
 PRINCIPAL_BOUND = frozenset({"claim_command", "get_command_receipt"})
 """Escopados pelo principal TÉCNICO do comando, não pelo de controle."""
 
-REFUSAL_ONLY = frozenset({"update_seal_receipt", "delete_seal_receipt"})
+REFUSAL_ONLY = frozenset(
+    {
+        "update_seal_receipt",
+        "delete_seal_receipt",
+        "update_handoff_record",
+        "delete_handoff_record",
+    }
+)
 """Recusam incondicionalmente; escopo é irrelevante porque nada executam."""
 
 SCOPE_EXEMPT = frozenset({"database_now"})
@@ -436,9 +476,10 @@ def test_e71b20_todo_caminho_de_escrita_recusa_em_vez_de_devolver_none() -> None
 
 def test_e71b21_os_metodos_de_recusa_levantam_incondicionalmente() -> None:
     metodos = _metodos_publicos_do_repositorio()
+    imutaveis = {"SealReceiptImmutableError", "HandoffRecordImmutableError"}
     for nome in sorted(REFUSAL_ONLY):
         corpo = ast.unparse(metodos[nome])
-        assert "SealReceiptImmutableError" in corpo, nome
+        assert any(erro in corpo for erro in imutaveis), nome
         assert "if " not in corpo, f"{nome}: recusa condicional não é recusa"
 
 
