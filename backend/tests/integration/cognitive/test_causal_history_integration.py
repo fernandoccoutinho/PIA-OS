@@ -364,6 +364,7 @@ def test_chi8_metadata_matches_the_database_after_e3_9():
     Mesmo recorte que `IX5` (`E3.7`) já usava.
     """
     import app.cognitive.models  # noqa: F401
+    import app.orchestration.models  # noqa: F401
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
     from app.database.base import Base

@@ -13,6 +13,7 @@ from sqlalchemy import engine_from_config, pool
 import app.cognitive.models  # noqa: F401,E402
 import app.memory.models  # noqa: F401,E402
 import app.models.programmatic_service_principal  # noqa: F401,E402
+import app.orchestration.models  # noqa: F401,E402
 from alembic import context
 from app.config.settings import settings
 from app.database.base import Base

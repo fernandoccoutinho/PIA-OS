@@ -86,6 +86,27 @@ _E6_PROGRAMMATIC_TABLES = (
     "programmatic_service_principals",
     "programmatic_quota_buckets",
 )
+
+_E7_ORCHESTRATION_TABLES = (
+    "schedules",
+    "schedule_steps",
+    "handoff_attempts",
+    "seal_receipts",
+    "command_receipts",
+)
+"""Tabelas de orquestração **autorizadas pela Chain110** (E7.1).
+
+```text
+AUTHORIZED_BY_CHAIN110 = TRUE
+E7_1_TABLES != E4_4_TABLES
+```
+
+Mesmo registro de autorização das duas da E6.2, e pela mesma razão: o
+`pi13` mede que NENHUMA tabela inesperada exista, não que o schema esteja
+congelado no estado da E4.4. Uma tabela nova só é legítima aqui quando
+uma decisão nomeada a autoriza — esta lista é o registro dessa
+autorização, não uma válvula de escape.
+"""
 """Tabelas de acesso programático **autorizadas pela Chain107** (E6.2).
 
 ```text
@@ -564,6 +585,7 @@ def test_pi13_no_new_table_and_no_new_migration():
         | set(_E4_TABLES)
         | set(_APPEND_ONLY_TABLES)
         | set(_E6_PROGRAMMATIC_TABLES)
+        | set(_E7_ORCHESTRATION_TABLES)
         | {"alembic_version"}
     )
     assert tabelas == esperadas, f"tabela inesperada: {tabelas - esperadas}"

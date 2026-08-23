@@ -469,11 +469,11 @@ def test_i15_sql_bruto_nao_altera_recibo_nem_aprovacao_consumida():
 
 
 def test_i16_single_head_e_round_trip_da_migration():
-    assert migrations.head_revision() == "b4d71c58ae02"
-    assert migrations.current_revision() == "b4d71c58ae02"
+    assert migrations.head_revision() == "a7f31c05be24"
+    assert migrations.current_revision() == "a7f31c05be24"
     migrations.downgrade("a1f7c2d40e93")
     migrations.upgrade("head")
-    assert migrations.current_revision() == "b4d71c58ae02"
+    assert migrations.current_revision() == "a7f31c05be24"
 
 
 def test_i17_a_conversao_preserva_o_uuid_literal_existente():
@@ -539,7 +539,7 @@ def test_i18_downgrade_recusa_antes_de_alterar_o_schema():
     assert tipo == "character varying"
     assert restricao == 1
     assert _recibos()[0][2] == "rule-1"
-    assert migrations.current_revision() == "b4d71c58ae02"
+    assert migrations.current_revision() == "a7f31c05be24"
 
 
 def test_i19_nenhuma_funcao_ou_trigger_orfa_apos_o_round_trip():

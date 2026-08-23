@@ -548,6 +548,7 @@ def test_ri23_no_schema_orm_drift():
     """
     import app.cognitive.models  # noqa: F401
     import app.memory.models  # noqa: F401
+    import app.orchestration.models  # noqa: F401
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
     from app.database.base import Base
@@ -581,7 +582,7 @@ def test_ri24_migration_head_is_unchanged_and_single():
     # ATUALIZADO PELA E4.11: a cabeça passou a ser `e7c25a91f4b3`
     # (validated_experiences). A guarda continua medindo head ÚNICO —
     # só o alvo do único mudou.
-    assert tuple(heads) == ("b4d71c58ae02",), f"migration head mudou: {heads}"
+    assert tuple(heads) == ("a7f31c05be24",), f"migration head mudou: {heads}"
 
 
 def test_ri25_no_new_memory_table_was_introduced():

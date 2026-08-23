@@ -38,9 +38,23 @@ def _fresh_e5l_table():
     migrations.upgrade("head")
     yield
     with engine.begin() as connection:
-        # A E6.2 é a sucessora linear da E5.l. Rebobinar `alembic_version`
-        # sem derrubar o descendente faria o `upgrade` seguinte tentar
-        # recriar as tabelas do acesso programático.
+        # A E6.2 é a sucessora linear da E5.l e a E7.1 é a sucessora da
+        # E6.2. Rebobinar `alembic_version` sem derrubar TODOS os
+        # descendentes faria o `upgrade` seguinte tentar recriá-los.
+        # ATUALIZADO PELA E7.1: as cinco tabelas da orquestração e suas
+        # duas funções entram na limpeza, do mais novo para o mais antigo.
+        for tabela_e71 in (
+            "seal_receipts",
+            "handoff_attempts",
+            "schedule_steps",
+            "schedules",
+            "command_receipts",
+        ):
+            connection.execute(sa.text(f"DROP TABLE IF EXISTS {tabela_e71} CASCADE"))
+        connection.execute(sa.text("DROP FUNCTION IF EXISTS reject_seal_receipt_mutation()"))
+        connection.execute(
+            sa.text("DROP FUNCTION IF EXISTS orchestration_context_refs_are_canonical(jsonb)")
+        )
         connection.execute(sa.text("DROP TABLE IF EXISTS programmatic_quota_buckets CASCADE"))
         connection.execute(sa.text("DROP TABLE IF EXISTS programmatic_service_principals CASCADE"))
         connection.execute(sa.text("DROP TABLE predictive_reconfiguration_events CASCADE"))
@@ -223,7 +237,7 @@ def test_e5l_migration_round_trip_vazio() -> None:
             is None
         )
     migrations.upgrade("head")
-    assert migrations.current_revision() == "b4d71c58ae02"
+    assert migrations.current_revision() == "a7f31c05be24"
     with engine.connect() as connection:
         assert (
             connection.execute(
@@ -240,7 +254,7 @@ def test_e5l_downgrade_com_historico_recusa_antes_de_ddl() -> None:
         session.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == "b4d71c58ae02"
+    assert migrations.current_revision() == "a7f31c05be24"
     with engine.connect() as connection:
         assert (
             connection.execute(

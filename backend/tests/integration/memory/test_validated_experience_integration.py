@@ -107,12 +107,34 @@ def _truncar() -> None:
     if not pendentes:
         return
     with engine.begin() as conn:
-        # E5.l é a sucessora linear da E4.11, e a E6.2 é a sucessora da
-        # E5.l. Para reconstruir a E4.11 sem criar branch nem tentar
-        # recriar tabela descendente, a fixture remove primeiro TODOS os
-        # descendentes vazios e suas funções, do mais novo para o mais
-        # antigo. Esquecer um descendente reprova com `DuplicateTable` no
-        # `upgrade` final, não aqui — por isso a asserção de vazio.
+        # E5.l é a sucessora linear da E4.11, a E6.2 é a sucessora da
+        # E5.l e a E7.1 é a sucessora da E6.2. Para reconstruir a E4.11
+        # sem criar branch nem tentar recriar tabela descendente, a
+        # fixture remove primeiro TODOS os descendentes vazios e suas
+        # funções, do mais novo para o mais antigo. Esquecer um
+        # descendente reprova com `DuplicateTable` no `upgrade` final,
+        # não aqui — por isso a asserção de vazio.
+        # ATUALIZADO PELA E7.1: as cinco tabelas da orquestração passaram
+        # a ser a folha da cadeia e entram primeiro na ordem de remoção.
+        for tabela_e71 in (
+            "seal_receipts",
+            "handoff_attempts",
+            "schedule_steps",
+            "schedules",
+            "command_receipts",
+        ):
+            assert (
+                conn.execute(sa.text(f"SELECT count(*) FROM {tabela_e71}")).scalar_one() == 0
+            ), tabela_e71
+        conn.execute(sa.text("DROP TABLE seal_receipts CASCADE"))
+        conn.execute(sa.text("DROP TABLE handoff_attempts CASCADE"))
+        conn.execute(sa.text("DROP TABLE schedule_steps CASCADE"))
+        conn.execute(sa.text("DROP TABLE schedules CASCADE"))
+        conn.execute(sa.text("DROP TABLE command_receipts CASCADE"))
+        conn.execute(sa.text("DROP FUNCTION IF EXISTS reject_seal_receipt_mutation()"))
+        conn.execute(
+            sa.text("DROP FUNCTION IF EXISTS orchestration_context_refs_are_canonical(jsonb)")
+        )
         assert (
             conn.execute(sa.text("SELECT count(*) FROM programmatic_quota_buckets")).scalar_one()
             == 0
@@ -545,8 +567,8 @@ def test_i15_o_banco_recusa_versao_de_criterio_invalida():
 
 
 def test_i16_cabeca_unica_e_sucessora_linear():
-    assert migrations.head_revision() == "b4d71c58ae02"
-    assert migrations.current_revision() == "b4d71c58ae02"
+    assert migrations.head_revision() == "a7f31c05be24"
+    assert migrations.current_revision() == "a7f31c05be24"
 
 
 def test_i17_round_trip_com_a_tabela_vazia():
@@ -559,7 +581,7 @@ def test_i17_round_trip_com_a_tabela_vazia():
         ).scalar_one()
     assert existe == 0
     migrations.upgrade("head")
-    assert migrations.current_revision() == "b4d71c58ae02"
+    assert migrations.current_revision() == "a7f31c05be24"
 
 
 def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
@@ -599,7 +621,7 @@ def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
 
     assert (tabela, gatilho, funcao, linhas) == (1, 1, 1, 1)
     assert indices >= 3
-    assert migrations.current_revision() == "b4d71c58ae02"
+    assert migrations.current_revision() == "a7f31c05be24"
 
     # E a trigger continua ativa depois da recusa.
     with pytest.raises(Exception, match="append-only"), engine.begin() as conn:

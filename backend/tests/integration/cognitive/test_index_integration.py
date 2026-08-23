@@ -310,6 +310,7 @@ def test_ix5_metadata_matches_the_database_after_e3_7():
     que eles foram declarados também em `__table_args__`, e não apenas
     na migração."""
     import app.cognitive.models  # noqa: F401
+    import app.orchestration.models  # noqa: F401
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
     from app.database.base import Base

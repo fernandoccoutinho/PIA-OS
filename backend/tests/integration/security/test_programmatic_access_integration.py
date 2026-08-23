@@ -39,6 +39,17 @@ pytestmark = pytest.mark.skipif(
 
 _MIGRATION_E62 = "b4d71c58ae02"
 _MIGRATION_PARENT = "f8a91c2d4e60"
+_MIGRATION_HEAD = "a7f31c05be24"
+"""ATUALIZADO PELA E7.1: a folha da cadeia passou a ser a orquestração.
+
+```text
+SINGLE_HEAD != IMMOBILE_HEAD
+```
+
+O que `e62q13` protege é a ausência de branching e a ancestralidade
+correta da migration da E6.2 — não que a E6.2 continue sendo a última
+migration do repositório para sempre.
+"""
 
 
 @pytest.fixture(autouse=True)
@@ -252,9 +263,12 @@ def test_e62q13_migration_tem_head_unico_e_pai_correto() -> None:
 
     diretorio = ScriptDirectory.from_config(migrations.get_alembic_config())
     heads = diretorio.get_heads()
-    assert tuple(heads) == (_MIGRATION_E62,), heads
+    assert tuple(heads) == (_MIGRATION_HEAD,), heads
     revisao = diretorio.get_revision(_MIGRATION_E62)
     assert revisao.down_revision == _MIGRATION_PARENT
+    # A E6.2 continua na linha ancestral da folha corrente.
+    ancestrais = {r.revision for r in diretorio.iterate_revisions(_MIGRATION_HEAD, "base")}
+    assert _MIGRATION_E62 in ancestrais
 
 
 def test_e62q14_round_trip_da_migration_em_banco_limpo() -> None:

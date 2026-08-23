@@ -693,6 +693,7 @@ def test_ii15_real_collaborators_satisfy_the_ports():
 def test_ii16_no_schema_orm_drift_and_single_head():
     import app.cognitive.models  # noqa: F401
     import app.memory.models  # noqa: F401
+    import app.orchestration.models  # noqa: F401
     from alembic.autogenerate import compare_metadata
     from alembic.config import Config
     from alembic.migration import MigrationContext
@@ -718,7 +719,7 @@ def test_ii16_no_schema_orm_drift_and_single_head():
     # ATUALIZADO PELA E4.11: a cabeça passou a ser `e7c25a91f4b3`
     # (validated_experiences). A guarda continua medindo head ÚNICO —
     # só o alvo do único mudou.
-    assert tuple(heads) == ("b4d71c58ae02",), f"migration head: {heads}"
+    assert tuple(heads) == ("a7f31c05be24",), f"migration head: {heads}"
 
 
 def test_ii17_no_new_table_was_introduced():
@@ -727,8 +728,28 @@ def test_ii17_no_new_table_was_introduced():
     from app.database.engine import engine
 
     tabelas = set(inspect(engine).get_table_names())
-    for proibida in ("memory_isolations", "workspaces", "schedules", "isolation_scopes"):
+    for proibida in ("memory_isolations", "workspaces", "isolation_scopes"):
         assert proibida not in tabelas
+
+    # ATUALIZADO PELA E7.1 — colisão de NOME, não de conceito.
+    #
+    # ```text
+    # E4_8_WORKSPACE_SCHEDULE != E7_ORCHESTRATION_SCHEDULE
+    # ```
+    #
+    # `schedules` entrou nesta lista como proxy de "a E4.8 materializou
+    # um espaço de trabalho persistente". A Chain110 criou uma tabela
+    # `schedules` que é outra coisa: o trabalho governado da orquestração
+    # multi-IA, autorizado pelo `MAI-001 R1`. Apagar o nome da lista
+    # perderia a guarda; mantê-lo cru reprovaria uma tabela autorizada.
+    # A guarda passa a medir a IDENTIDADE da tabela: se `schedules`
+    # existe, ela tem de ser a da E7 — que se distingue por
+    # `control_principal_ref` — e não pode ter coluna de isolamento de
+    # memória.
+    if "schedules" in tabelas:
+        colunas = {c["name"] for c in inspect(engine).get_columns("schedules")}
+        assert "control_principal_ref" in colunas, colunas
+        assert not (colunas & {"domain_id", "isolation_scope", "memory_domain_id"}), colunas
 
 
 # ======================================================================
