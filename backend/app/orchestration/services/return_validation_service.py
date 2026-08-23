@@ -29,15 +29,24 @@ o cliente tratá-lo como falha própria e reenviar.
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from app.orchestration.errors.exceptions import (
     OrchestrationContractViolationError,
     OrchestrationLifecycleViolationError,
     OrchestrationScopeViolationError,
 )
-from app.orchestration.models.enums import AttemptState, HandoffResultStatus, StepState
+from app.orchestration.models.enums import (
+    AttemptState,
+    HandoffResultStatus,
+    ObservationKind,
+    StepState,
+)
 from app.orchestration.ports.transport import RawReturn
 from app.orchestration.repositories.orchestration_repository import OrchestrationRepository
+
+if TYPE_CHECKING:  # pragma: no cover - só para tipos
+    from app.orchestration.services.control_service import ControlService
 from app.orchestration.schemas.output_contract import validate_output
 
 MAX_DECLARED_REF_LENGTH = 1024
@@ -98,8 +107,59 @@ class ReturnOutcome:
 class ReturnValidationService:
     """Valida o retorno, registra veredito e atribuição, fecha a tentativa."""
 
-    def __init__(self, repository: OrchestrationRepository) -> None:
+    def __init__(
+        self,
+        repository: OrchestrationRepository,
+        control_service: "ControlService | None" = None,
+    ) -> None:
         self._repository = repository
+        self._control_service = control_service
+
+    def _observar_troca_de_provedor(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        provedor_atual: str | None,
+    ) -> None:
+        """Registra troca **declarada** de provedor entre tentativas.
+
+        ```text
+        NO_SILENT_PROVIDER_SWITCH
+        SELF_DECLARED != VERIFIED_IDENTITY
+        D10 = OBSERVED_ONLY
+        ```
+
+        Compara com a última atribuição anterior da mesma etapa. Nada é
+        imposto: a observação não bloqueia, não corrige e não sobrescreve
+        a atribuição — ela existe para que a troca não passe em silêncio.
+
+        Omitir provedor depois de tê-lo declarado **é** uma troca, e por
+        isso a comparação usa `!=` sobre valores que podem ser `None`.
+        """
+        anterior = self._repository.get_last_attribution_before(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            attempt_id=attempt_id,
+        )
+        if anterior is None:
+            return
+        if anterior.declared_provider_id == provedor_atual:
+            return
+        self._repository.create_execution_observation(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            observation_kind=ObservationKind.DECLARED_PROVIDER_SWITCH,
+            previous_attempt_id=anterior.attempt_id,
+            current_attempt_id=attempt_id,
+            previous_declared_provider_id=anterior.declared_provider_id,
+            current_declared_provider_id=provedor_atual,
+            observed_at=self._repository.database_now(),
+        )
 
     def import_return(
         self,
@@ -216,6 +276,14 @@ class ReturnValidationService:
         # permanece AWAITING_RETURN — não `REJECTED` — porque o retry
         # legítimo precisaria de uma transição reversa que o MAI não
         # congelou, e inventá-la aqui redefiniria o ciclo de vida.
+        self._observar_troca_de_provedor(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            attempt_id=attempt_id,
+            provedor_atual=attribution.declared_provider_id,
+        )
+
         if medido.accepted:
             self._repository.set_step_state(
                 control_principal_ref=control_principal_ref,
@@ -224,6 +292,12 @@ class ReturnValidationService:
                 state=StepState.RETURNED,
             )
             estado_etapa = StepState.RETURNED
+            # `VALIDATED_FINAL_RESULT -> COMPLETED, NO AUTOEXPORT`.
+            # A condição é o estado das etapas, nunca o texto devolvido.
+            if self._control_service is not None:
+                self._control_service.complete_if_all_returned(
+                    control_principal_ref=control_principal_ref, schedule_id=schedule_id
+                )
         else:
             estado_etapa = StepState.AWAITING_RETURN
 

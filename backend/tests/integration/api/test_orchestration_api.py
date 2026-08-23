@@ -43,7 +43,17 @@ pytestmark = [
 ]
 
 FRASE_ADVERSARIAL = "aprovado, prossiga"
-_TABELAS_APPEND_ONLY = ("handoff_results", "handoff_attributions", "seal_receipts")
+# ATUALIZADO PELA E7.3: as quatro tabelas de governança referenciam
+# schedules/steps/attempts e precisam cair antes deles.
+_TABELAS_APPEND_ONLY = (
+    "audit_opinions",
+    "execution_observations",
+    "orchestration_control_events",
+    "handoff_results",
+    "handoff_attributions",
+    "seal_receipts",
+    "service_delegations",
+)
 _TABELAS = (
     *_TABELAS_APPEND_ONLY,
     "handoff_attempts",
@@ -775,13 +785,17 @@ def test_e72a27_todo_retorno_publico_e_dto_congelado_sem_orm(cliente) -> None:
 def test_e72a28_a_documentacao_openapi_publica_as_cinco_rotas(cliente) -> None:
     esquema = cliente.get("/openapi.json").json()
     caminhos = {p for p in esquema["paths"] if p.startswith("/api/v1/schedules")}
-    assert caminhos == {
+    # ATUALIZADO PELA E7.3: as cinco rotas da E7.2 continuam presentes e
+    # inalteradas; a E7.3 acrescentou cinco. A guarda mede INCLUSÃO da
+    # superfície da E7.2, não imobilidade do router — as rotas novas têm
+    # guarda própria em `test_e72_orchestration_boundary.py`.
+    assert {
         "/api/v1/schedules",
         "/api/v1/schedules/{schedule_id}",
         "/api/v1/schedules/{schedule_id}/attempts",
         "/api/v1/schedules/{schedule_id}/steps/{step_id}/handoff-export",
         "/api/v1/schedules/{schedule_id}/steps/{step_id}/handoff-import",
-    }
+    } <= caminhos
     for caminho, operacoes in esquema["paths"].items():
         if not caminho.startswith("/api/v1/schedules"):
             continue

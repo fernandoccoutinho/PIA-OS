@@ -119,6 +119,38 @@ def _truncar() -> None:
         # ATUALIZADO PELA E7.2: veredito e atribuição são a folha atual e
         # entram primeiro na ordem de remoção. Esquecer um descendente
         # reprova com `DuplicateTable` no `upgrade` final.
+        for tabela_e73 in (
+            "audit_opinions",
+            "execution_observations",
+            "orchestration_control_events",
+            "service_delegations",
+        ):
+            conn.execute(sa.text(f"DROP TABLE IF EXISTS {tabela_e73} CASCADE"))
+        conn.execute(sa.text("DROP FUNCTION IF EXISTS reject_governance_record_mutation() CASCADE"))
+        conn.execute(
+            sa.text("DROP FUNCTION IF EXISTS guard_service_delegation_transition() CASCADE")
+        )
+        conn.execute(
+            sa.text(
+                "DROP FUNCTION IF EXISTS orchestration_audit_opinion_matrix_is_valid"
+                "(text, jsonb) CASCADE"
+            )
+        )
+        conn.execute(
+            sa.text(
+                "ALTER TABLE schedule_steps DROP CONSTRAINT IF EXISTS "
+                "ck_schedule_steps_gate_marker_valid"
+            )
+        )
+        conn.execute(
+            sa.text("DROP FUNCTION IF EXISTS orchestration_gate_marker_is_valid(jsonb) CASCADE")
+        )
+        conn.execute(
+            sa.text(
+                "ALTER TABLE handoff_attempts DROP CONSTRAINT IF EXISTS "
+                "uq_handoff_attempts_id_step_schedule"
+            )
+        )
         # ATUALIZADO PELO CORRETIVO R1: o vínculo de requisição em
         # command_receipts faz o downgrade da folha recusar; a fixture
         # rebobina por DROP, então limpa a tabela antes.
@@ -582,8 +614,8 @@ def test_i15_o_banco_recusa_versao_de_criterio_invalida():
 
 
 def test_i16_cabeca_unica_e_sucessora_linear():
-    assert migrations.head_revision() == "e5b21c9704af"
-    assert migrations.current_revision() == "e5b21c9704af"
+    assert migrations.head_revision() == "f2c60d8a41b9"
+    assert migrations.current_revision() == "f2c60d8a41b9"
 
 
 def test_i17_round_trip_com_a_tabela_vazia():
@@ -596,7 +628,7 @@ def test_i17_round_trip_com_a_tabela_vazia():
         ).scalar_one()
     assert existe == 0
     migrations.upgrade("head")
-    assert migrations.current_revision() == "e5b21c9704af"
+    assert migrations.current_revision() == "f2c60d8a41b9"
 
 
 def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
@@ -636,7 +668,7 @@ def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
 
     assert (tabela, gatilho, funcao, linhas) == (1, 1, 1, 1)
     assert indices >= 3
-    assert migrations.current_revision() == "e5b21c9704af"
+    assert migrations.current_revision() == "f2c60d8a41b9"
 
     # E a trigger continua ativa depois da recusa.
     with pytest.raises(Exception, match="append-only"), engine.begin() as conn:

@@ -7,6 +7,9 @@ from app.orchestration.errors.codes import (
     PIA_8059_ORCHESTRATION_LIFECYCLE_VIOLATION,
     PIA_8060_SEAL_RECEIPT_IMMUTABLE,
     PIA_8061_HANDOFF_RECORD_IMMUTABLE,
+    PIA_8062_DISPATCH_BLOCKED,
+    PIA_8063_DELEGATION_IMMUTABLE,
+    PIA_8064_AUDIT_RECORD_IMMUTABLE,
 )
 
 
@@ -38,3 +41,21 @@ class HandoffRecordImmutableError(PIAOSException):
     """Veredito e atribuição não são alteráveis nem removíveis."""
 
     error_code = PIA_8061_HANDOFF_RECORD_IMMUTABLE
+
+
+class DispatchBlockedError(PIAOSException):
+    """Despacho recusado por gate; a pausa já foi persistida."""
+
+    error_code = PIA_8062_DISPATCH_BLOCKED
+
+
+class DelegationImmutableError(PIAOSException):
+    """Vínculo imutável ou transição de estado terminal recusada."""
+
+    error_code = PIA_8063_DELEGATION_IMMUTABLE
+
+
+class GovernanceRecordImmutableError(PIAOSException):
+    """Evento, observação e parecer não são alteráveis nem removíveis."""
+
+    error_code = PIA_8064_AUDIT_RECORD_IMMUTABLE

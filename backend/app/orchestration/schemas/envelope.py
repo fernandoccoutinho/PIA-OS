@@ -178,7 +178,9 @@ def canonical_constraints(valor: object) -> ConstraintPairs:
             raise ValueError(f"restrição duplicada: {texto_chave!r}")
         vistas.add(texto_chave)
         pares.append((texto_chave, texto_valor))
-    return tuple(sorted(pares))
+    canonicas = tuple(sorted(pares))
+    validate_gate_keys(canonicas)
+    return canonicas
 
 
 def constraints_as_mapping(pares: ConstraintPairs) -> dict[str, str]:
@@ -314,3 +316,104 @@ class EnvelopeContent:
     def content_sha256(self) -> str:
         """`ENVELOPE_CONTENT_SHA256`. Não lê relógio, ambiente nem banco."""
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+
+
+# --- gate selado (E7.3) -----------------------------------------------------
+#
+# ```text
+# ENVELOPE_CONTENT_FIELDS = 8, INALTERADOS
+# GATE_CHANGE -> CONTENT_SHA256_CHANGE
+# SERVICE_DELEGATION != HUMAN_APPROVAL
+# ```
+#
+# O gate mora dentro de `constraints`, que já é um dos oito campos selados.
+# Uma coluna nova em `ScheduleStep` ou uma tabela lateral seriam invisíveis
+# ao hash: dois repasses, um com gate e outro sem, teriam o mesmo
+# `content_sha256`, e a delegação ligada ao hash não distinguiria os dois.
+# Levar o gate ao envelope exigiria um nono campo, proibido.
+#
+# A ausência das duas chaves é o comportamento retrocompatível explícito:
+# toda etapa criada antes da E7.3 continua despachando como antes.
+
+GATE_RESERVED_PREFIX = "pia.gate."
+GATE_KEY_REQUIRED = "pia.gate.required"
+GATE_KEY_SCOPE = "pia.gate.scope"
+GATE_RESERVED_KEYS: frozenset[str] = frozenset({GATE_KEY_REQUIRED, GATE_KEY_SCOPE})
+
+GATE_REQUIRED_SERVICE_DELEGATION = "service_delegation"
+GATE_REQUIRED_SERVICE_DELEGATION_AND_HUMAN = "service_delegation_and_human"
+GATE_REQUIRED_VALUES: frozenset[str] = frozenset(
+    {GATE_REQUIRED_SERVICE_DELEGATION, GATE_REQUIRED_SERVICE_DELEGATION_AND_HUMAN}
+)
+"""Duas formas, e **toda** forma exige delegação técnica.
+
+```text
+ALL_MARKED_GATES_REQUIRE_SERVICE_DELEGATION = TRUE
+```
+
+O valor humano **acrescenta** autorização, não substitui: admitir só
+`human` faria toda etapa marcada ficar indespachável até a E8 e deixaria
+a E7.3 sem etapa alguma protegida apenas por delegação técnica — que é
+justamente o seu resultado binário.
+
+`none` não existe. Ausência é ausência; um valor que diz "sem gate" cria
+duas grafias para a mesma coisa e o hash passa a distinguir o que o
+domínio considera igual.
+"""
+
+GATE_SCOPE_DISPATCH = "dispatch"
+GATE_SCOPE_VALUES: frozenset[str] = frozenset({GATE_SCOPE_DISPATCH})
+"""Enum fechado, único valor com produtor real.
+
+Declarar escopo futuro sem produtor seria vocabulário fingindo
+capacidade — o erro que este programa já pagou duas vezes.
+"""
+
+
+@dataclass(frozen=True)
+class GateRequirement:
+    """Exigência de gate declarada na composição, já interpretada."""
+
+    required: str
+    scope: str
+
+    def __post_init__(self) -> None:
+        if self.required not in GATE_REQUIRED_VALUES:
+            raise ValueError(f"{GATE_KEY_REQUIRED} inválido: {self.required!r}")
+        if self.scope not in GATE_SCOPE_VALUES:
+            raise ValueError(f"{GATE_KEY_SCOPE} inválido: {self.scope!r}")
+
+    @property
+    def requires_human(self) -> bool:
+        return self.required == GATE_REQUIRED_SERVICE_DELEGATION_AND_HUMAN
+
+
+def validate_gate_keys(pares: ConstraintPairs) -> None:
+    """Recusa qualquer uso inválido do espaço reservado `pia.gate.*`.
+
+    As duas chaves aparecem **juntas** ou ambas faltam. Uma sozinha seria
+    uma declaração pela metade, e interpretar a metade faria o sistema
+    inventar a parte que o cliente não disse.
+    """
+    presentes = {chave for chave, _ in pares if chave.startswith(GATE_RESERVED_PREFIX)}
+    desconhecidas = presentes - GATE_RESERVED_KEYS
+    if desconhecidas:
+        raise ValueError(
+            f"chave reservada desconhecida no espaço {GATE_RESERVED_PREFIX!r}: "
+            f"{sorted(desconhecidas)}"
+        )
+    if not presentes:
+        return
+    if presentes != GATE_RESERVED_KEYS:
+        faltando = sorted(GATE_RESERVED_KEYS - presentes)
+        raise ValueError(f"declaração de gate incompleta; faltam: {faltando}")
+    mapa = dict(pares)
+    GateRequirement(required=mapa[GATE_KEY_REQUIRED], scope=mapa[GATE_KEY_SCOPE])
+
+
+def gate_requirement(pares: ConstraintPairs) -> GateRequirement | None:
+    """Exigência de gate da etapa, ou `None` quando não há marcador."""
+    mapa = dict(pares)
+    if GATE_KEY_REQUIRED not in mapa:
+        return None
+    return GateRequirement(required=mapa[GATE_KEY_REQUIRED], scope=mapa[GATE_KEY_SCOPE])

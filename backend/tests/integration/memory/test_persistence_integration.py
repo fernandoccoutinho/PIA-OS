@@ -96,6 +96,11 @@ _E7_ORCHESTRATION_TABLES = (
     # --- E7.2, autorizadas pela Chain113 ---
     "handoff_results",
     "handoff_attributions",
+    # --- E7.3, autorizadas pela Chain116 ---
+    "service_delegations",
+    "orchestration_control_events",
+    "execution_observations",
+    "audit_opinions",
 )
 """Tabelas de orquestração **autorizadas pela Chain110** (E7.1).
 

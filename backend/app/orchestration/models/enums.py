@@ -86,6 +86,10 @@ class CommandOperation(StrEnum):
     SEAL_HANDOFF = "orchestration.seal_handoff"
     EXPORT_HANDOFF = "orchestration.export_handoff"
     IMPORT_RETURN = "orchestration.import_return"
+    GRANT_DELEGATION = "orchestration.grant_delegation"
+    REVOKE_DELEGATION = "orchestration.revoke_delegation"
+    CONTROL_SCHEDULE = "orchestration.control_schedule"
+    ISSUE_AUDIT_OPINION = "orchestration.issue_audit_opinion"
 
 
 E7_1_IMPLEMENTED_SCHEDULE_TRANSITIONS: frozenset[tuple[ScheduleState, ScheduleState]] = frozenset(
@@ -153,3 +157,160 @@ E7_2_IMPLEMENTED_ATTEMPT_TRANSITIONS: frozenset[tuple[AttemptState, AttemptState
     }
 )
 """`CLOSED_TIMEOUT` e `CLOSED_CANCELLED` seguem sem produtor — E7.3."""
+
+
+# --- E7.3: delegação, controle, observação e parecer ------------------------
+
+
+class DelegationState(StrEnum):
+    """`ACTIVE -> CONSUMED | REVOKED | EXPIRED`. Terminal não volta.
+
+    ```text
+    TERMINAL -> ANY_OTHER_STATE = FORBIDDEN
+    EXPIRED = MATERIALIZED_SYNCHRONOUSLY_UNDER_LOCK
+    ```
+
+    `EXPIRED` não exige worker: é materializado na avaliação e no grant,
+    sob o lock que já é tomado. Um sweeper em segundo plano seria um
+    processo que este programa não tem, e declará-lo faria a expiração
+    parecer garantida por algo inexistente.
+    """
+
+    ACTIVE = "active"
+    CONSUMED = "consumed"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
+TERMINAL_DELEGATION_STATES: frozenset[DelegationState] = frozenset(
+    {DelegationState.CONSUMED, DelegationState.REVOKED, DelegationState.EXPIRED}
+)
+
+
+class ControlEventKind(StrEnum):
+    """Vocabulário fechado dos eventos de controle."""
+
+    PAUSED = "paused"
+    RESUMED = "resumed"
+    STOPPED = "stopped"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+
+
+class ControlReasonCode(StrEnum):
+    """Por que o evento ocorreu. Sem texto livre.
+
+    Texto livre num registro de controle vira o lugar onde alguém escreve
+    o que não cabia em nenhum campo — inclusive conteúdo bruto.
+    """
+
+    OPERATOR_REQUESTED = "operator_requested"
+    DELEGATION_MISSING = "delegation_missing"
+    DELEGATION_EXPIRED = "delegation_expired"
+    DELEGATION_CONTENT_CHANGED = "delegation_content_changed"
+    HUMAN_GATE_UNAVAILABLE = "human_gate_unavailable"
+    STOP_CONDITION_DECLARED = "stop_condition_declared"
+    ALL_STEPS_RETURNED = "all_steps_returned"
+
+
+class StopConditionCategory(StrEnum):
+    """As dez categorias do MAI. Só com `STOP_CONDITION_DECLARED`."""
+
+    MISSING_AUTHORITY = "missing_authority"
+    SCOPE_OR_IMPACT_CHANGE = "scope_or_impact_change"
+    PROVIDER_OR_TOOL_SWITCH = "provider_or_tool_switch"
+    COST_QUOTA_OR_DURATION_LIMIT = "cost_quota_or_duration_limit"
+    SECRET_OR_PRIVACY_RISK = "secret_or_privacy_risk"
+    ARTIFACT_IDENTITY_MISMATCH = "artifact_identity_mismatch"
+    MANDATORY_GATE_FAILED = "mandatory_gate_failed"
+    MATERIAL_AUDIT_FINDING = "material_audit_finding"
+    EXTERNAL_EFFECT_REQUESTED = "external_effect_requested"
+    PROVENANCE_OR_ISOLATION_FAILURE = "provenance_or_isolation_failure"
+
+
+class ObservationKind(StrEnum):
+    """`D10 = OBSERVED_ONLY`. Um produtor real, nada preventivo."""
+
+    DECLARED_PROVIDER_SWITCH = "declared_provider_switch"
+
+
+class AuditOpinionKind(StrEnum):
+    """Vocabulário de parecer. `PASS_FINAL` **não** existe aqui.
+
+    ```text
+    AI_SELF_PASS_FINAL = FORBIDDEN
+    ```
+
+    A ausência é imposta três vezes — enum, matriz e `CHECK` no banco —
+    porque um parecer de execução que pudesse declarar aprovação final
+    tornaria a auditoria independente decorativa.
+    """
+
+    CONCUR = "concur"
+    DISSENT = "dissent"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    OUT_OF_SCOPE = "out_of_scope"
+
+
+class AuditReasonCode(StrEnum):
+    """Motivos admitidos, um por opinião (matriz abaixo)."""
+
+    CONTRACT_CONFORMS = "contract_conforms"
+    CONTRACT_NONCONFORMITY = "contract_nonconformity"
+    EVIDENCE_MISSING = "evidence_missing"
+    SCOPE_EXCLUDED = "scope_excluded"
+
+
+AUDIT_OPINION_REASON_MATRIX: dict[AuditOpinionKind, frozenset[AuditReasonCode]] = {
+    AuditOpinionKind.CONCUR: frozenset({AuditReasonCode.CONTRACT_CONFORMS}),
+    AuditOpinionKind.DISSENT: frozenset({AuditReasonCode.CONTRACT_NONCONFORMITY}),
+    AuditOpinionKind.INSUFFICIENT_EVIDENCE: frozenset({AuditReasonCode.EVIDENCE_MISSING}),
+    AuditOpinionKind.OUT_OF_SCOPE: frozenset({AuditReasonCode.SCOPE_EXCLUDED}),
+}
+"""Opinião e motivo têm de concordar.
+
+Um parecer `concur` justificado por `contract_nonconformity` seria uma
+linha que contradiz a si mesma, e nenhuma leitura posterior saberia em
+qual metade acreditar.
+"""
+
+
+class GateReasonCode(StrEnum):
+    """Resposta da porta de autorização. Enum, não string livre."""
+
+    AUTHORIZED = "authorized"
+    HUMAN_AUTHORITY_UNAVAILABLE = "human_authority_unavailable"
+
+
+E7_3_IMPLEMENTED_SCHEDULE_TRANSITIONS: frozenset[tuple[ScheduleState, ScheduleState]] = frozenset(
+    {
+        (ScheduleState.ACTIVE, ScheduleState.PAUSED),
+        (ScheduleState.PAUSED, ScheduleState.ACTIVE),
+        (ScheduleState.ACTIVE, ScheduleState.STOPPED),
+        (ScheduleState.PAUSED, ScheduleState.STOPPED),
+        (ScheduleState.ACTIVE, ScheduleState.CANCELLED),
+        (ScheduleState.PAUSED, ScheduleState.CANCELLED),
+        (ScheduleState.ACTIVE, ScheduleState.COMPLETED),
+    }
+)
+
+E7_3_IMPLEMENTED_STEP_TRANSITIONS: frozenset[tuple[StepState, StepState]] = frozenset(
+    {
+        (StepState.PENDING, StepState.CANCELLED),
+        (StepState.AWAITING_RETURN, StepState.CANCELLED),
+    }
+)
+
+E7_3_IMPLEMENTED_ATTEMPT_TRANSITIONS: frozenset[tuple[AttemptState, AttemptState]] = frozenset(
+    {(AttemptState.OPEN, AttemptState.CLOSED_CANCELLED)}
+)
+
+STATES_WITHOUT_PRODUCER_AFTER_E7_3: frozenset[str] = frozenset(
+    {StepState.FAILED.value, StepState.REJECTED.value, AttemptState.CLOSED_TIMEOUT.value}
+)
+"""Continuam sem produtor, e é declarado.
+
+`CLOSED_TIMEOUT` exigiria worker; `FAILED` e `REJECTED` de etapa exigiriam
+decisão terminal sobre a etapa, que ninguém autorizou. Vocabulário não é
+capacidade.
+"""

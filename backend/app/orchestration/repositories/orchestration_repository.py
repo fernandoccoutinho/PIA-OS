@@ -62,28 +62,40 @@ derivar é justamente o que produziu este defeito.
 
 import uuid
 from datetime import datetime
+from typing import cast
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.orchestration.errors.exceptions import (
+    GovernanceRecordImmutableError,
     HandoffRecordImmutableError,
     OrchestrationScopeViolationError,
     SealReceiptImmutableError,
 )
 from app.orchestration.models.attempt import HandoffAttempt
+from app.orchestration.models.audit_opinion import AuditOpinion
 from app.orchestration.models.command_receipt import CommandReceipt
+from app.orchestration.models.control_event import OrchestrationControlEvent
 from app.orchestration.models.enums import (
     AttemptState,
+    AuditOpinionKind,
+    ControlEventKind,
+    ControlReasonCode,
+    DelegationState,
     HandoffMode,
     HandoffResultStatus,
+    ObservationKind,
     ScheduleState,
     StepState,
+    StopConditionCategory,
 )
+from app.orchestration.models.execution_observation import ExecutionObservation
 from app.orchestration.models.handoff_attribution import HandoffAttribution
 from app.orchestration.models.handoff_result import HandoffResult
 from app.orchestration.models.schedule import Schedule
 from app.orchestration.models.seal_receipt import SealReceipt
+from app.orchestration.models.service_delegation import ServiceDelegation
 from app.orchestration.models.step import ScheduleStep
 from app.orchestration.schemas.envelope import StepDraft
 
@@ -811,5 +823,523 @@ class OrchestrationRepository:
         """Recusa explícita — segunda camada do append-only da E7.2."""
         raise HandoffRecordImmutableError(
             message="veredito e atribuição são append-only: DELETE recusado",
+            detail={"record_id": str(record_id)},
+        )
+
+    # --- E7.3: delegação, controle, observação e parecer --------------------
+    #
+    # ```text
+    # NO_AUTHORIZATION_DERIVED_FROM_THE_AUTHORIZED_OBJECT
+    # ```
+    #
+    # Todo método recebe `control_principal_ref` E o `schedule_id` declarado
+    # pelo chamador, como no corretivo R2 da E7.2.
+
+    def expire_stale_delegations(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, step_id: uuid.UUID
+    ) -> int:
+        """Materializa `ACTIVE` vencida como `EXPIRED`, sob o lock corrente.
+
+        ```text
+        EXPIRY_SWEEPER = NOT_IMPLEMENTED
+        EXPIRED = MATERIALIZED_SYNCHRONOUSLY
+        ```
+
+        Sem isto, o índice parcial aprisionaria a Step: uma delegação
+        vencida continuaria `active` no banco e impediria conceder outra.
+        """
+        if (
+            self.get_step(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="etapa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
+            )
+        resultado = self._session.execute(
+            sa.text(
+                "UPDATE service_delegations SET state = 'expired' "
+                "WHERE schedule_id = :s AND step_id = :p "
+                "AND state = 'active' AND valid_until <= now()"
+            ),
+            {"s": schedule_id, "p": step_id},
+        )
+        self._session.flush()
+        return int(cast("sa.CursorResult[object]", resultado).rowcount or 0)
+
+    def revoke_active_delegations(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        scope: str,
+    ) -> int:
+        """Revoga a `ACTIVE` corrente antes de conceder binding novo."""
+        if (
+            self.get_step(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="etapa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
+            )
+        resultado = self._session.execute(
+            sa.text(
+                "UPDATE service_delegations SET state = 'revoked' "
+                "WHERE schedule_id = :s AND step_id = :p AND scope = :c AND state = 'active'"
+            ),
+            {"s": schedule_id, "p": step_id, "c": scope},
+        )
+        self._session.flush()
+        return int(cast("sa.CursorResult[object]", resultado).rowcount or 0)
+
+    def create_delegation(
+        self,
+        *,
+        control_principal_ref: str,
+        delegation_id: uuid.UUID,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        content_sha256: str,
+        scope: str,
+        granted_by_principal_ref: str,
+        valid_until: datetime,
+    ) -> ServiceDelegation:
+        if (
+            self.get_step(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="etapa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
+            )
+        delegacao = ServiceDelegation(
+            id=delegation_id,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            content_sha256=content_sha256,
+            scope=scope,
+            granted_by_principal_ref=granted_by_principal_ref,
+            valid_until=valid_until,
+            state=DelegationState.ACTIVE,
+        )
+        self._session.add(delegacao)
+        self._session.flush()
+        return delegacao
+
+    def get_active_delegation(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        scope: str,
+    ) -> ServiceDelegation | None:
+        """Delegação `ACTIVE` da trinca, bloqueada. Não consome."""
+        return self._session.scalars(
+            sa.select(ServiceDelegation)
+            .join(Schedule, Schedule.id == ServiceDelegation.schedule_id)
+            .where(
+                ServiceDelegation.schedule_id == schedule_id,
+                ServiceDelegation.step_id == step_id,
+                ServiceDelegation.scope == scope,
+                ServiceDelegation.state == DelegationState.ACTIVE,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+            .with_for_update(of=ServiceDelegation)
+        ).one_or_none()
+
+    def get_delegation(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, delegation_id: uuid.UUID
+    ) -> ServiceDelegation | None:
+        return self._session.scalars(
+            sa.select(ServiceDelegation)
+            .join(Schedule, Schedule.id == ServiceDelegation.schedule_id)
+            .where(
+                ServiceDelegation.id == delegation_id,
+                ServiceDelegation.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()
+
+    def consume_delegation(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        delegation_id: uuid.UUID,
+        content_sha256: str,
+        scope: str,
+        attempt_id: uuid.UUID,
+    ) -> bool:
+        """Consumo atômico e de uso único, revalidando **todo** o vínculo.
+
+        ```text
+        DELEGATION_CONSUMPTION = ATOMIC + SINGLE_USE + HASH_BOUND
+        ```
+
+        O `UPDATE` condicional é a garantia: `state='active'`,
+        `valid_until > now()` e o `content_sha256` entram na cláusula, de
+        modo que dois despachos concorrentes não conseguem consumir a mesma
+        linha e conteúdo alterado simplesmente não casa.
+
+        Zero linhas afetadas é recusa — não erro de servidor.
+        """
+        if (
+            self.get_step(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="etapa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
+            )
+        resultado = self._session.execute(
+            sa.text(
+                "UPDATE service_delegations "
+                "SET state = 'consumed', consumed_at = now(), consumed_by_attempt_id = :a "
+                "WHERE id = :d AND schedule_id = :s AND step_id = :p AND scope = :c "
+                "AND content_sha256 = :h AND state = 'active' AND valid_until > now()"
+            ),
+            {
+                "a": attempt_id,
+                "d": delegation_id,
+                "s": schedule_id,
+                "p": step_id,
+                "c": scope,
+                "h": content_sha256,
+            },
+        )
+        self._session.flush()
+        return bool(cast("sa.CursorResult[object]", resultado).rowcount)
+
+    def list_delegations(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID
+    ) -> list[ServiceDelegation]:
+        return list(
+            self._session.scalars(
+                sa.select(ServiceDelegation)
+                .join(Schedule, Schedule.id == ServiceDelegation.schedule_id)
+                .where(
+                    ServiceDelegation.schedule_id == schedule_id,
+                    Schedule.id == schedule_id,
+                    Schedule.control_principal_ref == control_principal_ref,
+                )
+                .order_by(ServiceDelegation.created_at.asc(), ServiceDelegation.id.asc())
+            ).all()
+        )
+
+    def create_control_event(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID | None,
+        event_kind: ControlEventKind,
+        reason_code: ControlReasonCode,
+        stop_condition_category: StopConditionCategory | None,
+        declared_by_principal_ref: str,
+        occurred_at: datetime,
+    ) -> OrchestrationControlEvent:
+        if (
+            self.get_schedule(control_principal_ref=control_principal_ref, schedule_id=schedule_id)
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="Schedule inexistente sob este principal de controle",
+                detail={"schedule_id": str(schedule_id)},
+            )
+        evento = OrchestrationControlEvent(
+            schedule_id=schedule_id,
+            step_id=step_id,
+            event_kind=event_kind,
+            reason_code=reason_code,
+            stop_condition_category=stop_condition_category,
+            declared_by_principal_ref=declared_by_principal_ref,
+            occurred_at=occurred_at,
+        )
+        self._session.add(evento)
+        self._session.flush()
+        return evento
+
+    def list_control_events(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID
+    ) -> list[OrchestrationControlEvent]:
+        return list(
+            self._session.scalars(
+                sa.select(OrchestrationControlEvent)
+                .join(Schedule, Schedule.id == OrchestrationControlEvent.schedule_id)
+                .where(
+                    OrchestrationControlEvent.schedule_id == schedule_id,
+                    Schedule.id == schedule_id,
+                    Schedule.control_principal_ref == control_principal_ref,
+                )
+                .order_by(
+                    OrchestrationControlEvent.occurred_at.asc(),
+                    OrchestrationControlEvent.id.asc(),
+                )
+            ).all()
+        )
+
+    def count_open_pause_events(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, reason_code: ControlReasonCode
+    ) -> int:
+        """Pausas já registradas desde a última retomada.
+
+        Serve à regra "repetir enquanto PAUSED não duplica evento": uma
+        segunda tentativa bloqueada pelo mesmo motivo não grava de novo.
+        """
+        ultimo_resume = (
+            sa.select(sa.func.max(OrchestrationControlEvent.occurred_at))
+            .where(
+                OrchestrationControlEvent.schedule_id == schedule_id,
+                OrchestrationControlEvent.event_kind == ControlEventKind.RESUMED,
+            )
+            .scalar_subquery()
+        )
+        return int(
+            self._session.execute(
+                sa.select(sa.func.count())
+                .select_from(OrchestrationControlEvent)
+                .join(Schedule, Schedule.id == OrchestrationControlEvent.schedule_id)
+                .where(
+                    OrchestrationControlEvent.schedule_id == schedule_id,
+                    OrchestrationControlEvent.event_kind == ControlEventKind.PAUSED,
+                    OrchestrationControlEvent.reason_code == reason_code,
+                    sa.or_(
+                        ultimo_resume.is_(None),
+                        OrchestrationControlEvent.occurred_at > ultimo_resume,
+                    ),
+                    Schedule.control_principal_ref == control_principal_ref,
+                )
+            ).scalar_one()
+        )
+
+    def list_open_attempts_of_schedule(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID
+    ) -> list[HandoffAttempt]:
+        """Tentativas `OPEN` do trabalho, em ordem estável."""
+        return list(
+            self._session.scalars(
+                sa.select(HandoffAttempt)
+                .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+                .where(
+                    HandoffAttempt.schedule_id == schedule_id,
+                    HandoffAttempt.state == AttemptState.OPEN,
+                    Schedule.id == schedule_id,
+                    Schedule.control_principal_ref == control_principal_ref,
+                )
+                .order_by(HandoffAttempt.created_at.asc(), HandoffAttempt.id.asc())
+                .with_for_update(of=HandoffAttempt)
+            ).all()
+        )
+
+    def all_steps_returned(self, *, control_principal_ref: str, schedule_id: uuid.UUID) -> bool:
+        """Todas as etapas em `RETURNED`? Base da conclusão do Schedule."""
+        pendentes = self._session.execute(
+            sa.select(sa.func.count())
+            .select_from(ScheduleStep)
+            .join(Schedule, Schedule.id == ScheduleStep.schedule_id)
+            .where(
+                ScheduleStep.schedule_id == schedule_id,
+                ScheduleStep.state != StepState.RETURNED,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).scalar_one()
+        return int(pendentes) == 0
+
+    def get_last_attribution_before(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+    ) -> HandoffAttribution | None:
+        """Atribuição da tentativa anterior da mesma etapa.
+
+        Base da observação de troca de provedor. A ordem é por
+        `created_at` da tentativa, e o corte exclui a tentativa atual.
+        """
+        atual = self._session.scalars(
+            sa.select(HandoffAttempt.created_at).where(HandoffAttempt.id == attempt_id)
+        ).one_or_none()
+        if atual is None:
+            return None
+        return self._session.scalars(
+            sa.select(HandoffAttribution)
+            .join(HandoffAttempt, HandoffAttempt.id == HandoffAttribution.attempt_id)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                HandoffAttempt.step_id == step_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                HandoffAttempt.id != attempt_id,
+                HandoffAttempt.created_at <= atual,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+            .order_by(HandoffAttempt.created_at.desc(), HandoffAttempt.id.desc())
+            .limit(1)
+        ).one_or_none()
+
+    def create_execution_observation(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        observation_kind: ObservationKind,
+        previous_attempt_id: uuid.UUID,
+        current_attempt_id: uuid.UUID,
+        previous_declared_provider_id: str | None,
+        current_declared_provider_id: str | None,
+        observed_at: datetime,
+    ) -> ExecutionObservation:
+        if (
+            self.get_step(
+                control_principal_ref=control_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+            )
+            is None
+        ):
+            raise OrchestrationScopeViolationError(
+                message="etapa inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
+            )
+        observacao = ExecutionObservation(
+            schedule_id=schedule_id,
+            step_id=step_id,
+            observation_kind=observation_kind,
+            previous_attempt_id=previous_attempt_id,
+            current_attempt_id=current_attempt_id,
+            previous_declared_provider_id=previous_declared_provider_id,
+            current_declared_provider_id=current_declared_provider_id,
+            self_declared=True,
+            observed_at=observed_at,
+        )
+        self._session.add(observacao)
+        self._session.flush()
+        return observacao
+
+    def list_execution_observations(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID
+    ) -> list[ExecutionObservation]:
+        return list(
+            self._session.scalars(
+                sa.select(ExecutionObservation)
+                .join(Schedule, Schedule.id == ExecutionObservation.schedule_id)
+                .where(
+                    ExecutionObservation.schedule_id == schedule_id,
+                    Schedule.id == schedule_id,
+                    Schedule.control_principal_ref == control_principal_ref,
+                )
+                .order_by(ExecutionObservation.observed_at.asc(), ExecutionObservation.id.asc())
+            ).all()
+        )
+
+    def get_result_for_audit(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID, attempt_id: uuid.UUID
+    ) -> HandoffResult | None:
+        """Resolve o resultado por join até Attempt e Schedule declarados."""
+        return self.get_handoff_result(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            attempt_id=attempt_id,
+        )
+
+    def create_audit_opinion(
+        self,
+        *,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        handoff_result_id: uuid.UUID,
+        opinion: AuditOpinionKind,
+        reason_codes: tuple[str, ...],
+        auditor_execution_ref: str,
+        issued_by_principal_ref: str,
+        issued_at: datetime,
+    ) -> AuditOpinion:
+        """Única escrita permitida à execução auditora.
+
+        ```text
+        AUDITOR_WRITE_ON_AUDITED_ARTIFACT = FORBIDDEN
+        ```
+        """
+        pertence = self._session.scalars(
+            sa.select(HandoffResult.id)
+            .join(HandoffAttempt, HandoffAttempt.id == HandoffResult.attempt_id)
+            .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+            .where(
+                HandoffResult.id == handoff_result_id,
+                HandoffAttempt.schedule_id == schedule_id,
+                Schedule.id == schedule_id,
+                Schedule.control_principal_ref == control_principal_ref,
+            )
+        ).one_or_none()
+        if pertence is None:
+            raise OrchestrationScopeViolationError(
+                message="resultado inexistente neste Schedule sob este principal",
+                detail={"schedule_id": str(schedule_id), "result_id": str(handoff_result_id)},
+            )
+        parecer = AuditOpinion(
+            handoff_result_id=handoff_result_id,
+            opinion=opinion,
+            reason_codes=reason_codes,
+            auditor_execution_ref=auditor_execution_ref,
+            issued_by_principal_ref=issued_by_principal_ref,
+            issued_at=issued_at,
+        )
+        self._session.add(parecer)
+        self._session.flush()
+        return parecer
+
+    def list_audit_opinions(
+        self, *, control_principal_ref: str, schedule_id: uuid.UUID
+    ) -> list[AuditOpinion]:
+        return list(
+            self._session.scalars(
+                sa.select(AuditOpinion)
+                .join(HandoffResult, HandoffResult.id == AuditOpinion.handoff_result_id)
+                .join(HandoffAttempt, HandoffAttempt.id == HandoffResult.attempt_id)
+                .join(Schedule, Schedule.id == HandoffAttempt.schedule_id)
+                .where(
+                    HandoffAttempt.schedule_id == schedule_id,
+                    Schedule.id == schedule_id,
+                    Schedule.control_principal_ref == control_principal_ref,
+                )
+                .order_by(AuditOpinion.issued_at.asc(), AuditOpinion.id.asc())
+            ).all()
+        )
+
+    def update_governance_record(self, *, record_id: uuid.UUID) -> None:
+        """Recusa explícita — evento, observação e parecer são append-only."""
+        raise GovernanceRecordImmutableError(
+            message="registro de governança é append-only: UPDATE recusado",
+            detail={"record_id": str(record_id)},
+        )
+
+    def delete_governance_record(self, *, record_id: uuid.UUID) -> None:
+        """Recusa explícita — inclui delegação, que não é deletável."""
+        raise GovernanceRecordImmutableError(
+            message="registro de governança é append-only: DELETE recusado",
             detail={"record_id": str(record_id)},
         )

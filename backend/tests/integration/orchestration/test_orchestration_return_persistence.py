@@ -57,10 +57,18 @@ pytestmark = [
 ]
 
 _REVISION_E72 = "c3a75e01d248"
+_REVISION_E73 = "f2c60d8a41b9"
 _PARENT = "b8c04e2fd137"
 _HASH = "f" * 64
 _TABELAS_NOVAS = ("handoff_results", "handoff_attributions")
-_APPEND_ONLY = (*_TABELAS_NOVAS, "seal_receipts")
+_APPEND_ONLY = (
+    "audit_opinions",
+    "execution_observations",
+    "orchestration_control_events",
+    *_TABELAS_NOVAS,
+    "seal_receipts",
+    "service_delegations",
+)
 
 
 def _limpar() -> None:
@@ -171,6 +179,12 @@ def test_e72p01_as_tres_operacoes_sao_recusadas_nas_duas_tabelas(tabela, operaca
         "DELETE": f"DELETE FROM {tabela}",
         "TRUNCATE": f"TRUNCATE {tabela}",
     }[operacao]
+    # ATUALIZADO PELA E7.3: `audit_opinions` referencia `handoff_results`,
+    # e o PostgreSQL recusa TRUNCATE de tabela referenciada ANTES de
+    # chegar ao trigger. A recusa continua sendo recusa; o que muda é
+    # quem recusa primeiro. `TRUNCATE ... CASCADE` alcança o trigger.
+    if operacao == "TRUNCATE" and tabela == "handoff_results":
+        sql = f"TRUNCATE {tabela} CASCADE"
     with pytest.raises(Exception, match="append-only"), engine.begin() as conexao:
         conexao.execute(sa.text(sql))
 
@@ -384,14 +398,15 @@ def test_e72p11_head_unica_e_filha_de_b8c04e2fd137() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `e5b21c9704af`.
+    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `f2c60d8a41b9`.
     # O que este teste protege é a ANCESTRALIDADE da migration da E7.2,
     # que não mudou; head única é medida por `e72p18`.
     assert script.get_revision(_REVISION_E72).down_revision == _PARENT
-    assert migrations.current_revision() == "e5b21c9704af"
+    assert migrations.current_revision() == _REVISION_E73
 
 
 def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
+    _limpar()
     with engine.begin() as conexao:
         conexao.execute(sa.text("DELETE FROM command_receipts"))
     migrations.downgrade(_PARENT)
@@ -407,7 +422,7 @@ def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
         }
     assert "ix_handoff_attempts_single_open" not in indices
     migrations.upgrade("head")
-    assert migrations.current_revision() == "e5b21c9704af"
+    assert migrations.current_revision() == _REVISION_E73
     assert set(_TABELAS_NOVAS) <= set(sa.inspect(engine).get_table_names())
     with engine.connect() as conexao:
         indices = {
@@ -437,9 +452,10 @@ def test_e72p13_downgrade_recusa_com_linha_em_cada_tabela(tabela) -> None:
     _exportar_e_importar(schedule_id, step_id, "parecer")
     with engine.connect() as conexao:
         assert conexao.execute(sa.text(f"SELECT count(*) FROM {tabela}")).scalar_one() >= 1
+    # A folha E7.3 recusa antes de chegar à E7.2 — e a recusa é o ponto.
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT)
-    assert migrations.current_revision() == "e5b21c9704af"
+    assert migrations.current_revision() == _REVISION_E73
 
 
 def test_e72p14_sem_drift_entre_orm_e_schema() -> None:
@@ -552,8 +568,9 @@ def test_e72p18_head_unica_e_filha_de_c3a75e01d248() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == ("e5b21c9704af",)
+    assert tuple(script.get_heads()) == ("f2c60d8a41b9",)
     assert script.get_revision(_REVISION_E72_R1).down_revision == _REVISION_E72
+    assert script.get_revision(_REVISION_E72_R2).down_revision == _REVISION_E72_R1
 
 
 def test_e72p19_round_trip_da_migration_corretiva() -> None:
@@ -574,7 +591,7 @@ def test_e72p19_round_trip_da_migration_corretiva() -> None:
         }
     assert "request_sha256" not in colunas
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E72_R2
+    assert migrations.current_revision() == _REVISION_E73
     with engine.connect() as conexao:
         colunas = {
             linha[0]
@@ -600,7 +617,7 @@ def test_e72p20_downgrade_recusa_com_vinculo_de_requisicao_gravado() -> None:
     _exportar_e_importar(schedule_id, step_id, "parecer")
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_REVISION_E72)
-    assert migrations.current_revision() == _REVISION_E72_R2
+    assert migrations.current_revision() == _REVISION_E73
 
 
 # --- corretivo R2: sealer_ref na digital e hexadecimal no banco -------------
@@ -814,11 +831,12 @@ def test_e72p26_o_banco_aceita_null_historico_e_digest_canonico(valor) -> None:
         assert conexao.execute(sa.text("SELECT count(*) FROM command_receipts")).scalar_one() == 1
 
 
-def test_e72p27_head_unica_e_filha_de_e5b21c9704af() -> None:
+def test_e72p27_head_unica_e_filha_de_f2c60d8a41b9() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == (_REVISION_E72_R2,)
+    assert tuple(script.get_heads()) == (_REVISION_E73,)
     assert script.get_revision(_REVISION_E72_R2).down_revision == "d1f6a83b70c5"
-    assert migrations.current_revision() == _REVISION_E72_R2
+    assert script.get_revision(_REVISION_E73).down_revision == _REVISION_E72_R2
+    assert migrations.current_revision() == _REVISION_E73

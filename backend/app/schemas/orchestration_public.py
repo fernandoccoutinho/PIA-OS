@@ -18,15 +18,23 @@ medido e sai; o que a API devolve é hash, tamanho, media type e códigos.
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.orchestration.models.enums import (
     AttemptState,
+    AuditOpinionKind,
+    AuditReasonCode,
+    ControlEventKind,
+    ControlReasonCode,
+    DelegationState,
     HandoffMode,
     HandoffResultStatus,
+    ObservationKind,
     ScheduleState,
     StepState,
+    StopConditionCategory,
 )
 from app.orchestration.schemas.output_contract import (
     OUTPUT_JSON_OBJECT_V1,
@@ -219,3 +227,110 @@ class AttemptView(_Congelado):
 class AttemptListResponse(_Congelado):
     schedule_id: uuid.UUID
     attempts: tuple[AttemptView, ...]
+
+
+# --- E7.3: governança ------------------------------------------------------
+
+
+class GrantDelegationRequest(_Congelado):
+    """Só chave e validade. Hash, escopo e concedente são derivados.
+
+    ```text
+    SERVER_DERIVES_WHAT_THE_CLIENT_COULD_LIE_ABOUT
+    ```
+    """
+
+    command_key: str = Field(min_length=1, max_length=MAX_COMMAND_KEY)
+    valid_until: datetime
+
+
+class RevokeDelegationRequest(_Congelado):
+    command_key: str = Field(min_length=1, max_length=MAX_COMMAND_KEY)
+
+
+class ControlEventRequest(_Congelado):
+    """`pause | resume | stop | cancel`; categoria fechada só em `stop`."""
+
+    command_key: str = Field(min_length=1, max_length=MAX_COMMAND_KEY)
+    action: Literal["pause", "resume", "stop", "cancel"]
+    stop_condition_category: StopConditionCategory | None = None
+
+
+class AuditOpinionRequest(_Congelado):
+    """`PASS_FINAL` não é representável: o tipo não admite o valor."""
+
+    command_key: str = Field(min_length=1, max_length=MAX_COMMAND_KEY)
+    opinion: AuditOpinionKind
+    reason_codes: tuple[AuditReasonCode, ...] = Field(min_length=1)
+    auditor_execution_ref: str = Field(min_length=1, max_length=MAX_REF)
+
+
+class DelegationView(_Congelado):
+    delegation_id: uuid.UUID
+    step_id: uuid.UUID
+    content_sha256: str
+    scope: str
+    state: DelegationState
+    valid_until: datetime
+    consumed_at: datetime | None = None
+    consumed_by_attempt_id: uuid.UUID | None = None
+
+
+class ControlEventView(_Congelado):
+    event_id: uuid.UUID
+    step_id: uuid.UUID | None
+    event_kind: ControlEventKind
+    reason_code: ControlReasonCode
+    stop_condition_category: StopConditionCategory | None
+    occurred_at: datetime
+
+
+class ControlEventResponse(_Congelado):
+    schedule_id: uuid.UUID
+    schedule_state: ScheduleState
+    replayed: bool
+    cancelled_steps: int
+    closed_attempts: int
+    event: ControlEventView
+
+
+class ObservationView(_Congelado):
+    observation_id: uuid.UUID
+    step_id: uuid.UUID
+    observation_kind: ObservationKind
+    previous_attempt_id: uuid.UUID
+    current_attempt_id: uuid.UUID
+    previous_declared_provider_id: str | None
+    current_declared_provider_id: str | None
+    self_declared: bool
+    observed_at: datetime
+
+
+class AuditOpinionView(_Congelado):
+    opinion_id: uuid.UUID
+    handoff_result_id: uuid.UUID
+    opinion: AuditOpinionKind
+    reason_codes: tuple[str, ...]
+    auditor_execution_ref: str
+    issued_at: datetime
+
+
+class GrantDelegationResponse(_Congelado):
+    replayed: bool
+    delegation: DelegationView
+
+
+class AuditOpinionResponse(_Congelado):
+    replayed: bool
+    opinion: AuditOpinionView
+
+
+class GovernanceView(_Congelado):
+    """Nunca conteúdo bruto, credencial ou principal de controle."""
+
+    schedule_id: uuid.UUID
+    schedule_state: ScheduleState
+    delegations: tuple[DelegationView, ...]
+    control_events: tuple[ControlEventView, ...]
+    observations: tuple[ObservationView, ...]
+    audit_opinions: tuple[AuditOpinionView, ...]

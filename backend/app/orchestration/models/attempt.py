@@ -60,6 +60,9 @@ class HandoffAttempt(BaseModel):
         ),
         Index("ix_handoff_attempts_schedule", "schedule_id"),
         Index("ix_handoff_attempts_content_sha256", "content_sha256"),
+        UniqueConstraint(
+            "id", "step_id", "schedule_id", name="uq_handoff_attempts_id_step_schedule"
+        ),
         Index(
             "ix_handoff_attempts_single_open",
             "step_id",
@@ -89,6 +92,20 @@ class HandoffAttempt(BaseModel):
 
     Parcial, e não total, porque tentativas fechadas se acumulam por
     design — o histórico de retries é o produto, não lixo.
+
+    ## E7.3 — `uq_handoff_attempts_id_step_schedule`
+
+    AMPLIAÇÃO DECLARADA. Redundante em cardinalidade (`id` já é a chave
+    primária) e obrigatória em referência: é o alvo das chaves
+    estrangeiras compostas que `service_delegations` e
+    `execution_observations` usam para provar, no banco, que a tentativa
+    citada pertence àquela etapa daquele Schedule.
+
+    ```text
+    TWO_VALID_REFERENCES != ONE_COHERENT_REFERENCE
+    ```
+
+    Mesmo precedente de `uq_schedule_steps_id_schedule` (Chain111).
 
     Declarado aqui **e** na migration porque a guarda de drift compara o
     metadata com o schema real; declarar só na migration faria o índice

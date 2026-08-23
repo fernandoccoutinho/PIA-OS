@@ -378,14 +378,15 @@ def test_e71b17_a_orquestracao_nao_antecipa_a_e7_3() -> None:
     # antecipação e passaram a ser entrega autorizada. Os objetos da E7.3
     # permanecem proibidos — a lista mede o que ainda NÃO foi autorizado,
     # não o que um dia esteve fora do escopo.
+    # ATUALIZADO PELA E7.3 — mesma razão de sempre: a lista mede o que
+    # ainda NÃO foi autorizado, não o que um dia esteve fora do escopo.
     proibidos = {
-        "ServiceDelegation",
-        "GateAuthorizationPort",
-        "AuditOpinion",
-        "AuditService",
-        "ExecutionObservation",
-        "CancellationService",
         "StopConditionRuntime",
+        "HardCancelService",
+        "TimeoutWorker",
+        "BudgetEnforcer",
+        "GovernedSynthesis",
+        "auto_advance",
     }
     for caminho in _arquivos_de_producao():
         assert not (_nomes(caminho) & proibidos), caminho.name
@@ -418,6 +419,25 @@ CONTROL_BOUND = frozenset(
         "get_attempt",
         "get_seal_receipt_by_attempt",
         "list_attempts",
+        # --- E7.3 ---
+        "expire_stale_delegations",
+        "revoke_active_delegations",
+        "create_delegation",
+        "get_active_delegation",
+        "get_delegation",
+        "consume_delegation",
+        "list_delegations",
+        "create_control_event",
+        "list_control_events",
+        "count_open_pause_events",
+        "list_open_attempts_of_schedule",
+        "all_steps_returned",
+        "get_last_attribution_before",
+        "create_execution_observation",
+        "list_execution_observations",
+        "get_result_for_audit",
+        "create_audit_opinion",
+        "list_audit_opinions",
         # --- E7.2 ---
         "lock_step",
         "set_step_state",
@@ -447,6 +467,8 @@ REFUSAL_ONLY = frozenset(
         "delete_seal_receipt",
         "update_handoff_record",
         "delete_handoff_record",
+        "update_governance_record",
+        "delete_governance_record",
     }
 )
 """Recusam incondicionalmente; escopo é irrelevante porque nada executam."""
@@ -509,7 +531,11 @@ def test_e71b20_todo_caminho_de_escrita_recusa_em_vez_de_devolver_none() -> None
 
 def test_e71b21_os_metodos_de_recusa_levantam_incondicionalmente() -> None:
     metodos = _metodos_publicos_do_repositorio()
-    imutaveis = {"SealReceiptImmutableError", "HandoffRecordImmutableError"}
+    imutaveis = {
+        "SealReceiptImmutableError",
+        "HandoffRecordImmutableError",
+        "GovernanceRecordImmutableError",
+    }
     for nome in sorted(REFUSAL_ONLY):
         corpo = ast.unparse(metodos[nome])
         assert any(erro in corpo for erro in imutaveis), nome
@@ -531,6 +557,25 @@ ATTEMPT_SCOPED = frozenset(
         "get_attempt",
         "get_seal_receipt_by_attempt",
         "list_attempts",
+        # --- E7.3 ---
+        "expire_stale_delegations",
+        "revoke_active_delegations",
+        "create_delegation",
+        "get_active_delegation",
+        "get_delegation",
+        "consume_delegation",
+        "list_delegations",
+        "create_control_event",
+        "list_control_events",
+        "count_open_pause_events",
+        "list_open_attempts_of_schedule",
+        "all_steps_returned",
+        "get_last_attribution_before",
+        "create_execution_observation",
+        "list_execution_observations",
+        "get_result_for_audit",
+        "create_audit_opinion",
+        "list_audit_opinions",
     }
 )
 

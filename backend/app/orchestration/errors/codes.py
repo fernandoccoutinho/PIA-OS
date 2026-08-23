@@ -94,3 +94,39 @@ selamento, e uma mensagem que confunde as duas coisas faria o operador
 procurar o problema na tabela errada. A faixa segue a sequência sem
 reservar códigos sem caminho real.
 """
+
+PIA_8062_DISPATCH_BLOCKED = ErrorCode(
+    code="PIA-8062",
+    default_message="dispatch_blocked_by_gate",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.WARNING,
+)
+"""Despacho recusado por gate: delegação ausente, expirada, com hash
+divergente, ou porta humana indisponível.
+
+```text
+BLOCKED_GATE_PERSISTS_PAUSE_WITH_ZERO_COMMAND_EFFECT
+```
+
+409 e não 403: o pedido é legítimo e o principal tem autoridade; o que
+falta é uma autorização de despacho que o próprio cliente pode conceder.
+"""
+
+PIA_8063_DELEGATION_IMMUTABLE = ErrorCode(
+    code="PIA-8063",
+    default_message="delegation_binding_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Vínculo de delegação é imutável e estado terminal não retorna a ACTIVE."""
+
+PIA_8064_AUDIT_RECORD_IMMUTABLE = ErrorCode(
+    code="PIA-8064",
+    default_message="governance_record_immutable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Evento de controle, observação e parecer são append-only."""

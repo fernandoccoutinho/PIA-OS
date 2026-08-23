@@ -358,8 +358,16 @@ def test_ia7_audit_creates_no_tables_and_stores_nothing():
 
     tables = set(sa.inspect(engine).get_table_names())
 
+    # ATUALIZADO PELA E7.3: `audit_opinions` é parecer de ORQUESTRAÇÃO,
+    # produzido por autoridade própria e autorizado pelo addendum R1. O que
+    # esta guarda protege é a auditoria de INTEGRIDADE da E3 não persistir
+    # nada — e isso segue valendo. Casar por substring "audit" alcançaria
+    # qualquer tabela futura com esse nome, o que é falso positivo.
+    _AUDITORIA_DE_ORQUESTRACAO = {"audit_opinions"}
     assert not {
-        t for t in tables if "integrity" in t or "finding" in t or "audit" in t or "conform" in t
+        t
+        for t in tables - _AUDITORIA_DE_ORQUESTRACAO
+        if "integrity" in t or "finding" in t or "audit" in t or "conform" in t
     }
     assert tables >= set(_ALL_TABLES)
 

@@ -36,14 +36,25 @@ from app.api.dependencies import get_db_session, require_orchestration_operate_a
 from app.api.responses import SuccessResponse
 from app.docs.responses import response_401, response_403, response_404, response_422, response_500
 from app.docs.tags import TAG_ORCHESTRATION
+from app.orchestration.adapters.deny_all_human_gate import DenyAllHumanGate
 from app.orchestration.adapters.manual_transport import ManualTransport
-from app.orchestration.errors.exceptions import OrchestrationContractViolationError
+from app.orchestration.errors.exceptions import (
+    DispatchBlockedError,
+    OrchestrationContractViolationError,
+)
+from app.orchestration.models.enums import CommandOperation
 from app.orchestration.ports.transport import RawReturn
 from app.orchestration.repositories.orchestration_repository import OrchestrationRepository
 from app.orchestration.schemas.envelope import ContextRef, ScheduleDraft, StepDraft
+from app.orchestration.services.audit_service import AuditService
 from app.orchestration.services.command_receipt_service import CommandReceiptService
+from app.orchestration.services.control_service import ControlService
+from app.orchestration.services.delegation_service import DelegationService
 from app.orchestration.services.handoff_service import HandoffService
-from app.orchestration.services.manual_handoff_export_service import ManualHandoffExportService
+from app.orchestration.services.manual_handoff_export_service import (
+    DispatchBlocked,
+    ManualHandoffExportService,
+)
 from app.orchestration.services.return_validation_service import (
     DeclaredAttribution,
     ReturnValidationService,
@@ -106,9 +117,25 @@ def _montar(session: Session) -> CommandReceiptService:
     repositorio = OrchestrationRepository(session)
     agendas = ScheduleService(repositorio)
     handoff = HandoffService(repositorio)
-    exportacao = ManualHandoffExportService(repositorio, handoff, ManualTransport())
-    validacao = ReturnValidationService(repositorio)
-    return CommandReceiptService(repositorio, agendas, handoff, exportacao, validacao)
+    controle = ControlService(repositorio)
+    # `DenyAllHumanGate` é o ÚNICO adaptador de gate humano em produção.
+    # Um dublê concedente aqui seria bypass reutilizável; ele vive em tests/.
+    exportacao = ManualHandoffExportService(
+        repositorio, handoff, ManualTransport(), DenyAllHumanGate(), controle
+    )
+    validacao = ReturnValidationService(repositorio, controle)
+    delegacoes = DelegationService(repositorio, handoff)
+    auditoria = AuditService(repositorio)
+    return CommandReceiptService(
+        repositorio,
+        agendas,
+        handoff,
+        exportacao,
+        validacao,
+        delegacoes,
+        controle,
+        auditoria,
+    )
 
 
 def _contexto(session: Session) -> tuple[OrchestrationRepository, CommandReceiptService]:
@@ -242,6 +269,75 @@ def exportar_handoff(
     """Exporta. Não chama IA, não abre rede: quem transporta é a pessoa."""
     principal_ref = str(principal.id)
     repositorio, comandos = _contexto(session)
+
+    # ```text
+    # BLOCKED_GATE_PERSISTS_PAUSE_WITH_ZERO_COMMAND_EFFECT
+    # ```
+    #
+    # Fase 1 fora do `try` genérico: quando o gate bloqueia, a pausa e o
+    # evento precisam ser COMMITADOS antes do 409. Dentro do bloco que faz
+    # `session.rollback()` em qualquer exceção, a gravação seria apagada —
+    # exatamente a pausa que a prova precisa observar.
+    exportacao = ManualHandoffExportService(
+        repositorio,
+        HandoffService(repositorio),
+        ManualTransport(),
+        DenyAllHumanGate(),
+        ControlService(repositorio),
+    )
+    # ```text
+    # FASE ZERO = REPLAY
+    # REPLAY != NEW_REQUEST
+    # ```
+    #
+    # O replay é resolvido ANTES de qualquer pré-condição de execução nova.
+    # Um replay exato encontra a etapa em AWAITING_RETURN com tentativa
+    # aberta — estado que o preflight recusa, e com razão, para um pedido
+    # NOVO. Confundir os dois quebraria a idempotência exatamente onde ela
+    # existe para servir.
+    #
+    # A verificação é feita DUAS vezes: antes dos locks, para o caminho
+    # comum, e depois deles, para fechar a corrida entre duas chamadas
+    # idênticas simultâneas. A leitura dupla é preferida a um savepoint
+    # porque não cria recibo provisório algum — e um recibo provisório que
+    # precisasse desaparecer no bloqueio seria mais uma coisa a provar.
+    impressao = _impressao_de_export(schedule_id, step_id, principal_ref)
+    replay = _replay_de_export(repositorio, principal_ref, payload.command_key, impressao)
+
+    autorizacao = None
+    if replay is None:
+        # Locks canônicos ANTES da reverificação: a segunda leitura precisa
+        # acontecer com a corrida já serializada. Reverificar depois do
+        # preflight inteiro seria tarde — o perdedor da corrida encontraria
+        # a etapa em AWAITING_RETURN e a recusaria como pedido novo, quando
+        # na verdade é replay.
+        if (
+            repositorio.lock_schedule(control_principal_ref=principal_ref, schedule_id=schedule_id)
+            is None
+        ):
+            from app.orchestration.errors.exceptions import OrchestrationScopeViolationError
+
+            raise OrchestrationScopeViolationError(
+                message="Schedule inexistente sob este principal de controle",
+                detail={"schedule_id": str(schedule_id)},
+            )
+        replay = _replay_de_export(repositorio, principal_ref, payload.command_key, impressao)
+    if replay is None:
+        autorizacao = exportacao.preflight(
+            control_principal_ref=principal_ref, schedule_id=schedule_id, step_id=step_id
+        )
+        if isinstance(autorizacao, DispatchBlocked):
+            try:
+                exportacao.register_block(
+                    control_principal_ref=principal_ref,
+                    schedule_id=schedule_id,
+                    step_id=step_id,
+                    blocked=autorizacao,
+                )
+            except DispatchBlockedError:
+                session.commit()  # a pausa sobrevive; só então o 409 sobe
+                raise
+            raise AssertionError("register_block sempre levanta")  # pragma: no cover
     try:
         recibo, saida = comandos.export_handoff_once(
             technical_principal_ref=principal_ref,
@@ -533,6 +629,359 @@ def _resposta_import(
         result=_result_view(resultado),
         attribution=_attribution_view(atribuicao),
     )
+
+
+# --- E7.3: governança técnica ----------------------------------------------
+
+
+@router.post(
+    "/schedules/{schedule_id}/steps/{step_id}/delegations",
+    response_model=SuccessResponse[dto.GrantDelegationResponse],
+    status_code=status.HTTP_201_CREATED,
+    summary="Conceder delegação técnica de despacho",
+    responses=_ERROS_COMUNS,
+)
+def conceder_delegacao(
+    schedule_id: uuid.UUID,
+    step_id: uuid.UUID,
+    payload: dto.GrantDelegationRequest,
+    principal: GuardedPrincipal,
+    session: SessionDep,
+) -> SuccessResponse[dto.GrantDelegationResponse]:
+    """Delegação **técnica**, nunca aprovação humana.
+
+    ```text
+    SERVICE_DELEGATION != HUMAN_APPROVAL
+    ```
+    """
+    principal_ref = str(principal.id)
+    repositorio, comandos = _contexto(session)
+    try:
+        recibo, vista = comandos.grant_delegation_once(
+            technical_principal_ref=principal_ref,
+            command_key=payload.command_key,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            valid_until=payload.valid_until,
+        )
+        delegacao = _delegation_view(
+            repositorio, principal_ref, schedule_id, uuid.UUID(recibo.outcome_ref)
+        )
+        resposta = dto.GrantDelegationResponse(replayed=recibo.replayed, delegation=delegacao)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return SuccessResponse[dto.GrantDelegationResponse](data=resposta)
+
+
+@router.post(
+    "/schedules/{schedule_id}/steps/{step_id}/delegations/{delegation_id}/revoke",
+    response_model=SuccessResponse[dto.GrantDelegationResponse],
+    summary="Revogar delegação técnica",
+    responses=_ERROS_COMUNS,
+)
+def revogar_delegacao(
+    schedule_id: uuid.UUID,
+    step_id: uuid.UUID,
+    delegation_id: uuid.UUID,
+    payload: dto.RevokeDelegationRequest,
+    principal: GuardedPrincipal,
+    session: SessionDep,
+) -> SuccessResponse[dto.GrantDelegationResponse]:
+    """Revoga a delegação `ACTIVE`; estado terminal não regride.
+
+    ```text
+    TERMINAL -> ANY_OTHER_STATE = FORBIDDEN
+    ```
+    """
+    principal_ref = str(principal.id)
+    repositorio, comandos = _contexto(session)
+    try:
+        recibo, _ = comandos.revoke_delegation_once(
+            technical_principal_ref=principal_ref,
+            command_key=payload.command_key,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            delegation_id=delegation_id,
+        )
+        delegacao = _delegation_view(repositorio, principal_ref, schedule_id, delegation_id)
+        resposta = dto.GrantDelegationResponse(replayed=recibo.replayed, delegation=delegacao)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return SuccessResponse[dto.GrantDelegationResponse](data=resposta)
+
+
+@router.post(
+    "/schedules/{schedule_id}/control-events",
+    response_model=SuccessResponse[dto.ControlEventResponse],
+    status_code=status.HTTP_201_CREATED,
+    summary="Pausar, retomar, parar ou cancelar cooperativamente",
+    responses=_ERROS_COMUNS,
+)
+def registrar_controle(
+    schedule_id: uuid.UUID,
+    payload: dto.ControlEventRequest,
+    principal: GuardedPrincipal,
+    session: SessionDep,
+) -> SuccessResponse[dto.ControlEventResponse]:
+    """`D9 = COOPERATIVE`. Sem hard cancel, sem worker, sem timeout."""
+    principal_ref = str(principal.id)
+    repositorio, comandos = _contexto(session)
+    try:
+        recibo, saida = comandos.control_schedule_once(
+            technical_principal_ref=principal_ref,
+            command_key=payload.command_key,
+            schedule_id=schedule_id,
+            action=payload.action,
+            stop_condition_category=payload.stop_condition_category,
+        )
+        agenda = ScheduleService(repositorio).get_schedule(
+            control_principal_ref=principal_ref, schedule_id=schedule_id
+        )
+        eventos = repositorio.list_control_events(
+            control_principal_ref=principal_ref, schedule_id=schedule_id
+        )
+        if not eventos:  # pragma: no cover - o efeito sempre grava um
+            raise RuntimeError("controle sem evento registrado")
+        resposta = dto.ControlEventResponse(
+            schedule_id=schedule_id,
+            schedule_state=agenda.state,
+            replayed=recibo.replayed,
+            cancelled_steps=saida.cancelled_steps if saida is not None else 0,
+            closed_attempts=saida.closed_attempts if saida is not None else 0,
+            event=_control_event_view(eventos[-1]),
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return SuccessResponse[dto.ControlEventResponse](data=resposta)
+
+
+@router.post(
+    "/schedules/{schedule_id}/attempts/{attempt_id}/audit-opinions",
+    response_model=SuccessResponse[dto.AuditOpinionResponse],
+    status_code=status.HTTP_201_CREATED,
+    summary="Registrar parecer de auditoria sobre um resultado",
+    responses=_ERROS_COMUNS,
+)
+def registrar_parecer(
+    schedule_id: uuid.UUID,
+    attempt_id: uuid.UUID,
+    payload: dto.AuditOpinionRequest,
+    principal: GuardedPrincipal,
+    session: SessionDep,
+) -> SuccessResponse[dto.AuditOpinionResponse]:
+    """Parecer separado. Não altera o artefato auditado.
+
+    ```text
+    AUDITOR_WRITE_ON_AUDITED_ARTIFACT = FORBIDDEN
+    AI_SELF_PASS_FINAL = FORBIDDEN
+    ```
+    """
+    principal_ref = str(principal.id)
+    repositorio, comandos = _contexto(session)
+    try:
+        recibo, _ = comandos.issue_audit_opinion_once(
+            technical_principal_ref=principal_ref,
+            command_key=payload.command_key,
+            schedule_id=schedule_id,
+            attempt_id=attempt_id,
+            opinion=payload.opinion,
+            reason_codes=tuple(c.value for c in payload.reason_codes),
+            auditor_execution_ref=payload.auditor_execution_ref,
+        )
+        pareceres = repositorio.list_audit_opinions(
+            control_principal_ref=principal_ref, schedule_id=schedule_id
+        )
+        if not pareceres:  # pragma: no cover
+            raise RuntimeError("parecer sem registro")
+        resposta = dto.AuditOpinionResponse(
+            replayed=recibo.replayed, opinion=_audit_view(pareceres[-1])
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return SuccessResponse[dto.AuditOpinionResponse](data=resposta)
+
+
+@router.get(
+    "/schedules/{schedule_id}/governance",
+    response_model=SuccessResponse[dto.GovernanceView],
+    summary="Consultar delegações, eventos, observações e pareceres",
+    responses=_ERROS_COMUNS,
+)
+def ler_governanca(
+    schedule_id: uuid.UUID,
+    principal: GuardedPrincipal,
+    session: SessionDep,
+) -> SuccessResponse[dto.GovernanceView]:
+    """Nunca conteúdo bruto, credencial ou principal de controle."""
+    principal_ref = str(principal.id)
+    repositorio, _ = _contexto(session)
+    agenda = ScheduleService(repositorio).get_schedule(
+        control_principal_ref=principal_ref, schedule_id=schedule_id
+    )
+    return SuccessResponse[dto.GovernanceView](
+        data=dto.GovernanceView(
+            schedule_id=schedule_id,
+            schedule_state=agenda.state,
+            delegations=tuple(
+                _delegation_view_from(d)
+                for d in repositorio.list_delegations(
+                    control_principal_ref=principal_ref, schedule_id=schedule_id
+                )
+            ),
+            control_events=tuple(
+                _control_event_view(e)
+                for e in repositorio.list_control_events(
+                    control_principal_ref=principal_ref, schedule_id=schedule_id
+                )
+            ),
+            observations=tuple(
+                _observation_view(o)
+                for o in repositorio.list_execution_observations(
+                    control_principal_ref=principal_ref, schedule_id=schedule_id
+                )
+            ),
+            audit_opinions=tuple(
+                _audit_view(p)
+                for p in repositorio.list_audit_opinions(
+                    control_principal_ref=principal_ref, schedule_id=schedule_id
+                )
+            ),
+        )
+    )
+
+
+def _delegation_view_from(delegacao: object) -> dto.DelegationView:
+    return dto.DelegationView(
+        delegation_id=delegacao.id,  # type: ignore[attr-defined]
+        step_id=delegacao.step_id,  # type: ignore[attr-defined]
+        content_sha256=delegacao.content_sha256,  # type: ignore[attr-defined]
+        scope=delegacao.scope,  # type: ignore[attr-defined]
+        state=delegacao.state,  # type: ignore[attr-defined]
+        valid_until=delegacao.valid_until,  # type: ignore[attr-defined]
+        consumed_at=delegacao.consumed_at,  # type: ignore[attr-defined]
+        consumed_by_attempt_id=delegacao.consumed_by_attempt_id,  # type: ignore[attr-defined]
+    )
+
+
+def _delegation_view(
+    repositorio: OrchestrationRepository,
+    principal_ref: str,
+    schedule_id: uuid.UUID,
+    delegation_id: uuid.UUID,
+) -> dto.DelegationView:
+    delegacao = repositorio.get_delegation(
+        control_principal_ref=principal_ref,
+        schedule_id=schedule_id,
+        delegation_id=delegation_id,
+    )
+    if delegacao is None:
+        from app.orchestration.errors.exceptions import OrchestrationScopeViolationError
+
+        raise OrchestrationScopeViolationError(
+            message="delegação inexistente neste Schedule sob este principal",
+            detail={"schedule_id": str(schedule_id)},
+        )
+    return _delegation_view_from(delegacao)
+
+
+def _control_event_view(evento: object) -> dto.ControlEventView:
+    return dto.ControlEventView(
+        event_id=evento.id,  # type: ignore[attr-defined]
+        step_id=evento.step_id,  # type: ignore[attr-defined]
+        event_kind=evento.event_kind,  # type: ignore[attr-defined]
+        reason_code=evento.reason_code,  # type: ignore[attr-defined]
+        stop_condition_category=evento.stop_condition_category,  # type: ignore[attr-defined]
+        occurred_at=evento.occurred_at,  # type: ignore[attr-defined]
+    )
+
+
+def _observation_view(observacao: object) -> dto.ObservationView:
+    return dto.ObservationView(
+        observation_id=observacao.id,  # type: ignore[attr-defined]
+        step_id=observacao.step_id,  # type: ignore[attr-defined]
+        observation_kind=observacao.observation_kind,  # type: ignore[attr-defined]
+        previous_attempt_id=observacao.previous_attempt_id,  # type: ignore[attr-defined]
+        current_attempt_id=observacao.current_attempt_id,  # type: ignore[attr-defined]
+        previous_declared_provider_id=(
+            observacao.previous_declared_provider_id  # type: ignore[attr-defined]
+        ),
+        current_declared_provider_id=(
+            observacao.current_declared_provider_id  # type: ignore[attr-defined]
+        ),
+        self_declared=observacao.self_declared,  # type: ignore[attr-defined]
+        observed_at=observacao.observed_at,  # type: ignore[attr-defined]
+    )
+
+
+def _audit_view(parecer: object) -> dto.AuditOpinionView:
+    return dto.AuditOpinionView(
+        opinion_id=parecer.id,  # type: ignore[attr-defined]
+        handoff_result_id=parecer.handoff_result_id,  # type: ignore[attr-defined]
+        opinion=parecer.opinion,  # type: ignore[attr-defined]
+        reason_codes=tuple(parecer.reason_codes),  # type: ignore[attr-defined]
+        auditor_execution_ref=parecer.auditor_execution_ref,  # type: ignore[attr-defined]
+        issued_at=parecer.issued_at,  # type: ignore[attr-defined]
+    )
+
+
+def _impressao_de_export(schedule_id: uuid.UUID, step_id: uuid.UUID, principal_ref: str) -> str:
+    """Impressão digital da requisição de exportação.
+
+    Idêntica à que `export_handoff_once` calcula — se divergirem, um replay
+    legítimo seria lido como pedido novo. A duplicação é deliberada e
+    verificada por teste; derivá-la de dentro do serviço exigiria expor
+    a fase de claim, que é justamente o que a fase zero evita tocar.
+    """
+    from app.orchestration.services.command_receipt_service import _impressao_digital
+
+    return _impressao_digital(
+        {
+            "operation": CommandOperation.EXPORT_HANDOFF.value,
+            "schedule_id": str(schedule_id),
+            "step_id": str(step_id),
+            "sealer_ref": principal_ref,
+        }
+    )
+
+
+def _replay_de_export(
+    repositorio: OrchestrationRepository,
+    principal_ref: str,
+    command_key: str,
+    impressao: str,
+) -> object | None:
+    """Recibo já persistido para esta tripla, se e somente se for o MESMO pedido.
+
+    ```text
+    SAME_COMMAND_KEY + DIFFERENT_REQUEST = CONFLICT
+    ```
+
+    Hash divergente é 409 aqui, na fase zero — não mais adiante, quando já
+    haveria locks tomados e um preflight avaliado sobre a premissa errada.
+    """
+    recibo = repositorio.get_command_receipt(
+        technical_principal_ref=principal_ref,
+        operation=CommandOperation.EXPORT_HANDOFF.value,
+        command_key=command_key,
+    )
+    if recibo is None:
+        return None
+    if recibo.request_sha256 != impressao:
+        from app.orchestration.errors.exceptions import OrchestrationLifecycleViolationError
+
+        raise OrchestrationLifecycleViolationError(
+            message="command_key já usada para uma requisição diferente; use chave nova",
+            detail={"operation": CommandOperation.EXPORT_HANDOFF.value},
+        )
+    return recibo
 
 
 def _assert_every_route_is_protected() -> None:

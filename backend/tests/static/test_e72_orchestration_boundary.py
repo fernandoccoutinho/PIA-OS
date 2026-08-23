@@ -28,12 +28,24 @@ DEPENDENCIES = APP / "api" / "dependencies.py"
 BASE_REQUIREMENTS = BACKEND / "requirements" / "base.txt"
 
 ROTAS_ESPERADAS = {
+    # E7.2
     ("POST", "/schedules"),
     ("GET", "/schedules/{schedule_id}"),
     ("POST", "/schedules/{schedule_id}/steps/{step_id}/handoff-export"),
     ("POST", "/schedules/{schedule_id}/steps/{step_id}/handoff-import"),
     ("GET", "/schedules/{schedule_id}/attempts"),
+    # E7.3, autorizadas pelo addendum R1 §8
+    ("POST", "/schedules/{schedule_id}/steps/{step_id}/delegations"),
+    ("POST", "/schedules/{schedule_id}/steps/{step_id}/delegations/{delegation_id}/revoke"),
+    ("POST", "/schedules/{schedule_id}/control-events"),
+    ("POST", "/schedules/{schedule_id}/attempts/{attempt_id}/audit-opinions"),
+    ("GET", "/schedules/{schedule_id}/governance"),
 }
+"""ATUALIZADO PELA E7.3: cinco capacidades técnicas foram autorizadas.
+
+O conjunto continua **exato** — rota nova sem entrar aqui reprova — e é
+isso que a guarda protege, não a imobilidade da superfície.
+"""
 
 #: Nunca escritos, nunca importados pela E7.
 SIMBOLOS_COGNITIVOS = frozenset(
@@ -331,15 +343,17 @@ def test_e72b16_o_adaptador_deterministico_nao_entra_no_router_de_producao() -> 
 
 
 def test_e72b17_a_e7_2_nao_antecipa_a_e7_3() -> None:
+    # ATUALIZADO PELA E7.3: delegação, porta de gate, parecer e auditoria
+    # deixaram de ser antecipação e viraram entrega autorizada. O que
+    # permanece proibido é o que AINDA não foi autorizado.
     proibidos = {
-        "ServiceDelegation",
-        "GateAuthorizationPort",
-        "AuditOpinion",
-        "AuditService",
         "StopConditionRuntime",
-        "CancellationService",
         "auto_advance",
         "advance_to_next_step",
+        "HardCancelService",
+        "TimeoutWorker",
+        "BudgetEnforcer",
+        "GovernedSynthesis",
     }
     for caminho in _arquivos_e7():
         assert not (_nomes(caminho) & proibidos), caminho.name

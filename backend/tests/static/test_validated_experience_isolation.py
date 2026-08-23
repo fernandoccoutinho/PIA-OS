@@ -361,8 +361,8 @@ def test_g04_2_uma_unica_migration_sucessora_e_nenhuma_tabela_extra():
     bisnetos = [rev for rev, pai in grafo.items() if pai == "f8a91c2d4e60"]
     assert bisnetos == ["b4d71c58ae02"], bisnetos
     pais = {p for p in grafo.values() if p}
-    # ATUALIZADO PELA E7.1: folha única passou a ser `e5b21c9704af`.
-    assert sorted(r for r in grafo if r not in pais) == ["e5b21c9704af"]
+    # ATUALIZADO PELA E7.1: folha única passou a ser `f2c60d8a41b9`.
+    assert sorted(r for r in grafo if r not in pais) == ["f2c60d8a41b9"]
 
     nova = _arvore(next(versoes.glob("e7c25a91f4b3_*.py")))
     criadas = [

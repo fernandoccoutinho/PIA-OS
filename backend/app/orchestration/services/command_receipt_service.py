@@ -30,6 +30,7 @@ import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.orchestration.errors.exceptions import (
     OrchestrationContractViolationError,
@@ -50,6 +51,14 @@ from app.orchestration.services.return_validation_service import (
     ReturnValidationService,
 )
 from app.orchestration.services.schedule_service import ScheduleService
+
+if TYPE_CHECKING:  # pragma: no cover - só para tipos
+    from datetime import datetime
+
+    from app.orchestration.models.enums import AuditOpinionKind, StopConditionCategory
+    from app.orchestration.services.audit_service import AuditOpinionView, AuditService
+    from app.orchestration.services.control_service import ControlOutcome, ControlService
+    from app.orchestration.services.delegation_service import DelegationService, DelegationView
 
 MAX_COMMAND_KEY_LENGTH = 255
 
@@ -121,7 +130,13 @@ class CommandReceiptService:
         handoff_service: HandoffService,
         export_service: ManualHandoffExportService | None = None,
         return_validation_service: ReturnValidationService | None = None,
+        delegation_service: "DelegationService | None" = None,
+        control_service: "ControlService | None" = None,
+        audit_service: "AuditService | None" = None,
     ) -> None:
+        self._delegation_service = delegation_service
+        self._control_service = control_service
+        self._audit_service = audit_service
         self._repository = repository
         self._schedule_service = schedule_service
         self._handoff_service = handoff_service
@@ -410,3 +425,181 @@ class CommandReceiptService:
             efeito=efeito,
         )
         return recibo, resultado.get("saida")
+
+    # --- E7.3 --------------------------------------------------------------
+
+    def grant_delegation_once(
+        self,
+        *,
+        technical_principal_ref: str,
+        command_key: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        valid_until: "datetime",
+    ) -> "tuple[CommandOutcome, DelegationView | None]":
+        """Concede delegação uma única vez por tripla."""
+        if self._delegation_service is None:
+            raise OrchestrationContractViolationError(
+                message="serviço de delegação não configurado nesta composição"
+            )
+        delegation_id = uuid.uuid4()
+        saida: dict[str, object] = {}
+
+        def efeito() -> None:
+            saida["v"] = self._delegation_service.grant(  # type: ignore[union-attr]
+                control_principal_ref=technical_principal_ref,
+                schedule_id=schedule_id,
+                step_id=step_id,
+                valid_until=valid_until,
+                delegation_id=delegation_id,
+            )
+
+        recibo = self._executar_uma_vez(
+            technical_principal_ref=technical_principal_ref,
+            operation=CommandOperation.GRANT_DELEGATION,
+            command_key=command_key,
+            proposed_outcome_ref=str(delegation_id),
+            request_sha256=_impressao_digital(
+                {
+                    "operation": CommandOperation.GRANT_DELEGATION.value,
+                    "schedule_id": str(schedule_id),
+                    "step_id": str(step_id),
+                    "valid_until": valid_until.isoformat(),
+                }
+            ),
+            efeito=efeito,
+        )
+        return recibo, saida.get("v")  # type: ignore[return-value]
+
+    def revoke_delegation_once(
+        self,
+        *,
+        technical_principal_ref: str,
+        command_key: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        delegation_id: uuid.UUID,
+    ) -> "tuple[CommandOutcome, DelegationView | None]":
+        if self._delegation_service is None:
+            raise OrchestrationContractViolationError(
+                message="serviço de delegação não configurado nesta composição"
+            )
+        saida: dict[str, object] = {}
+
+        def efeito() -> None:
+            saida["v"] = self._delegation_service.revoke(  # type: ignore[union-attr]
+                control_principal_ref=technical_principal_ref,
+                schedule_id=schedule_id,
+                delegation_id=delegation_id,
+            )
+
+        recibo = self._executar_uma_vez(
+            technical_principal_ref=technical_principal_ref,
+            operation=CommandOperation.REVOKE_DELEGATION,
+            command_key=command_key,
+            proposed_outcome_ref=str(delegation_id),
+            request_sha256=_impressao_digital(
+                {
+                    "operation": CommandOperation.REVOKE_DELEGATION.value,
+                    "schedule_id": str(schedule_id),
+                    "step_id": str(step_id),
+                    "delegation_id": str(delegation_id),
+                }
+            ),
+            efeito=efeito,
+        )
+        return recibo, saida.get("v")  # type: ignore[return-value]
+
+    def control_schedule_once(
+        self,
+        *,
+        technical_principal_ref: str,
+        command_key: str,
+        schedule_id: uuid.UUID,
+        action: str,
+        stop_condition_category: "StopConditionCategory | None",
+    ) -> "tuple[CommandOutcome, ControlOutcome | None]":
+        """Uma operação para as quatro ações; a ação entra na digital.
+
+        ```text
+        SAME_COMMAND_KEY + DIFFERENT_ACTION = CONFLICT
+        ```
+        """
+        if self._control_service is None:
+            raise OrchestrationContractViolationError(
+                message="serviço de controle não configurado nesta composição"
+            )
+        saida: dict[str, object] = {}
+
+        def efeito() -> None:
+            saida["v"] = self._control_service.apply(  # type: ignore[union-attr]
+                control_principal_ref=technical_principal_ref,
+                schedule_id=schedule_id,
+                action=action,
+                stop_condition_category=stop_condition_category,
+            )
+
+        recibo = self._executar_uma_vez(
+            technical_principal_ref=technical_principal_ref,
+            operation=CommandOperation.CONTROL_SCHEDULE,
+            command_key=command_key,
+            proposed_outcome_ref=str(schedule_id),
+            request_sha256=_impressao_digital(
+                {
+                    "operation": CommandOperation.CONTROL_SCHEDULE.value,
+                    "schedule_id": str(schedule_id),
+                    "action": action,
+                    "stop_condition_category": (
+                        stop_condition_category.value if stop_condition_category else None
+                    ),
+                }
+            ),
+            efeito=efeito,
+        )
+        return recibo, saida.get("v")  # type: ignore[return-value]
+
+    def issue_audit_opinion_once(
+        self,
+        *,
+        technical_principal_ref: str,
+        command_key: str,
+        schedule_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        opinion: "AuditOpinionKind",
+        reason_codes: tuple[str, ...],
+        auditor_execution_ref: str,
+    ) -> "tuple[CommandOutcome, AuditOpinionView | None]":
+        if self._audit_service is None:
+            raise OrchestrationContractViolationError(
+                message="serviço de auditoria não configurado nesta composição"
+            )
+        saida: dict[str, object] = {}
+
+        def efeito() -> None:
+            saida["v"] = self._audit_service.issue(  # type: ignore[union-attr]
+                control_principal_ref=technical_principal_ref,
+                schedule_id=schedule_id,
+                attempt_id=attempt_id,
+                opinion=opinion,
+                reason_codes=reason_codes,
+                auditor_execution_ref=auditor_execution_ref,
+            )
+
+        recibo = self._executar_uma_vez(
+            technical_principal_ref=technical_principal_ref,
+            operation=CommandOperation.ISSUE_AUDIT_OPINION,
+            command_key=command_key,
+            proposed_outcome_ref=str(attempt_id),
+            request_sha256=_impressao_digital(
+                {
+                    "operation": CommandOperation.ISSUE_AUDIT_OPINION.value,
+                    "schedule_id": str(schedule_id),
+                    "attempt_id": str(attempt_id),
+                    "opinion": opinion.value,
+                    "reason_codes": sorted(reason_codes),
+                    "auditor_execution_ref": auditor_execution_ref,
+                }
+            ),
+            efeito=efeito,
+        )
+        return recibo, saida.get("v")  # type: ignore[return-value]

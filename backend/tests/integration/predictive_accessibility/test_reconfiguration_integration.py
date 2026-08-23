@@ -45,6 +45,40 @@ def _fresh_e5l_table():
         # duas funções entram na limpeza, do mais novo para o mais antigo.
         # ATUALIZADO PELA E7.2: a folha passou a ser handoff_results/
         # handoff_attributions; ambas caem antes das tabelas da E7.1.
+        for tabela_e73 in (
+            "audit_opinions",
+            "execution_observations",
+            "orchestration_control_events",
+            "service_delegations",
+        ):
+            connection.execute(sa.text(f"DROP TABLE IF EXISTS {tabela_e73} CASCADE"))
+        connection.execute(
+            sa.text("DROP FUNCTION IF EXISTS reject_governance_record_mutation() CASCADE")
+        )
+        connection.execute(
+            sa.text("DROP FUNCTION IF EXISTS guard_service_delegation_transition() CASCADE")
+        )
+        connection.execute(
+            sa.text(
+                "DROP FUNCTION IF EXISTS orchestration_audit_opinion_matrix_is_valid"
+                "(text, jsonb) CASCADE"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "ALTER TABLE schedule_steps DROP CONSTRAINT IF EXISTS "
+                "ck_schedule_steps_gate_marker_valid"
+            )
+        )
+        connection.execute(
+            sa.text("DROP FUNCTION IF EXISTS orchestration_gate_marker_is_valid(jsonb) CASCADE")
+        )
+        connection.execute(
+            sa.text(
+                "ALTER TABLE handoff_attempts DROP CONSTRAINT IF EXISTS "
+                "uq_handoff_attempts_id_step_schedule"
+            )
+        )
         # ATUALIZADO PELO CORRETIVO R1: o vínculo de requisição em
         # command_receipts faz o downgrade da folha recusar; a fixture
         # rebobina por DROP, então limpa a tabela antes.
@@ -247,7 +281,7 @@ def test_e5l_migration_round_trip_vazio() -> None:
             is None
         )
     migrations.upgrade("head")
-    assert migrations.current_revision() == "e5b21c9704af"
+    assert migrations.current_revision() == "f2c60d8a41b9"
     with engine.connect() as connection:
         assert (
             connection.execute(
@@ -264,7 +298,7 @@ def test_e5l_downgrade_com_historico_recusa_antes_de_ddl() -> None:
         session.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == "e5b21c9704af"
+    assert migrations.current_revision() == "f2c60d8a41b9"
     with engine.connect() as connection:
         assert (
             connection.execute(
