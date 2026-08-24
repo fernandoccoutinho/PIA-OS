@@ -423,42 +423,104 @@ def test_e741s11_nao_existe_producao_de_recibo_retroativo() -> None:
 # --- fronteira de leitura: nenhum bypass de repositório no router -----------
 
 
-def test_e741s12_router_nao_alcanca_o_repositorio_de_orquestracao() -> None:
-    """Prova 28 / correção R1 — `OrchestrationQueryService` absorve as nove.
-
-    ```text
-    ROUTER_PODE_LER_REPOSITORIO != MCP_PODE_LER_REPOSITORIO
-    BYPASS_AST = 0
-    ```
-
-    Medido na Chain117: nove chamadas diretas ao repositório, nas linhas
-    444, 447, 452, 605, 608, 839, 845, 851 e 857. Hoje isso é aceitável
-    porque o router é transporte do próprio PIA; expor por MCP daria ao
-    boundary um caminho que passa ao lado dos serviços.
-    """
-    assert CONSULTA.exists(), "OrchestrationQueryService não existe"
-
-    leitura_de_repositorio = {
+#: Leituras que uma tool MCP consumiria — as que o plano mediu (nove) mais
+#: as três descobertas por esta guarda no caminho de reconstrução de replay.
+LEITURAS_DE_CONSULTA_MCP = frozenset(
+    {
         "list_attempts",
         "get_handoff_result",
         "get_handoff_attribution",
         "get_attempt",
         "get_step",
+        "get_seal_receipt_by_attempt",
         "list_delegations",
         "list_control_events",
         "list_execution_observations",
         "list_audit_opinions",
     }
+)
+
+#: Chamadas diretas ao repositório que o plano PERMITE ao router, porque
+#: são caminho de escrita ou de lock do próprio PIA — não superfície de
+#: leitura que uma tool consumiria.
+CHAMADAS_INTERNAS_PERMITIDAS = frozenset(
+    {
+        "lock_schedule",
+        "get_command_receipt",
+        "get_control_event",
+        "get_audit_opinion",
+        "get_delegation",
+    }
+)
+"""Corretivo R1 do achado C3.
+
+```text
+MCP_QUERY_BYPASS_AST = 0   != ZERO_BYPASS_NO_ROUTER
+ROUTER_PODE_LER_REPOSITORIO != MCP_PODE_LER_REPOSITORIO
+```
+
+A guarda anterior procurava nove nomes predefinidos e eu declarei
+`BYPASS_AST = 0`. A afirmação era ampla demais: sobravam cinco chamadas
+diretas ao repositório no router (`lock_schedule`, `get_command_receipt`,
+`get_control_event`, `get_audit_opinion`, `get_delegation`), e a guarda
+provava "zero dentre as consultas catalogadas", não "zero bypass".
+
+O plano permite leitura interna ao router. O que não pode é uma chamada
+**não classificada** passar em silêncio — por isso a classificação abaixo
+é exaustiva, e não uma lista de proibidos.
+"""
+
+
+def test_e741s12_nenhuma_consulta_de_superficie_mcp_alcanca_o_repositorio() -> None:
+    """`MCP_QUERY_BYPASS_AST = 0` — nome honesto do que é medido.
+
+    As doze leituras que uma tool consumiria passam pelo
+    `OrchestrationQueryService`. As internas permitidas continuam onde
+    estão, declaradas.
+    """
+    assert CONSULTA.exists(), "OrchestrationQueryService não existe"
     bypass = [
         (no.lineno, no.func.attr)
         for no in ast.walk(_arvore(ROUTER_ORQUESTRACAO))
         if isinstance(no, ast.Call)
         and isinstance(no.func, ast.Attribute)
-        and no.func.attr in leitura_de_repositorio
+        and no.func.attr in LEITURAS_DE_CONSULTA_MCP
         and isinstance(no.func.value, ast.Name)
         and no.func.value.id in {"repositorio", "repository"}
     ]
-    assert bypass == [], f"BYPASS_AST != 0: {bypass}"
+    assert bypass == [], f"MCP_QUERY_BYPASS_AST != 0: {bypass}"
+
+
+def test_e741s12b_toda_chamada_direta_do_router_esta_classificada() -> None:
+    """Classificação **exaustiva**, não lista de proibidos.
+
+    ```text
+    PARTIAL_ENUMERATION = GUARD_WITH_A_HOLE
+    ```
+
+    Uma chamada direta nova ao repositório reprova por omissão até que
+    alguém a classifique como consulta de superfície (e a mova para o
+    serviço) ou como interna permitida (e a declare aqui).
+    """
+    diretas = {
+        no.func.attr
+        for no in ast.walk(_arvore(ROUTER_ORQUESTRACAO))
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Attribute)
+        and isinstance(no.func.value, ast.Name)
+        and no.func.value.id in {"repositorio", "repository"}
+    }
+    assert diretas, "nenhuma chamada direta encontrada — guarda vazia"
+    nao_classificadas = diretas - LEITURAS_DE_CONSULTA_MCP - CHAMADAS_INTERNAS_PERMITIDAS
+    assert (
+        not nao_classificadas
+    ), f"chamada direta ao repositório sem classificação: {sorted(nao_classificadas)}"
+    # Não-vacuidade: a lista de permitidas descreve o que existe HOJE.
+    assert diretas == CHAMADAS_INTERNAS_PERMITIDAS, (
+        "a lista de internas permitidas divergiu do router: "
+        f"faltam {sorted(CHAMADAS_INTERNAS_PERMITIDAS - diretas)}, "
+        f"sobram {sorted(diretas - CHAMADAS_INTERNAS_PERMITIDAS)}"
+    )
 
 
 def test_e741s13_o_servico_de_consulta_devolve_dataclass_congelada() -> None:
@@ -534,3 +596,68 @@ def test_e741s15_familia_release_provedor_e_conexao_nao_colapsam() -> None:
     # Capacidade NÃO vive no perfil: vive em snapshot com TTL.
     assert "capabilities" not in ConnectionProfile.__table__.columns
     assert "valid_until" in CapabilitySnapshot.__table__.columns
+
+
+# --- corretivo R1: fronteiras tipadas, não silenciadas ---------------------
+
+FRONTEIRAS_TIPADAS = (
+    APP / "orchestration" / "services" / "orchestration_query_service.py",
+    APP / "connections" / "services" / "connection_profile_service.py",
+    APP / "connections" / "services" / "connection_execution_receipt_service.py",
+)
+"""Arquivos onde `type: ignore[attr-defined]` é PROIBIDO.
+
+```text
+SILENCED_BOUNDARY = UNCHECKED_BOUNDARY
+```
+
+Achado C2 da auditoria da Chain118: o delta acrescentou 90 ignores de
+`attr-defined`, 55 deles só no serviço de consulta. Os helpers recebiam
+`object` e silenciavam todo acesso a campo, de modo que drift de nome ou
+de tipo atravessaria o mypy sem erro.
+
+E atravessava: ao tipar concretamente, o mypy achou **dois** defeitos
+reais que os ignores escondiam — `provenance_record_ref` declarado `str`
+sendo `UUID`, e três campos `NOT NULL` declarados opcionais na projeção.
+
+O router NÃO entra nesta lista: ele conserva ignores históricos em
+helpers que recebem linha ORM viva dentro da transação de escrita, e
+tipá-los é ampliação que esta auditoria não pediu. O que a guarda impede
+é a reintrodução nas fronteiras novas.
+"""
+
+
+def test_e741s16_fronteiras_novas_nao_silenciam_acesso_a_campo() -> None:
+    """Nenhum `type: ignore[attr-defined]` nas fronteiras tipadas."""
+    for arquivo in FRONTEIRAS_TIPADAS:
+        linhas = arquivo.read_text(encoding="utf-8").splitlines()
+        culpadas = [
+            (n, ln.strip())
+            for n, ln in enumerate(linhas, 1)
+            if "type: ignore[attr-defined]" in ln and not ln.lstrip().startswith(("#", "*", "a "))
+        ]
+        # Menção em docstring é prosa, não anotação: só conta linha de código.
+        culpadas = [(n, ln) for n, ln in culpadas if "`" not in ln]
+        assert not culpadas, f"{arquivo.relative_to(BACKEND)} silencia acesso a campo: {culpadas}"
+
+
+def test_e741s17_os_helpers_do_servico_de_consulta_recebem_tipo_concreto() -> None:
+    """`object` como parâmetro de projeção é o que permitia o silêncio.
+
+    A guarda mede a **assinatura**, não a ausência do ignore: sem tipo
+    concreto, o ignore volta a ser necessário e alguém o recoloca.
+    """
+    arvore = _arvore(CONSULTA)
+    projetores = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef) and no.name.startswith("_projetar")
+    ]
+    assert projetores, "nenhum projetor encontrado — guarda vazia"
+    for funcao in projetores:
+        for argumento in funcao.args.args:
+            anotacao = argumento.annotation
+            assert anotacao is not None, f"{funcao.name}: parâmetro sem anotação"
+            assert not (
+                isinstance(anotacao, ast.Name) and anotacao.id == "object"
+            ), f"{funcao.name}: parâmetro `object` reabre a fronteira silenciada"

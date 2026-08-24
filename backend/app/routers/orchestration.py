@@ -60,7 +60,15 @@ from app.orchestration.services.manual_handoff_export_service import (
     DispatchBlocked,
     ManualHandoffExportService,
 )
-from app.orchestration.services.orchestration_query_service import OrchestrationQueryService
+from app.orchestration.services.orchestration_query_service import (
+    AttributionProjection,
+    AuditOpinionProjection,
+    ControlEventProjection,
+    DelegationProjection,
+    ObservationProjection,
+    OrchestrationQueryService,
+    ResultProjection,
+)
 from app.orchestration.services.return_validation_service import (
     DeclaredAttribution,
     ReturnValidationService,
@@ -483,27 +491,27 @@ def listar_tentativas(
 # --- montagem de respostas -------------------------------------------------
 
 
-def _result_view(resultado: object) -> dto.ResultView:
+def _result_view(resultado: ResultProjection) -> dto.ResultView:
     return dto.ResultView(
-        status=resultado.status,  # type: ignore[attr-defined]
-        expected_output_contract=resultado.expected_output_contract,  # type: ignore[attr-defined]
-        output_media_type=resultado.output_media_type,  # type: ignore[attr-defined]
-        output_sha256=resultado.output_sha256,  # type: ignore[attr-defined]
-        output_bytes=resultado.output_bytes,  # type: ignore[attr-defined]
-        declared_output_ref=resultado.declared_output_ref,  # type: ignore[attr-defined]
-        validation_codes=tuple(resultado.validation_codes),  # type: ignore[attr-defined]
+        status=resultado.status,
+        expected_output_contract=resultado.expected_output_contract,
+        output_media_type=resultado.output_media_type,
+        output_sha256=resultado.output_sha256,
+        output_bytes=resultado.output_bytes,
+        declared_output_ref=resultado.declared_output_ref,
+        validation_codes=tuple(resultado.validation_codes),
     )
 
 
-def _attribution_view(atribuicao: object) -> dto.AttributionView:
+def _attribution_view(atribuicao: AttributionProjection) -> dto.AttributionView:
     return dto.AttributionView(
-        declared_provider_id=atribuicao.declared_provider_id,  # type: ignore[attr-defined]
-        declared_model_id=atribuicao.declared_model_id,  # type: ignore[attr-defined]
-        declared_instance_id=atribuicao.declared_instance_id,  # type: ignore[attr-defined]
-        role=atribuicao.role,  # type: ignore[attr-defined]
-        declared_at=atribuicao.declared_at,  # type: ignore[attr-defined]
-        self_declared=atribuicao.self_declared,  # type: ignore[attr-defined]
-        provenance_record_ref=atribuicao.provenance_record_ref,  # type: ignore[attr-defined]
+        declared_provider_id=atribuicao.declared_provider_id,
+        declared_model_id=atribuicao.declared_model_id,
+        declared_instance_id=atribuicao.declared_instance_id,
+        role=atribuicao.role,
+        declared_at=atribuicao.declared_at,
+        self_declared=atribuicao.self_declared,
+        provenance_record_ref=atribuicao.provenance_record_ref,
     )
 
 
@@ -1008,54 +1016,52 @@ def _assert_every_route_is_protected() -> None:
 # reprovou.
 
 
-def _delegation_view_da_projecao(d: object) -> dto.DelegationView:
+def _delegation_view_da_projecao(d: DelegationProjection) -> dto.DelegationView:
     return dto.DelegationView(
-        delegation_id=d.delegation_id,  # type: ignore[attr-defined]
-        step_id=d.step_id,  # type: ignore[attr-defined]
-        content_sha256=d.content_sha256,  # type: ignore[attr-defined]
-        scope=d.scope,  # type: ignore[attr-defined]
-        state=d.state,  # type: ignore[attr-defined]
-        valid_until=d.valid_until,  # type: ignore[attr-defined]
-        consumed_at=d.consumed_at,  # type: ignore[attr-defined]
-        consumed_by_attempt_id=d.consumed_by_attempt_id,  # type: ignore[attr-defined]
+        delegation_id=d.delegation_id,
+        step_id=d.step_id,
+        content_sha256=d.content_sha256,
+        scope=d.scope,
+        state=d.state,
+        valid_until=d.valid_until,
+        consumed_at=d.consumed_at,
+        consumed_by_attempt_id=d.consumed_by_attempt_id,
     )
 
 
-def _control_event_da_projecao(e: object) -> dto.ControlEventView:
+def _control_event_da_projecao(e: ControlEventProjection) -> dto.ControlEventView:
     return dto.ControlEventView(
-        event_id=e.event_id,  # type: ignore[attr-defined]
-        step_id=e.step_id,  # type: ignore[attr-defined]
-        event_kind=e.event_kind,  # type: ignore[attr-defined]
-        reason_code=e.reason_code,  # type: ignore[attr-defined]
-        stop_condition_category=e.stop_condition_category,  # type: ignore[attr-defined]
-        occurred_at=e.occurred_at,  # type: ignore[attr-defined]
+        event_id=e.event_id,
+        step_id=e.step_id,
+        event_kind=e.event_kind,
+        reason_code=e.reason_code,
+        stop_condition_category=e.stop_condition_category,
+        occurred_at=e.occurred_at,
     )
 
 
-def _observation_da_projecao(o: object) -> dto.ObservationView:
+def _observation_da_projecao(o: ObservationProjection) -> dto.ObservationView:
     return dto.ObservationView(
-        observation_id=o.observation_id,  # type: ignore[attr-defined]
-        step_id=o.step_id,  # type: ignore[attr-defined]
-        observation_kind=o.observation_kind,  # type: ignore[attr-defined]
-        previous_attempt_id=o.previous_attempt_id,  # type: ignore[attr-defined]
-        current_attempt_id=o.current_attempt_id,  # type: ignore[attr-defined]
-        previous_declared_provider_id=(
-            o.previous_declared_provider_id  # type: ignore[attr-defined]
-        ),
-        current_declared_provider_id=(o.current_declared_provider_id),  # type: ignore[attr-defined]
-        self_declared=o.self_declared,  # type: ignore[attr-defined]
-        observed_at=o.observed_at,  # type: ignore[attr-defined]
+        observation_id=o.observation_id,
+        step_id=o.step_id,
+        observation_kind=o.observation_kind,
+        previous_attempt_id=o.previous_attempt_id,
+        current_attempt_id=o.current_attempt_id,
+        previous_declared_provider_id=(o.previous_declared_provider_id),
+        current_declared_provider_id=(o.current_declared_provider_id),
+        self_declared=o.self_declared,
+        observed_at=o.observed_at,
     )
 
 
-def _audit_da_projecao(p: object) -> dto.AuditOpinionView:
+def _audit_da_projecao(p: AuditOpinionProjection) -> dto.AuditOpinionView:
     return dto.AuditOpinionView(
-        opinion_id=p.opinion_id,  # type: ignore[attr-defined]
-        handoff_result_id=p.handoff_result_id,  # type: ignore[attr-defined]
-        opinion=p.opinion,  # type: ignore[attr-defined]
-        reason_codes=tuple(p.reason_codes),  # type: ignore[attr-defined]
-        auditor_execution_ref=p.auditor_execution_ref,  # type: ignore[attr-defined]
-        issued_at=p.issued_at,  # type: ignore[attr-defined]
+        opinion_id=p.opinion_id,
+        handoff_result_id=p.handoff_result_id,
+        opinion=p.opinion,
+        reason_codes=tuple(p.reason_codes),
+        auditor_execution_ref=p.auditor_execution_ref,
+        issued_at=p.issued_at,
     )
 
 

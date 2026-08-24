@@ -640,8 +640,8 @@ def test_i15_o_banco_recusa_versao_de_criterio_invalida():
 
 
 def test_i16_cabeca_unica_e_sucessora_linear():
-    assert migrations.head_revision() == "b47e9c05d3fa"
-    assert migrations.current_revision() == "b47e9c05d3fa"
+    assert migrations.head_revision() == "c58d1e0a94f7"
+    assert migrations.current_revision() == "c58d1e0a94f7"
 
 
 def test_i17_round_trip_com_a_tabela_vazia():
@@ -654,7 +654,7 @@ def test_i17_round_trip_com_a_tabela_vazia():
         ).scalar_one()
     assert existe == 0
     migrations.upgrade("head")
-    assert migrations.current_revision() == "b47e9c05d3fa"
+    assert migrations.current_revision() == "c58d1e0a94f7"
 
 
 def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
@@ -694,7 +694,7 @@ def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
 
     assert (tabela, gatilho, funcao, linhas) == (1, 1, 1, 1)
     assert indices >= 3
-    assert migrations.current_revision() == "b47e9c05d3fa"
+    assert migrations.current_revision() == "c58d1e0a94f7"
 
     # E a trigger continua ativa depois da recusa.
     with pytest.raises(Exception, match="append-only"), engine.begin() as conn:

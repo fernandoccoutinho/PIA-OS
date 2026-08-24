@@ -36,6 +36,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.orchestration.models.audit_opinion import AuditOpinion
+from app.orchestration.models.control_event import OrchestrationControlEvent
 from app.orchestration.models.enums import (
     AttemptState,
     AuditOpinionKind,
@@ -46,7 +48,14 @@ from app.orchestration.models.enums import (
     ObservationKind,
     ScheduleState,
     StepState,
+    StopConditionCategory,
 )
+from app.orchestration.models.execution_observation import ExecutionObservation
+from app.orchestration.models.handoff_attribution import HandoffAttribution
+from app.orchestration.models.handoff_result import HandoffResult
+from app.orchestration.models.seal_receipt import SealReceipt
+from app.orchestration.models.service_delegation import ServiceDelegation
+from app.orchestration.models.step import ScheduleStep
 from app.orchestration.repositories.orchestration_repository import OrchestrationRepository
 from app.orchestration.schemas.envelope import ConstraintPairs, ContextRef
 from app.orchestration.services.schedule_service import ScheduleService
@@ -81,11 +90,38 @@ class AttributionProjection:
 
     declared_provider_id: str | None
     declared_model_id: str | None
-    declared_instance_id: str | None
-    role: str | None
-    declared_at: datetime | None
+    declared_instance_id: str
+    role: str
+    declared_at: datetime
     self_declared: bool
-    provenance_record_ref: str | None
+    """SEGUNDO ACHADO DO CORRETIVO R1.
+
+    `declared_instance_id`, `role` e `declared_at` são `NOT NULL` na
+    coluna e obrigatórios no DTO público; a projeção os declarava
+    opcionais. O erro era invisível pelo mesmo motivo do anterior: o
+    helper recebia `object`, e o router silenciava a passagem de
+    `str | None` para um campo `str`.
+
+    ```text
+    OPTIONAL_IN_PROJECTION != NULLABLE_IN_SCHEMA
+    ```
+    """
+    provenance_record_ref: uuid.UUID | None
+    """`UUID`, não `str`.
+
+    ACHADO DO CORRETIVO R1: a projeção declarava `str | None` enquanto a
+    coluna é `Mapped[uuid.UUID | None]` e o DTO público também é `UUID`.
+    O erro estava invisível porque o helper recebia `object` e todo acesso
+    a campo vinha com `# type: ignore[attr-defined]`.
+
+    ```text
+    SILENCED_BOUNDARY = UNCHECKED_BOUNDARY
+    ```
+
+    Ninguém quebrou em runtime porque o valor atravessava íntegro; mas
+    qualquer drift futuro de tipo atravessaria igual, e era exatamente
+    isso que os ignores garantiam.
+    """
 
 
 @dataclass(frozen=True)
@@ -125,7 +161,7 @@ class ControlEventProjection:
     step_id: uuid.UUID | None
     event_kind: ControlEventKind
     reason_code: ControlReasonCode
-    stop_condition_category: str | None
+    stop_condition_category: StopConditionCategory | None
     occurred_at: datetime
 
 
@@ -404,101 +440,96 @@ class OrchestrationQueryService:
         )
 
 
-def _projetar_resultado(resultado: object) -> ResultProjection:
+def _projetar_resultado(resultado: HandoffResult) -> ResultProjection:
     return ResultProjection(
-        status=resultado.status,  # type: ignore[attr-defined]
-        expected_output_contract=resultado.expected_output_contract,  # type: ignore[attr-defined]
-        output_media_type=resultado.output_media_type,  # type: ignore[attr-defined]
-        output_sha256=resultado.output_sha256,  # type: ignore[attr-defined]
-        output_bytes=resultado.output_bytes,  # type: ignore[attr-defined]
-        declared_output_ref=resultado.declared_output_ref,  # type: ignore[attr-defined]
-        validation_codes=tuple(resultado.validation_codes),  # type: ignore[attr-defined]
+        status=resultado.status,
+        expected_output_contract=resultado.expected_output_contract,
+        output_media_type=resultado.output_media_type,
+        output_sha256=resultado.output_sha256,
+        output_bytes=resultado.output_bytes,
+        declared_output_ref=resultado.declared_output_ref,
+        validation_codes=tuple(resultado.validation_codes),
     )
 
 
-def _projetar_atribuicao(atribuicao: object) -> AttributionProjection:
+def _projetar_atribuicao(atribuicao: HandoffAttribution) -> AttributionProjection:
     return AttributionProjection(
-        declared_provider_id=atribuicao.declared_provider_id,  # type: ignore[attr-defined]
-        declared_model_id=atribuicao.declared_model_id,  # type: ignore[attr-defined]
-        declared_instance_id=atribuicao.declared_instance_id,  # type: ignore[attr-defined]
-        role=atribuicao.role,  # type: ignore[attr-defined]
-        declared_at=atribuicao.declared_at,  # type: ignore[attr-defined]
-        self_declared=atribuicao.self_declared,  # type: ignore[attr-defined]
-        provenance_record_ref=atribuicao.provenance_record_ref,  # type: ignore[attr-defined]
+        declared_provider_id=atribuicao.declared_provider_id,
+        declared_model_id=atribuicao.declared_model_id,
+        declared_instance_id=atribuicao.declared_instance_id,
+        role=atribuicao.role,
+        declared_at=atribuicao.declared_at,
+        self_declared=atribuicao.self_declared,
+        provenance_record_ref=atribuicao.provenance_record_ref,
     )
 
 
-def _projetar_etapa(etapa: object) -> StepProjection:
+def _projetar_etapa(etapa: ScheduleStep) -> StepProjection:
     return StepProjection(
-        step_id=etapa.id,  # type: ignore[attr-defined]
-        position=etapa.position,  # type: ignore[attr-defined]
-        role=etapa.role,  # type: ignore[attr-defined]
-        state=etapa.state,  # type: ignore[attr-defined]
-        instruction_ref=etapa.instruction_ref,  # type: ignore[attr-defined]
-        context_refs=tuple(etapa.context_refs),  # type: ignore[attr-defined]
-        expected_output_contract=etapa.expected_output_contract,  # type: ignore[attr-defined]
-        constraints=etapa.constraints,  # type: ignore[attr-defined]
+        step_id=etapa.id,
+        position=etapa.position,
+        role=etapa.role,
+        state=etapa.state,
+        instruction_ref=etapa.instruction_ref,
+        context_refs=tuple(etapa.context_refs),
+        expected_output_contract=etapa.expected_output_contract,
+        constraints=etapa.constraints,
     )
 
 
-def _projetar_selo(selo: object) -> SealReceiptProjection:
+def _projetar_selo(selo: SealReceipt) -> SealReceiptProjection:
     return SealReceiptProjection(
-        receipt_id=selo.id,  # type: ignore[attr-defined]
-        attempt_id=selo.attempt_id,  # type: ignore[attr-defined]
-        content_sha256=selo.content_sha256,  # type: ignore[attr-defined]
-        sealed_at=selo.sealed_at,  # type: ignore[attr-defined]
+        receipt_id=selo.id,
+        attempt_id=selo.attempt_id,
+        content_sha256=selo.content_sha256,
+        sealed_at=selo.sealed_at,
     )
 
 
-def _projetar_delegacao(delegacao: object) -> DelegationProjection:
+def _projetar_delegacao(delegacao: ServiceDelegation) -> DelegationProjection:
     return DelegationProjection(
-        delegation_id=delegacao.id,  # type: ignore[attr-defined]
-        step_id=delegacao.step_id,  # type: ignore[attr-defined]
-        content_sha256=delegacao.content_sha256,  # type: ignore[attr-defined]
-        scope=delegacao.scope,  # type: ignore[attr-defined]
-        state=delegacao.state,  # type: ignore[attr-defined]
-        valid_until=delegacao.valid_until,  # type: ignore[attr-defined]
-        consumed_at=delegacao.consumed_at,  # type: ignore[attr-defined]
-        consumed_by_attempt_id=delegacao.consumed_by_attempt_id,  # type: ignore[attr-defined]
+        delegation_id=delegacao.id,
+        step_id=delegacao.step_id,
+        content_sha256=delegacao.content_sha256,
+        scope=delegacao.scope,
+        state=delegacao.state,
+        valid_until=delegacao.valid_until,
+        consumed_at=delegacao.consumed_at,
+        consumed_by_attempt_id=delegacao.consumed_by_attempt_id,
     )
 
 
-def _projetar_evento(evento: object) -> ControlEventProjection:
-    categoria = evento.stop_condition_category  # type: ignore[attr-defined]
+def _projetar_evento(evento: OrchestrationControlEvent) -> ControlEventProjection:
     return ControlEventProjection(
-        event_id=evento.id,  # type: ignore[attr-defined]
-        step_id=evento.step_id,  # type: ignore[attr-defined]
-        event_kind=evento.event_kind,  # type: ignore[attr-defined]
-        reason_code=evento.reason_code,  # type: ignore[attr-defined]
-        stop_condition_category=None if categoria is None else categoria.value,
-        occurred_at=evento.occurred_at,  # type: ignore[attr-defined]
+        event_id=evento.id,
+        step_id=evento.step_id,
+        event_kind=evento.event_kind,
+        reason_code=evento.reason_code,
+        stop_condition_category=evento.stop_condition_category,
+        occurred_at=evento.occurred_at,
     )
 
 
-def _projetar_observacao(observacao: object) -> ObservationProjection:
+def _projetar_observacao(observacao: ExecutionObservation) -> ObservationProjection:
     return ObservationProjection(
-        observation_id=observacao.id,  # type: ignore[attr-defined]
-        step_id=observacao.step_id,  # type: ignore[attr-defined]
-        observation_kind=observacao.observation_kind,  # type: ignore[attr-defined]
-        previous_attempt_id=observacao.previous_attempt_id,  # type: ignore[attr-defined]
-        current_attempt_id=observacao.current_attempt_id,  # type: ignore[attr-defined]
-        previous_declared_provider_id=(
-            observacao.previous_declared_provider_id  # type: ignore[attr-defined]
-        ),
-        current_declared_provider_id=(
-            observacao.current_declared_provider_id  # type: ignore[attr-defined]
-        ),
-        self_declared=observacao.self_declared,  # type: ignore[attr-defined]
-        observed_at=observacao.observed_at,  # type: ignore[attr-defined]
+        observation_id=observacao.id,
+        step_id=observacao.step_id,
+        observation_kind=observacao.observation_kind,
+        previous_attempt_id=observacao.previous_attempt_id,
+        current_attempt_id=observacao.current_attempt_id,
+        previous_declared_provider_id=(observacao.previous_declared_provider_id),
+        current_declared_provider_id=(observacao.current_declared_provider_id),
+        self_declared=observacao.self_declared,
+        observed_at=observacao.observed_at,
     )
 
 
-def _projetar_parecer(parecer: object) -> AuditOpinionProjection:
+def _projetar_parecer(parecer: AuditOpinion) -> AuditOpinionProjection:
     return AuditOpinionProjection(
-        opinion_id=parecer.id,  # type: ignore[attr-defined]
-        handoff_result_id=parecer.handoff_result_id,  # type: ignore[attr-defined]
-        opinion=parecer.opinion,  # type: ignore[attr-defined]
-        reason_codes=tuple(parecer.reason_codes),  # type: ignore[attr-defined]
-        auditor_execution_ref=parecer.auditor_execution_ref,  # type: ignore[attr-defined]
-        issued_at=parecer.issued_at,  # type: ignore[attr-defined]
+        opinion_id=parecer.id,
+        handoff_result_id=parecer.handoff_result_id,
+        opinion=parecer.opinion,
+        reason_codes=tuple(parecer.reason_codes),
+        auditor_execution_ref=parecer.auditor_execution_ref,
+        issued_at=parecer.issued_at,
     )

@@ -719,7 +719,7 @@ def test_ii16_no_schema_orm_drift_and_single_head():
     # ATUALIZADO PELA E4.11: a cabeça passou a ser `e7c25a91f4b3`
     # (validated_experiences). A guarda continua medindo head ÚNICO —
     # só o alvo do único mudou.
-    assert tuple(heads) == ("b47e9c05d3fa",), f"migration head: {heads}"
+    assert tuple(heads) == ("c58d1e0a94f7",), f"migration head: {heads}"
 
 
 def test_ii17_no_new_table_was_introduced():

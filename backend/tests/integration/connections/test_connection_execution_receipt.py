@@ -26,7 +26,11 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
-from app.connections.models.enums import ConnectionMethod, ModelAttestationLevel
+from app.connections.models.enums import (
+    ConnectionMethod,
+    ConnectionState,
+    ModelAttestationLevel,
+)
 from app.connections.repositories.connection_repository import ConnectionRepository
 from app.connections.services.connection_execution_receipt_service import (
     ConnectionExecutionReceiptService,
@@ -177,6 +181,26 @@ def _recibos_de_conexao() -> list[dict[str, object]]:
                 )
             )
         ]
+
+
+def _liberar_unique(attempt_id: uuid.UUID) -> None:
+    """Remove o recibo legítimo para que o `UNIQUE(attempt_id)` não recuse antes.
+
+    ```text
+    REFUSAL_BY_THE_WRONG_GUARD = UNPROVEN_INVARIANT
+    ```
+
+    Sem isto, toda prova de coerência de rota seria satisfeita pelo
+    `UNIQUE` — o defeito que a auditoria apontou na prova 35 e que o
+    mutante `M-FK` revelou.
+    """
+    with engine.begin() as conexao:
+        conexao.execute(sa.text("ALTER TABLE connection_execution_receipts DISABLE TRIGGER USER"))
+        conexao.execute(
+            sa.text("DELETE FROM connection_execution_receipts WHERE attempt_id = :aid"),
+            {"aid": attempt_id},
+        )
+        conexao.execute(sa.text("ALTER TABLE connection_execution_receipts ENABLE TRIGGER USER"))
 
 
 def _contar(tabela: str) -> int:
@@ -551,12 +575,28 @@ def test_e741p09b_bicondicional_da_atestacao(atestacao, observado, aceita) -> No
     _exportar(schedule_id, step_id)
     base = _recibos_de_conexao()[0]
 
+    # CORRETIVO R1: o perfil precisa ser NÃO manual. A verdade do manual
+    # passou a recusar `observed_model`, e o alvo deste teste é a
+    # bicondicional da atestação — usar o perfil manual faria a recusa vir
+    # da guarda errada, o defeito que a auditoria apontou em C1.
+    with UnitOfWork() as uow:
+        conexoes = ConnectionRepository(uow.session)
+        api = conexoes.create_profile(
+            control_principal_ref=base["control_principal_ref"],
+            method=ConnectionMethod.DIRECT_PROVIDER_API,
+            state=ConnectionState.DECLARED,
+            endpoint_ref="opaco://api",
+            access_provider_id=None,
+        )
+        conexao_api = api.id
+        uow.commit()
+
     parametros = {
         "ref": base["control_principal_ref"],
         "sid": base["schedule_id"],
         "stid": base["step_id"],
         "aid": uuid.uuid4(),
-        "cid": base["connection_id"],
+        "cid": conexao_api,
         "nivel": atestacao,
         "modelo": observado,
     }
@@ -566,7 +606,7 @@ def test_e741p09b_bicondicional_da_atestacao(atestacao, observado, aceita) -> No
         " connection_id, connection_method, model_attestation_level, "
         " observed_model, observed_at) "
         "VALUES (gen_random_uuid(), :ref, :sid, :stid, :aid, :cid, "
-        " 'manual_handoff', :nivel, :modelo, now())"
+        " 'direct_provider_api', :nivel, :modelo, now())"
     )
     # A FK da Attempt é DEFERRABLE: o `attempt_id` inventado só é cobrado
     # no commit. O CHECK, que é o alvo aqui, age no INSERT — por isso os
@@ -664,3 +704,183 @@ def test_e741p11_attempt_legada_permanece_sem_recibo_e_nada_e_fabricado() -> Non
 
     recibos = _recibos_de_conexao()
     assert recibos == [], "algo preencheu a Attempt legada retroativamente"
+
+
+# --- corretivo R1: o recibo não pode falsificar a rota ----------------------
+
+
+def test_e741p12_recibo_nao_declara_metodo_diferente_do_perfil() -> None:
+    """Achado C1 — `RECEIPT_METHOD == PROFILE_METHOD`, imposto pelo schema.
+
+    ```text
+    COHERENT_OWNER != COHERENT_ROUTE
+    ```
+
+    O vínculo bilateral provava **dono**, e não **rota**: um perfil
+    `manual_handoff` aceitava recibo `direct_provider_api`. Como o recibo
+    é a única evidência da rota realmente usada, ele podia falsificar
+    exatamente aquilo que existe para provar.
+
+    A recusa agora é da FK **ternária**, e o `match=` prende o teste ao
+    nome dela — sem isso, a prova voltaria a poder ser satisfeita por
+    outra guarda.
+    """
+    schedule_id, step_id = _preparar("dono")
+    _, saida = _exportar(schedule_id, step_id, principal="dono")
+    base = _recibos_de_conexao()[0]
+
+    _liberar_unique(base["attempt_id"])
+
+    with (
+        pytest.raises(
+            IntegrityError, match="fk_connection_execution_receipts_connection_within_principal"
+        ),
+        engine.begin() as conexao,
+    ):
+        conexao.execute(
+            sa.text(
+                "INSERT INTO connection_execution_receipts "
+                "(id, control_principal_ref, schedule_id, step_id, attempt_id, "
+                " connection_id, connection_method, observed_model, "
+                " model_attestation_level, observed_at) "
+                "VALUES (gen_random_uuid(), 'dono', :sid, :stid, :aid, :cid, "
+                " 'direct_provider_api', 'modelo-inventado', 'attested', now())"
+            ),
+            {
+                "sid": base["schedule_id"],
+                "stid": base["step_id"],
+                "aid": base["attempt_id"],
+                "cid": base["connection_id"],
+            },
+        )
+
+    # Não-vacuidade: o MESMO insert, com o método do perfil, entra.
+    with engine.begin() as conexao:
+        conexao.execute(
+            sa.text(
+                "INSERT INTO connection_execution_receipts "
+                "(id, control_principal_ref, schedule_id, step_id, attempt_id, "
+                " connection_id, connection_method, model_attestation_level, observed_at) "
+                "VALUES (gen_random_uuid(), 'dono', :sid, :stid, :aid, :cid, "
+                " 'manual_handoff', 'unknown', now())"
+            ),
+            {
+                "sid": base["schedule_id"],
+                "stid": base["step_id"],
+                "aid": base["attempt_id"],
+                "cid": base["connection_id"],
+            },
+        )
+    assert saida.exported.attempt_id == base["attempt_id"]
+
+
+@pytest.mark.parametrize(
+    ("coluna", "valor"),
+    [
+        ("access_provider", "'openai'"),
+        ("requested_model", "'gpt-4'"),
+        ("observed_model", "'gpt-4'"),
+    ],
+)
+def test_e741p13_manual_nao_admite_operador_nem_modelo_por_sql_bruto(
+    coluna, valor
+) -> None:  # noqa: ANN001
+    """Achado C1, segundo facet — a verdade do manual, imposta pelo banco.
+
+    ```text
+    manual_handoff => access_provider IS NULL
+                      requested_model IS NULL
+                      observed_model  IS NULL
+                      atestação       = unknown
+    ```
+
+    A autoridade R3 fixa esses quatro valores, e antes só o value object
+    recusava o operador. Por SQL bruto entrava um repasse manual com
+    modelo fabricado e atestação `attested` — a atribuição inteira
+    inventada, com a bicondicional satisfeita.
+
+    `observed_model` exige atestação coerente, senão a recusa viria da
+    bicondicional e não da guarda que este teste mede.
+    """
+    schedule_id, step_id = _preparar("dono")
+    _exportar(schedule_id, step_id, principal="dono")
+    base = _recibos_de_conexao()[0]
+    _liberar_unique(base["attempt_id"])
+
+    nivel = "'attested'" if coluna == "observed_model" else "'unknown'"
+    with pytest.raises(IntegrityError, match="manual_truth"), engine.begin() as conexao:
+        conexao.execute(
+            sa.text(
+                "INSERT INTO connection_execution_receipts "
+                f"(id, control_principal_ref, schedule_id, step_id, attempt_id, "
+                f" connection_id, connection_method, {coluna}, "
+                f" model_attestation_level, observed_at) "
+                f"VALUES (gen_random_uuid(), 'dono', :sid, :stid, :aid, :cid, "
+                f" 'manual_handoff', {valor}, {nivel}, now())"
+            ),
+            {
+                "sid": base["schedule_id"],
+                "stid": base["step_id"],
+                "aid": base["attempt_id"],
+                "cid": base["connection_id"],
+            },
+        )
+
+
+def test_e741p14_manual_nao_admite_atestacao_diferente_de_unknown() -> None:
+    """`self_declared` num repasse manual é alegação sobre nada."""
+    schedule_id, step_id = _preparar("dono")
+    _exportar(schedule_id, step_id, principal="dono")
+    base = _recibos_de_conexao()[0]
+    _liberar_unique(base["attempt_id"])
+
+    with pytest.raises(IntegrityError, match="manual_truth"), engine.begin() as conexao:
+        conexao.execute(
+            sa.text(
+                "INSERT INTO connection_execution_receipts "
+                "(id, control_principal_ref, schedule_id, step_id, attempt_id, "
+                " connection_id, connection_method, model_attestation_level, observed_at) "
+                "VALUES (gen_random_uuid(), 'dono', :sid, :stid, :aid, :cid, "
+                " 'manual_handoff', 'self_declared', now())"
+            ),
+            {
+                "sid": base["schedule_id"],
+                "stid": base["step_id"],
+                "aid": base["attempt_id"],
+                "cid": base["connection_id"],
+            },
+        )
+
+
+def test_e741p15_os_value_objects_recusam_manual_com_modelo_fabricado() -> None:
+    """Os mesmos invariantes na composição, não só no banco.
+
+    Lição reincidente: um invariante que existe apenas num lugar é
+    contornado pelo outro caminho.
+    """
+    from app.connections.services.connection_execution_receipt_service import (
+        ExecutionAttribution,
+    )
+
+    for campo, valor in (
+        ("access_provider", "openai"),
+        ("requested_model", "gpt-4"),
+    ):
+        with pytest.raises(ValueError, match="repasse manual"):
+            ExecutionAttribution(
+                connection_id=uuid.uuid4(),
+                connection_method=ConnectionMethod.MANUAL_HANDOFF,
+                access_provider=valor if campo == "access_provider" else None,
+                requested_model=valor if campo == "requested_model" else None,
+                observed_model=None,
+                model_attestation_level=ModelAttestationLevel.UNKNOWN,
+            )
+    with pytest.raises(ValueError, match="repasse manual"):
+        ExecutionAttribution(
+            connection_id=uuid.uuid4(),
+            connection_method=ConnectionMethod.MANUAL_HANDOFF,
+            access_provider=None,
+            requested_model=None,
+            observed_model="gpt-4",
+            model_attestation_level=ModelAttestationLevel.ATTESTED,
+        )

@@ -813,7 +813,7 @@ def test_ai20_migration_head_is_the_new_one_and_single():
     # ATUALIZADO PELA E4.11: a cabeça passou a ser `e7c25a91f4b3`
     # (validated_experiences). A guarda continua medindo head ÚNICO —
     # só o alvo do único mudou.
-    assert tuple(heads) == ("b47e9c05d3fa",), f"migration head: {heads}"
+    assert tuple(heads) == ("c58d1e0a94f7",), f"migration head: {heads}"
 
 
 def test_ai21_no_new_column_on_cognitive_object():

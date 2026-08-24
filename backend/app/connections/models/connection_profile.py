@@ -56,6 +56,12 @@ class ConnectionProfile(BaseModel):
             "control_principal_ref",
             name="uq_connection_profiles_id_principal",
         ),
+        UniqueConstraint(
+            "id",
+            "control_principal_ref",
+            "method",
+            name="uq_connection_profiles_id_principal_method",
+        ),
         CheckConstraint(
             "length(btrim(control_principal_ref)) > 0",
             name="ck_connection_profiles_principal_not_blank",
@@ -110,6 +116,23 @@ class ConnectionProfile(BaseModel):
 
     Mesmo precedente de `uq_handoff_attempts_id_step_schedule` (E7.3) e
     de `uq_schedule_steps_id_schedule` (Chain111).
+
+    ## `uq_connection_profiles_id_principal_method` — corretivo R1
+
+    AMPLIAÇÃO DECLARADA. Terceira coluna redundante em cardinalidade e
+    obrigatória em referência: sem ela, a FK do recibo não pode incluir
+    `connection_method`, e o recibo passa a poder declarar uma rota que o
+    perfil não oferece.
+
+    ```text
+    RECEIPT_METHOD == PROFILE_METHOD
+    COHERENT_OWNER != COHERENT_ROUTE
+    ```
+
+    O achado C1 da auditoria: o vínculo bilateral provava **dono**, e não
+    **rota**. Um perfil `manual_handoff` aceitava recibo
+    `direct_provider_api`, e o recibo é a única evidência da rota
+    realmente usada.
 
     ## `ix_connection_profiles_manual_singleton`
 

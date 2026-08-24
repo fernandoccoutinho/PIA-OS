@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from sqlalchemy.exc import IntegrityError
 
 from app.connections.errors.exceptions import ConnectionContractViolationError
+from app.connections.models.connection_profile import ConnectionProfile
 from app.connections.models.enums import (
     AVAILABLE_CONNECTION_METHODS,
     BASELINE_METHOD_STATE,
@@ -172,21 +173,23 @@ class ConnectionProfileService:
             )
         )
 
-    def _slug_de(self, perfil: object) -> str | None:
+    def _slug_de(self, perfil: ConnectionProfile) -> str | None:
         """Resolve o slug do operador pelo repositório, dentro da sessão.
 
         O slug é *lido*, e não copiado do perfil: o perfil guarda a
         referência, e a projeção é leitura corrente. O recibo é que copia
         — é lá que a atribuição precisa sobreviver a mudanças no perfil.
         """
-        provedor_id = perfil.access_provider_id  # type: ignore[attr-defined]
+        provedor_id = perfil.access_provider_id
         if provedor_id is None:
             return None
         provedor = self._repository.get_access_provider(provider_id=provedor_id)
         return None if provedor is None else provedor.slug
 
 
-def _projetar(perfil: object, *, access_provider_slug: str | None = None) -> ConnectionProfileView:
+def _projetar(
+    perfil: ConnectionProfile, *, access_provider_slug: str | None = None
+) -> ConnectionProfileView:
     """Extrai colunas **dentro** da sessão e devolve o DTO congelado.
 
     Lição reincidente: conservar entidade ORM além do fim da UnitOfWork
@@ -194,10 +197,10 @@ def _projetar(perfil: object, *, access_provider_slug: str | None = None) -> Con
     asserir o DTO fora.
     """
     return ConnectionProfileView(
-        connection_id=perfil.id,  # type: ignore[attr-defined]
-        method=perfil.method,  # type: ignore[attr-defined]
-        state=perfil.state,  # type: ignore[attr-defined]
-        endpoint_ref=perfil.endpoint_ref,  # type: ignore[attr-defined]
+        connection_id=perfil.id,
+        method=perfil.method,
+        state=perfil.state,
+        endpoint_ref=perfil.endpoint_ref,
         access_provider_slug=access_provider_slug,
-        display_name=perfil.display_name,  # type: ignore[attr-defined]
+        display_name=perfil.display_name,
     )

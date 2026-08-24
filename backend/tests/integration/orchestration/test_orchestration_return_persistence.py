@@ -63,7 +63,7 @@ pytestmark = [
 
 _REVISION_E72 = "c3a75e01d248"
 _REVISION_E73 = "f2c60d8a41b9"
-_MIGRATION_HEAD = "b47e9c05d3fa"
+_MIGRATION_HEAD = "c58d1e0a94f7"
 _PARENT = "b8c04e2fd137"
 _HASH = "f" * 64
 _TABELAS_NOVAS = ("handoff_results", "handoff_attributions")
@@ -591,7 +591,7 @@ def test_e72p18_head_unica_e_filha_de_c3a75e01d248() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == ("b47e9c05d3fa",)
+    assert tuple(script.get_heads()) == ("c58d1e0a94f7",)
     assert script.get_revision(_REVISION_E72_R1).down_revision == _REVISION_E72
     assert script.get_revision(_REVISION_E72_R2).down_revision == _REVISION_E72_R1
 

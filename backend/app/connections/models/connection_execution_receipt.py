@@ -75,13 +75,23 @@ class ConnectionExecutionReceipt(BaseModel):
             initially="DEFERRED",
         ),
         ForeignKeyConstraint(
-            ["connection_id", "control_principal_ref"],
-            ["connection_profiles.id", "connection_profiles.control_principal_ref"],
+            ["connection_id", "control_principal_ref", "connection_method"],
+            [
+                "connection_profiles.id",
+                "connection_profiles.control_principal_ref",
+                "connection_profiles.method",
+            ],
             name="fk_connection_execution_receipts_connection_within_principal",
         ),
         CheckConstraint(
             "(model_attestation_level = 'attested') = (observed_model IS NOT NULL)",
             name="ck_connection_execution_receipts_attestation_bicondicional",
+        ),
+        CheckConstraint(
+            "connection_method <> 'manual_handoff' OR ("
+            "access_provider IS NULL AND requested_model IS NULL "
+            "AND observed_model IS NULL AND model_attestation_level = 'unknown')",
+            name="ck_connection_execution_receipts_manual_truth",
         ),
         CheckConstraint(
             "length(btrim(control_principal_ref)) > 0",
@@ -113,6 +123,32 @@ class ConnectionExecutionReceipt(BaseModel):
 
     A bicondicional da atestação é o que impede `attested` de significar
     "achamos que foi": atestar exige ter observado.
+
+    ## Corretivo R1 — rota, e não só dono
+
+    ```text
+    COHERENT_OWNER != COHERENT_ROUTE
+    RECEIPT_METHOD == PROFILE_METHOD
+    ```
+
+    A FK passou a ser **ternária**: `connection_method` entra nela, e o
+    alvo é `uq_connection_profiles_id_principal_method`. Sem isso, o
+    recibo declarava livremente uma rota que o perfil não oferece — e o
+    recibo é a única evidência da rota realmente usada.
+
+    ## Corretivo R1 — a verdade do manual, imposta pelo banco
+
+    ```text
+    manual_handoff  =>  access_provider IS NULL
+                        requested_model IS NULL
+                        observed_model  IS NULL
+                        atestação       = unknown
+    ```
+
+    A autoridade R3 fixa esses quatro valores para o manual, e antes
+    apenas o value object recusava o operador. Por SQL bruto entrava um
+    repasse manual com modelo fabricado e atestação `attested` — a
+    atribuição inteira inventada, com a bicondicional satisfeita.
     """
 
     control_principal_ref: Mapped[str] = mapped_column(String(MAX_REF_LENGTH), nullable=False)

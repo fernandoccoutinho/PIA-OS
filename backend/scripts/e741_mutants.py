@@ -41,6 +41,24 @@ class Mutante:
     banco_dedicado: bool = False
 
 
+#: `M-FK` foi RETIRADO no corretivo R1, e a razão é declarada em vez de
+#: silenciada.
+#:
+#: ```text
+#: ALVO ABSORVIDO POR OUTRA GUARDA -> NÃO CONTA COMO MATADO
+#: ```
+#:
+#: Ele mutava a FK **binária** de `b47e9c05d3fa` para uma FK simples. A
+#: migration corretiva `c58d1e0a94f7` derruba aquela FK e cria a
+#: **ternária** em seu lugar, de modo que a mutação passou a ser
+#: sobrescrita pela migration seguinte: o mutante sobrevivia por
+#: construção, não por lacuna de prova.
+#:
+#: A propriedade que ele media — coerência de dono — é IMPLICADA pela
+#: coerência de rota, e é `M-METHOD` que a mede agora. Mantê-lo na lista
+#: seria exibir um mutante cujo alvo não existe mais no schema entregue,
+#: que é o defeito de contagem que este programa já pagou duas vezes
+#: (E6.3 mS2, E7.1 M-s3).
 MUTANTES: tuple[Mutante, ...] = (
     Mutante(
         nome="M-AVAILABLE",
@@ -110,26 +128,6 @@ MUTANTES: tuple[Mutante, ...] = (
         descricao="descoberta faz varredura local",
     ),
     Mutante(
-        nome="M-FK",
-        arquivo="alembic/versions/b47e9c05d3fa_create_connection_kernel_e7_4_1.py",
-        alvo=(
-            '            ["connection_id", "control_principal_ref"],\n'
-            '            [f"{_PROFILES}.id", f"{_PROFILES}.control_principal_ref"],\n'
-            '            name="fk_connection_execution_receipts_connection_within_principal",'
-        ),
-        troca=(
-            '            ["connection_id"],\n'
-            '            [f"{_PROFILES}.id"],\n'
-            '            name="fk_connection_execution_receipts_connection_within_principal",'
-        ),
-        testes=(
-            "tests/integration/connections/test_connection_execution_receipt.py"
-            "::test_e741p08_recibo_de_a_nao_liga_a_conexao_de_b_por_sql_bruto",
-        ),
-        descricao="FK bilateral volta a simples",
-        banco_dedicado=True,
-    ),
-    Mutante(
         nome="M-RECEIPT",
         arquivo="app/orchestration/services/manual_handoff_export_service.py",
         alvo="        self._connection_receipts.record_execution(",
@@ -162,6 +160,76 @@ MUTANTES: tuple[Mutante, ...] = (
         troca="        return",
         testes=("tests/integration/connections/test_connection_advisory_lock.py",),
         descricao="lock consultivo removido — serialização deixa de existir",
+    ),
+    Mutante(
+        nome="M-METHOD",
+        arquivo="alembic/versions/c58d1e0a94f7_receipt_route_coherence_e7_4_1_r1.py",
+        alvo=(
+            '        ["connection_id", "control_principal_ref", "connection_method"],\n'
+            '        ["id", "control_principal_ref", "method"],'
+        ),
+        troca=(
+            '        ["connection_id", "control_principal_ref"],\n'
+            '        ["id", "control_principal_ref"],'
+        ),
+        testes=(
+            "tests/integration/connections/test_connection_execution_receipt.py"
+            "::test_e741p12_recibo_nao_declara_metodo_diferente_do_perfil",
+        ),
+        descricao="FK da rota volta a ser de dono — recibo falsifica o método",
+        banco_dedicado=True,
+    ),
+    Mutante(
+        nome="M-MANUAL-MODEL",
+        arquivo="alembic/versions/c58d1e0a94f7_receipt_route_coherence_e7_4_1_r1.py",
+        alvo="    op.create_check_constraint(_CHECK_MANUAL, _RECEIPTS, sa.text(_MANUAL_TRUTH_SQL))",
+        troca="    pass  # CHECK da verdade do manual removido",
+        testes=(
+            "tests/integration/connections/test_connection_execution_receipt.py"
+            "::test_e741p13_manual_nao_admite_operador_nem_modelo_por_sql_bruto",
+            "tests/integration/connections/test_connection_execution_receipt.py"
+            "::test_e741p14_manual_nao_admite_atestacao_diferente_de_unknown",
+        ),
+        descricao="manual aceita operador, modelo fabricado e atestação inventada",
+        banco_dedicado=True,
+    ),
+    Mutante(
+        nome="M-VO-MANUAL",
+        arquivo="app/connections/services/connection_execution_receipt_service.py",
+        alvo="        if self.connection_method is ConnectionMethod.MANUAL_HANDOFF and any(",
+        troca="        if False and any(",
+        testes=(
+            "tests/integration/connections/test_connection_execution_receipt.py"
+            "::test_e741p15_os_value_objects_recusam_manual_com_modelo_fabricado",
+        ),
+        descricao="value object deixa de recusar manual com modelo fabricado",
+    ),
+    Mutante(
+        nome="M-SILENCE",
+        arquivo="app/orchestration/services/orchestration_query_service.py",
+        alvo="def _projetar_resultado(resultado: HandoffResult) -> ResultProjection:",
+        troca="def _projetar_resultado(resultado: object) -> ResultProjection:",
+        testes=(
+            "tests/static/test_e741_connection_boundary.py"
+            "::test_e741s17_os_helpers_do_servico_de_consulta_recebem_tipo_concreto",
+        ),
+        descricao="fronteira volta a receber `object` e pode ser silenciada",
+    ),
+    Mutante(
+        nome="M-BYPASS",
+        arquivo="app/routers/orchestration.py",
+        alvo="    governanca = OrchestrationQueryService(repositorio).read_governance(",
+        troca=(
+            "    repositorio.list_delegations(\n"
+            "        control_principal_ref=principal_ref, schedule_id=schedule_id\n"
+            "    )\n"
+            "    governanca = OrchestrationQueryService(repositorio).read_governance("
+        ),
+        testes=(
+            "tests/static/test_e741_connection_boundary.py"
+            "::test_e741s12_nenhuma_consulta_de_superficie_mcp_alcanca_o_repositorio",
+        ),
+        descricao="consulta de superfície MCP volta a alcançar o repositório",
     ),
 )
 

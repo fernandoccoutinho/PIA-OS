@@ -86,6 +86,59 @@ exercitado porque o lock consultivo serializava antes. Os três passavam
 verdes. Corrigidos na camada própria, com mutante próprio para cada
 mecanismo.
 
+## Corretivo R1 — achados C1, C2 e C3 da auditoria da Chain118
+
+Migration `c58d1e0a94f7`, filha única de `b47e9c05d3fa`.
+
+### C1 — o recibo podia falsificar a rota
+
+```text
+COHERENT_OWNER != COHERENT_ROUTE
+RECEIPT_METHOD == PROFILE_METHOD
+```
+
+O vínculo bilateral provava dono, não rota: um perfil `manual_handoff`
+aceitava recibo `direct_provider_api`. E a verdade do manual só existia
+no value object para um dos quatro campos, de modo que por SQL bruto
+entrava um repasse manual com operador, modelo solicitado, modelo
+observado e atestação `attested` — atribuição inteiramente inventada.
+
+Correção: alvo ternário `uq_connection_profiles_id_principal_method`, FK
+do recibo incluindo `connection_method` (a binária foi **substituída**,
+não somada) e `ck_connection_execution_receipts_manual_truth`. Os mesmos
+invariantes em `ExecutionAttribution` e `ConnectionExecutionReceiptView`.
+
+### C2 — a fronteira nova estava silenciada
+
+```text
+SILENCED_BOUNDARY = UNCHECKED_BOUNDARY
+NEW_ATTR_DEFINED_IN_TYPED_BOUNDARIES = 0
+HISTORICAL_ROUTER_ATTR_DEFINED       = 48
+```
+
+O commit da Chain118 acrescentou 90 `# type: ignore[attr-defined]`.
+Tipar concretamente revelou **dois defeitos reais** que eles escondiam:
+`provenance_record_ref` declarado `str` sendo `UUID`, e três campos
+`NOT NULL` declarados opcionais na projeção. Nenhum quebrava em runtime,
+e era exatamente isso que os ignores garantiam para o drift seguinte.
+
+Os 48 restantes no router são **históricos**, em helpers que recebem
+linha ORM viva dentro da transação de escrita; tipá-los é ampliação que
+esta auditoria não pediu. O zero é das fronteiras novas, não global.
+
+### C3 — a afirmação era ampla demais
+
+```text
+MCP_QUERY_BYPASS_AST = 0    (doze leituras de superfície)
+ROUTER_INTERNAL_CALLS = 5   (classificadas e permitidas)
+```
+
+`BYPASS_AST = 0` provava "zero dentre as consultas catalogadas", e
+sobravam cinco chamadas diretas permitidas pelo plano (`lock_schedule`,
+`get_command_receipt`, `get_control_event`, `get_audit_opinion`,
+`get_delegation`). A guarda passou a classificar **exaustivamente**, e
+reprova chamada nova não classificada.
+
 ## Escopo negativo cumprido
 
 Sem MCP, OAuth/IdP, authorization server, token, senha, cookie, segredo,

@@ -58,10 +58,27 @@ class ExecutionAttribution:
         atestado = self.model_attestation_level is ModelAttestationLevel.ATTESTED
         if atestado != (self.observed_model is not None):
             raise ValueError("atestação `attested` exige observed_model não nulo, e vice-versa")
-        if self.connection_method is ConnectionMethod.MANUAL_HANDOFF and (
-            self.access_provider is not None
+        if self.connection_method is ConnectionMethod.MANUAL_HANDOFF and any(
+            (
+                self.access_provider is not None,
+                self.requested_model is not None,
+                self.observed_model is not None,
+                self.model_attestation_level is not ModelAttestationLevel.UNKNOWN,
+            )
         ):
-            raise ValueError("repasse manual não tem operador de acesso")
+            # Corretivo R1: os QUATRO campos, não só o operador.
+            #
+            # ```text
+            # manual_handoff => provider/requested/observed NULL, atestação unknown
+            # ```
+            #
+            # A versão anterior recusava só o operador, e o banco aceitava
+            # um repasse manual com modelo fabricado e atestação
+            # `attested` — a atribuição inteira inventada.
+            raise ValueError(
+                "repasse manual não tem operador, modelo solicitado, modelo observado "
+                "nem atestação diferente de `unknown`"
+            )
 
 
 def manual_attribution(*, connection_id: uuid.UUID) -> ExecutionAttribution:
