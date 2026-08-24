@@ -147,10 +147,11 @@ def test_s04_nenhuma_persistencia_orm_ou_migration() -> None:
     # critério e sem pertencer a esta fatia.
     filhos_e5 = [r for r, p in grafo.items() if p == "e7c25a91f4b3"]
     assert filhos_e5 == ["f8a91c2d4e60"], filhos_e5
-    # ATUALIZADO PELA E7.1: a folha passou a ser `a91d3f7c26be`
+    # ATUALIZADO PELA E7.4-1: a folha passou a ser `b47e9c05d3fa`
+    # (kernel de conexões); antes `a91d3f7c26be`
     # (orquestração). A guarda continua medindo folha ÚNICA — não
     # imobilidade da cadeia.
-    assert folhas == ["a91d3f7c26be"], folhas
+    assert folhas == ["b47e9c05d3fa"], folhas
 
 
 def test_s05_nenhuma_re_resolucao_nem_comparacao_de_snapshot() -> None:

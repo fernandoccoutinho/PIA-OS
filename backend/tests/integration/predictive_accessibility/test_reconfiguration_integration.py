@@ -45,6 +45,34 @@ def _fresh_e5l_table():
         # duas funções entram na limpeza, do mais novo para o mais antigo.
         # ATUALIZADO PELA E7.2: a folha passou a ser handoff_results/
         # handoff_attributions; ambas caem antes das tabelas da E7.1.
+        # ATUALIZADO PELA E7.4-1: as nove tabelas do kernel de conexões
+        # são a folha atual e entram PRIMEIRO na ordem de remoção. A
+        # ordem interna é a de dependência — recibo, snapshot e alegação
+        # antes dos perfis, e perfis antes do catálogo — para que
+        # nenhuma delas precise de `CASCADE`.
+        #
+        # O motivo de estarem ANTES do bloco da E7.3 é material, não
+        # estético: `fk_connection_execution_receipts_attempt` depende de
+        # `uq_handoff_attempts_id_step_schedule`, e o `ALTER TABLE ...
+        # DROP CONSTRAINT` abaixo é deliberadamente SEM `CASCADE` — ele
+        # tem de falhar se algum descendente novo for esquecido, em vez
+        # de arrastar objetos silenciosamente.
+        for tabela_e741 in (
+            "connection_execution_receipts",
+            "connection_capability_snapshots",
+            "connection_entitlement_claims",
+            "connection_evaluation_evidence",
+            "connection_profiles",
+            "connection_model_releases",
+            "connection_model_families",
+            "connection_access_providers",
+            "connection_provider_families",
+        ):
+            connection.execute(sa.text(f"DROP TABLE IF EXISTS {tabela_e741}"))
+        connection.execute(sa.text("DROP FUNCTION IF EXISTS reject_connection_record_mutation()"))
+        connection.execute(
+            sa.text("DROP FUNCTION IF EXISTS guard_connection_entitlement_transition()")
+        )
         for tabela_e73 in (
             "audit_opinions",
             "execution_observations",
@@ -281,7 +309,7 @@ def test_e5l_migration_round_trip_vazio() -> None:
             is None
         )
     migrations.upgrade("head")
-    assert migrations.current_revision() == "a91d3f7c26be"
+    assert migrations.current_revision() == "b47e9c05d3fa"
     with engine.connect() as connection:
         assert (
             connection.execute(
@@ -298,7 +326,7 @@ def test_e5l_downgrade_com_historico_recusa_antes_de_ddl() -> None:
         session.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == "a91d3f7c26be"
+    assert migrations.current_revision() == "b47e9c05d3fa"
     with engine.connect() as connection:
         assert (
             connection.execute(

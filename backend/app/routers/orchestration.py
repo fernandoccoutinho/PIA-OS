@@ -34,6 +34,11 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db_session, require_orchestration_operate_access
 from app.api.responses import SuccessResponse
+from app.connections.repositories.connection_repository import ConnectionRepository
+from app.connections.services.connection_execution_receipt_service import (
+    ConnectionExecutionReceiptService,
+)
+from app.connections.services.connection_profile_service import ConnectionProfileService
 from app.docs.responses import response_401, response_403, response_404, response_422, response_500
 from app.docs.tags import TAG_ORCHESTRATION
 from app.orchestration.adapters.deny_all_human_gate import DenyAllHumanGate
@@ -55,6 +60,7 @@ from app.orchestration.services.manual_handoff_export_service import (
     DispatchBlocked,
     ManualHandoffExportService,
 )
+from app.orchestration.services.orchestration_query_service import OrchestrationQueryService
 from app.orchestration.services.return_validation_service import (
     DeclaredAttribution,
     ReturnValidationService,
@@ -120,8 +126,15 @@ def _montar(session: Session) -> CommandReceiptService:
     controle = ControlService(repositorio)
     # `DenyAllHumanGate` é o ÚNICO adaptador de gate humano em produção.
     # Um dublê concedente aqui seria bypass reutilizável; ele vive em tests/.
+    conexoes = ConnectionRepository(session)
     exportacao = ManualHandoffExportService(
-        repositorio, handoff, ManualTransport(), DenyAllHumanGate(), controle
+        repositorio,
+        handoff,
+        ManualTransport(),
+        DenyAllHumanGate(),
+        controle,
+        connection_profiles=ConnectionProfileService(conexoes),
+        connection_receipts=ConnectionExecutionReceiptService(conexoes),
     )
     validacao = ReturnValidationService(repositorio, controle)
     delegacoes = DelegationService(repositorio, handoff)
@@ -278,12 +291,15 @@ def exportar_handoff(
     # evento precisam ser COMMITADOS antes do 409. Dentro do bloco que faz
     # `session.rollback()` em qualquer exceção, a gravação seria apagada —
     # exatamente a pausa que a prova precisa observar.
+    conexoes = ConnectionRepository(session)
     exportacao = ManualHandoffExportService(
         repositorio,
         HandoffService(repositorio),
         ManualTransport(),
         DenyAllHumanGate(),
         ControlService(repositorio),
+        connection_profiles=ConnectionProfileService(conexoes),
+        connection_receipts=ConnectionExecutionReceiptService(conexoes),
     )
     # ```text
     # FASE ZERO = REPLAY
@@ -436,35 +452,27 @@ def listar_tentativas(
     """Nunca devolve conteúdo bruto, credencial ou principal de controle."""
     principal_ref = str(principal.id)
     repositorio, _ = _contexto(session)
-    # Escopo: a leitura do Schedule levanta 404 antes de listar qualquer coisa.
-    ScheduleService(repositorio).get_schedule(
-        control_principal_ref=principal_ref, schedule_id=schedule_id
-    )
+    # Escopo: `OrchestrationQueryService.list_attempts` levanta 404 antes de
+    # listar qualquer coisa — a garantia mora no serviço, não aqui.
     itens: list[dto.AttemptView] = []
-    for tentativa in repositorio.list_attempts(
+    for tentativa in OrchestrationQueryService(repositorio).list_attempts(
         control_principal_ref=principal_ref, schedule_id=schedule_id
     ):
-        resultado = repositorio.get_handoff_result(
-            control_principal_ref=principal_ref,
-            schedule_id=schedule_id,
-            attempt_id=tentativa.id,
-        )
-        atribuicao = repositorio.get_handoff_attribution(
-            control_principal_ref=principal_ref,
-            schedule_id=schedule_id,
-            attempt_id=tentativa.id,
-        )
         itens.append(
             dto.AttemptView(
-                attempt_id=tentativa.id,
+                attempt_id=tentativa.attempt_id,
                 step_id=tentativa.step_id,
                 attempt_number=tentativa.attempt_number,
                 envelope_version=tentativa.envelope_version,
                 content_sha256=tentativa.content_sha256,
                 state=tentativa.state,
                 created_at=tentativa.created_at,
-                result=_result_view(resultado) if resultado is not None else None,
-                attribution=_attribution_view(atribuicao) if atribuicao is not None else None,
+                result=_result_view(tentativa.result) if tentativa.result is not None else None,
+                attribution=(
+                    _attribution_view(tentativa.attribution)
+                    if tentativa.attribution is not None
+                    else None
+                ),
             )
         )
     return SuccessResponse[dto.AttemptListResponse](
@@ -515,8 +523,13 @@ def _resposta_export(
     ```
     """
     attempt_id = uuid.UUID(recibo.outcome_ref)  # type: ignore[attr-defined]
-    tentativa = repositorio.get_attempt(
-        control_principal_ref=principal_ref, schedule_id=schedule_id, attempt_id=attempt_id
+    tentativa, recibo_selo, etapa = OrchestrationQueryService(
+        repositorio
+    ).get_export_replay_context(
+        control_principal_ref=principal_ref,
+        schedule_id=schedule_id,
+        step_id=step_id,
+        attempt_id=attempt_id,
     )
     if tentativa is None or tentativa.step_id != step_id:
         # Mesma chave reutilizada para outro path: recusar em vez de
@@ -529,14 +542,8 @@ def _resposta_export(
             ),
             detail={"schedule_id": str(schedule_id), "step_id": str(step_id)},
         )
-    recibo_selo = repositorio.get_seal_receipt_by_attempt(
-        control_principal_ref=principal_ref, schedule_id=schedule_id, attempt_id=attempt_id
-    )
     if recibo_selo is None:  # pragma: no cover - toda tentativa tem recibo
         raise RuntimeError("tentativa sem recibo de selamento")
-    etapa = repositorio.get_step(
-        control_principal_ref=principal_ref, schedule_id=schedule_id, step_id=step_id
-    )
     if etapa is None:  # pragma: no cover - já validado acima
         raise RuntimeError("etapa desapareceu dentro da transação")
     if saida is not None:
@@ -575,7 +582,7 @@ def _resposta_export(
         step_id=step_id,
         attempt_id=attempt_id,
         attempt_number=tentativa.attempt_number,
-        receipt_id=recibo_selo.id,
+        receipt_id=recibo_selo.receipt_id,
         content_sha256=tentativa.content_sha256,
         sealed_at=recibo_selo.sealed_at,
         replayed=recibo.replayed,  # type: ignore[attr-defined]
@@ -602,19 +609,17 @@ def _resposta_import(
             message="command_key já usada para outra tentativa; use chave nova",
             detail={"attempt_id": str(attempt_id)},
         )
-    resultado = repositorio.get_handoff_result(
-        control_principal_ref=principal_ref, schedule_id=schedule_id, attempt_id=attempt_id
-    )
-    atribuicao = repositorio.get_handoff_attribution(
-        control_principal_ref=principal_ref, schedule_id=schedule_id, attempt_id=attempt_id
+    consultas = OrchestrationQueryService(repositorio)
+    resultado, atribuicao, etapa = consultas.get_attempt_outcome(
+        control_principal_ref=principal_ref,
+        schedule_id=schedule_id,
+        step_id=step_id,
+        attempt_id=attempt_id,
     )
     if resultado is None or atribuicao is None:  # pragma: no cover - criados juntos
         raise RuntimeError("veredito e atribuição precisam existir juntos")
-    tentativa = repositorio.get_attempt(
+    tentativa = consultas.get_attempt(
         control_principal_ref=principal_ref, schedule_id=schedule_id, attempt_id=attempt_id
-    )
-    etapa = repositorio.get_step(
-        control_principal_ref=principal_ref, schedule_id=schedule_id, step_id=step_id
     )
     if tentativa is None or etapa is None:  # pragma: no cover
         raise RuntimeError("tentativa ou etapa ausente dentro da transação")
@@ -827,37 +832,17 @@ def ler_governanca(
     """Nunca conteúdo bruto, credencial ou principal de controle."""
     principal_ref = str(principal.id)
     repositorio, _ = _contexto(session)
-    agenda = ScheduleService(repositorio).get_schedule(
+    governanca = OrchestrationQueryService(repositorio).read_governance(
         control_principal_ref=principal_ref, schedule_id=schedule_id
     )
     return SuccessResponse[dto.GovernanceView](
         data=dto.GovernanceView(
             schedule_id=schedule_id,
-            schedule_state=agenda.state,
-            delegations=tuple(
-                _delegation_view_from(d)
-                for d in repositorio.list_delegations(
-                    control_principal_ref=principal_ref, schedule_id=schedule_id
-                )
-            ),
-            control_events=tuple(
-                _control_event_view(e)
-                for e in repositorio.list_control_events(
-                    control_principal_ref=principal_ref, schedule_id=schedule_id
-                )
-            ),
-            observations=tuple(
-                _observation_view(o)
-                for o in repositorio.list_execution_observations(
-                    control_principal_ref=principal_ref, schedule_id=schedule_id
-                )
-            ),
-            audit_opinions=tuple(
-                _audit_view(p)
-                for p in repositorio.list_audit_opinions(
-                    control_principal_ref=principal_ref, schedule_id=schedule_id
-                )
-            ),
+            schedule_state=governanca.schedule_state,
+            delegations=tuple(_delegation_view_da_projecao(d) for d in governanca.delegations),
+            control_events=tuple(_control_event_da_projecao(e) for e in governanca.control_events),
+            observations=tuple(_observation_da_projecao(o) for o in governanca.observations),
+            audit_opinions=tuple(_audit_da_projecao(p) for p in governanca.audit_opinions),
         )
     )
 
@@ -1012,6 +997,66 @@ def _assert_every_route_is_protected() -> None:
         raise ImportError(
             "rota de orquestração sem require_orchestration_operate_access: " f"{desprotegidas}"
         )
+
+
+# --- projeções do OrchestrationQueryService -> DTO público ------------------
+#
+# Mapeadores PRÓPRIOS, e não reuso dos helpers acima: aqueles recebem a
+# linha ORM viva dentro da transação de escrita, e esta leitura recebe
+# dataclasses congeladas. Fundir os dois faria um só helper aceitar duas
+# formas diferentes por `getattr`, que é exatamente o padrão que a E4.6.2
+# reprovou.
+
+
+def _delegation_view_da_projecao(d: object) -> dto.DelegationView:
+    return dto.DelegationView(
+        delegation_id=d.delegation_id,  # type: ignore[attr-defined]
+        step_id=d.step_id,  # type: ignore[attr-defined]
+        content_sha256=d.content_sha256,  # type: ignore[attr-defined]
+        scope=d.scope,  # type: ignore[attr-defined]
+        state=d.state,  # type: ignore[attr-defined]
+        valid_until=d.valid_until,  # type: ignore[attr-defined]
+        consumed_at=d.consumed_at,  # type: ignore[attr-defined]
+        consumed_by_attempt_id=d.consumed_by_attempt_id,  # type: ignore[attr-defined]
+    )
+
+
+def _control_event_da_projecao(e: object) -> dto.ControlEventView:
+    return dto.ControlEventView(
+        event_id=e.event_id,  # type: ignore[attr-defined]
+        step_id=e.step_id,  # type: ignore[attr-defined]
+        event_kind=e.event_kind,  # type: ignore[attr-defined]
+        reason_code=e.reason_code,  # type: ignore[attr-defined]
+        stop_condition_category=e.stop_condition_category,  # type: ignore[attr-defined]
+        occurred_at=e.occurred_at,  # type: ignore[attr-defined]
+    )
+
+
+def _observation_da_projecao(o: object) -> dto.ObservationView:
+    return dto.ObservationView(
+        observation_id=o.observation_id,  # type: ignore[attr-defined]
+        step_id=o.step_id,  # type: ignore[attr-defined]
+        observation_kind=o.observation_kind,  # type: ignore[attr-defined]
+        previous_attempt_id=o.previous_attempt_id,  # type: ignore[attr-defined]
+        current_attempt_id=o.current_attempt_id,  # type: ignore[attr-defined]
+        previous_declared_provider_id=(
+            o.previous_declared_provider_id  # type: ignore[attr-defined]
+        ),
+        current_declared_provider_id=(o.current_declared_provider_id),  # type: ignore[attr-defined]
+        self_declared=o.self_declared,  # type: ignore[attr-defined]
+        observed_at=o.observed_at,  # type: ignore[attr-defined]
+    )
+
+
+def _audit_da_projecao(p: object) -> dto.AuditOpinionView:
+    return dto.AuditOpinionView(
+        opinion_id=p.opinion_id,  # type: ignore[attr-defined]
+        handoff_result_id=p.handoff_result_id,  # type: ignore[attr-defined]
+        opinion=p.opinion,  # type: ignore[attr-defined]
+        reason_codes=tuple(p.reason_codes),  # type: ignore[attr-defined]
+        auditor_execution_ref=p.auditor_execution_ref,  # type: ignore[attr-defined]
+        issued_at=p.issued_at,  # type: ignore[attr-defined]
+    )
 
 
 _assert_every_route_is_protected()

@@ -33,7 +33,11 @@ pytestmark = [
 _HASH = "a" * 64
 _OUTRO_HASH = "b" * 64
 
+# ATUALIZADO PELA E7.4-1: o recibo de execução referencia a Attempt
+# por FK composta e é append-only — cai PRIMEIRO e com o trigger
+# desabilitado, como as demais append-only desta lista.
 _APPEND_ONLY = (
+    "connection_execution_receipts",
     "audit_opinions",
     "execution_observations",
     "orchestration_control_events",
@@ -49,7 +53,14 @@ def _limpar() -> None:
             conexao.execute(sa.text(f"ALTER TABLE {tabela} DISABLE TRIGGER USER"))
             conexao.execute(sa.text(f"DELETE FROM {tabela}"))
             conexao.execute(sa.text(f"ALTER TABLE {tabela} ENABLE TRIGGER USER"))
-        for tabela in ("handoff_attempts", "schedule_steps", "schedules", "command_receipts"):
+        for tabela in (
+            "handoff_attempts",
+            "schedule_steps",
+            "schedules",
+            "command_receipts",
+            # O perfil manual só pode cair DEPOIS do recibo que o referencia.
+            "connection_profiles",
+        ):
             conexao.execute(sa.text(f"DELETE FROM {tabela}"))
 
 

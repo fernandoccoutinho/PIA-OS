@@ -87,6 +87,32 @@ _E6_PROGRAMMATIC_TABLES = (
     "programmatic_quota_buckets",
 )
 
+_E7_4_CONNECTION_TABLES = (
+    "connection_provider_families",
+    "connection_model_families",
+    "connection_model_releases",
+    "connection_access_providers",
+    "connection_profiles",
+    "connection_capability_snapshots",
+    "connection_entitlement_claims",
+    "connection_evaluation_evidence",
+    "connection_execution_receipts",
+)
+"""Tabelas do kernel de conexões, autorizadas pelo plano R3 da E7.4-0.
+
+Tupla **própria**, e não uma ampliação de `_E7_ORCHESTRATION_TABLES`:
+conexão e orquestração são domínios distintos, e fundir os censos faria
+o teste deixar de dizer qual entrega autorizou o quê.
+
+```text
+FAMÍLIA != RELEASE != PROVEDOR_DE_ACESSO != CONEXÃO
+KERNEL_DE_CONEXÕES != ORQUESTRAÇÃO
+```
+
+A proibição do requisito 20 (E4.4 não cria tabela) permanece literal e
+continua verificada à parte, logo abaixo.
+"""
+
 _E7_ORCHESTRATION_TABLES = (
     "schedules",
     "schedule_steps",
@@ -595,6 +621,7 @@ def test_pi13_no_new_table_and_no_new_migration():
         | set(_APPEND_ONLY_TABLES)
         | set(_E6_PROGRAMMATIC_TABLES)
         | set(_E7_ORCHESTRATION_TABLES)
+        | set(_E7_4_CONNECTION_TABLES)
         | {"alembic_version"}
     )
     assert tabelas == esperadas, f"tabela inesperada: {tabelas - esperadas}"

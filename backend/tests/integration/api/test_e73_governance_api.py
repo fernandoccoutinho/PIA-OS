@@ -17,6 +17,11 @@ import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
+from app.connections.repositories.connection_repository import ConnectionRepository
+from app.connections.services.connection_execution_receipt_service import (
+    ConnectionExecutionReceiptService,
+)
+from app.connections.services.connection_profile_service import ConnectionProfileService
 from app.database.engine import engine
 from app.database.health import check_database_health
 from app.database.session import SessionLocal
@@ -39,7 +44,11 @@ GATE_HUMANO = {
     "pia.gate.required": "service_delegation_and_human",
     "pia.gate.scope": "dispatch",
 }
+# ATUALIZADO PELA E7.4-1: o recibo de execução referencia a Attempt
+# por FK composta e é append-only — cai PRIMEIRO e com o trigger
+# desabilitado, como as demais append-only desta lista.
 _APPEND_ONLY = (
+    "connection_execution_receipts",
     "audit_opinions",
     "execution_observations",
     "orchestration_control_events",
@@ -63,6 +72,8 @@ def _limpar() -> None:
             "command_receipts",
             "programmatic_quota_buckets",
             "programmatic_service_principals",
+            # O perfil manual só pode cair DEPOIS do recibo que o referencia.
+            "connection_profiles",
         ):
             conexao.execute(sa.text(f"DELETE FROM {tabela}"))
 
@@ -745,6 +756,10 @@ def test_e73a28_o_consumo_revalida_o_hash_no_ponto_material(cliente) -> None:
             ManualTransport(),
             DenyAllHumanGate(),
             ControlService(repositorio),
+            connection_profiles=ConnectionProfileService(ConnectionRepository(uow.session)),
+            connection_receipts=ConnectionExecutionReceiptService(
+                ConnectionRepository(uow.session)
+            ),
         )
         autorizacao = servico.preflight(
             control_principal_ref=principal_ref,
@@ -821,6 +836,10 @@ def test_e73a28b_autorizacao_fabricada_pelo_chamador_e_recusada(cliente) -> None
             transporte,
             DenyAllHumanGate(),
             ControlService(repositorio),
+            connection_profiles=ConnectionProfileService(ConnectionRepository(uow.session)),
+            connection_receipts=ConnectionExecutionReceiptService(
+                ConnectionRepository(uow.session)
+            ),
         )
         forjada = DispatchAuthorized(
             content_sha256="a" * 64,
@@ -875,6 +894,10 @@ def test_e73a28c_autorizacao_legitima_serve_uma_unica_vez(cliente) -> None:
                 ManualTransport(),
                 DenyAllHumanGate(),
                 ControlService(repositorio),
+                connection_profiles=ConnectionProfileService(ConnectionRepository(uow.session)),
+                connection_receipts=ConnectionExecutionReceiptService(
+                    ConnectionRepository(uow.session)
+                ),
             )
 
         emissor = montar()
@@ -968,6 +991,10 @@ def test_e73a29_terminal_nao_alcanca_o_transporte(cliente, acao, categoria, esta
             transporte,
             DenyAllHumanGate(),
             ControlService(repositorio),
+            connection_profiles=ConnectionProfileService(ConnectionRepository(uow.session)),
+            connection_receipts=ConnectionExecutionReceiptService(
+                ConnectionRepository(uow.session)
+            ),
         )
         with pytest.raises(OrchestrationLifecycleViolationError) as capturado:
             servico.export_step(
@@ -1035,6 +1062,10 @@ def test_e73a30_pausado_nao_alcanca_o_transporte(cliente) -> None:
             transporte,
             DenyAllHumanGate(),
             ControlService(repositorio),
+            connection_profiles=ConnectionProfileService(ConnectionRepository(uow.session)),
+            connection_receipts=ConnectionExecutionReceiptService(
+                ConnectionRepository(uow.session)
+            ),
         )
         with pytest.raises(OrchestrationLifecycleViolationError) as capturado:
             servico.export_step(
@@ -1435,7 +1466,7 @@ def _estados_das_etapas() -> list[tuple[object, ...]]:
 # --- corretivo R1: propriedades do registro de autorização ------------------
 
 
-def _servico_de_export(repositorio):  # noqa: ANN001, ANN202
+def _servico_de_export(repositorio, sessao):  # noqa: ANN001, ANN202
     from app.orchestration.adapters.deny_all_human_gate import DenyAllHumanGate
     from app.orchestration.adapters.manual_transport import ManualTransport
     from app.orchestration.services.control_service import ControlService
@@ -1450,6 +1481,8 @@ def _servico_de_export(repositorio):  # noqa: ANN001, ANN202
         ManualTransport(),
         DenyAllHumanGate(),
         ControlService(repositorio),
+        connection_profiles=ConnectionProfileService(ConnectionRepository(sessao)),
+        connection_receipts=ConnectionExecutionReceiptService(ConnectionRepository(sessao)),
     )
 
 
@@ -1476,7 +1509,7 @@ def test_e73a42_a_autorizacao_e_identidade_opaca_nao_igualdade(cliente) -> None:
             sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
         ).scalar_one()
     with UnitOfWork() as uow:
-        servico = _servico_de_export(OrchestrationRepository(uow.session))
+        servico = _servico_de_export(OrchestrationRepository(uow.session), uow.session)
         legitima = servico.preflight(
             control_principal_ref=principal_ref,
             schedule_id=uuid.UUID(sid),
@@ -1527,7 +1560,7 @@ def test_e73a43_consumo_concorrente_permite_exatamente_um_despacho(cliente) -> N
         ).scalar_one()
 
     with UnitOfWork() as uow:
-        servico = _servico_de_export(OrchestrationRepository(uow.session))
+        servico = _servico_de_export(OrchestrationRepository(uow.session), uow.session)
         autorizacao = servico.preflight(
             control_principal_ref=principal_ref,
             schedule_id=uuid.UUID(sid),
@@ -1571,8 +1604,8 @@ def test_e73a44_instancia_nova_comeca_vazia_e_falha_fechada(cliente) -> None:
 
     with UnitOfWork() as uow:
         repositorio = OrchestrationRepository(uow.session)
-        primeiro = _servico_de_export(repositorio)
-        segundo = _servico_de_export(repositorio)
+        primeiro = _servico_de_export(repositorio, uow.session)
+        segundo = _servico_de_export(repositorio, uow.session)
         assert primeiro._autorizacoes_emitidas == {}
         assert segundo._autorizacoes_emitidas == {}
         assert primeiro._autorizacoes_emitidas is not segundo._autorizacoes_emitidas
@@ -1596,7 +1629,7 @@ def test_e73a45_autorizacoes_pendentes_tem_teto_explicito(cliente) -> None:
             sa.text("SELECT control_principal_ref FROM schedules WHERE id = :i"), {"i": sid}
         ).scalar_one()
     with UnitOfWork() as uow:
-        servico = _servico_de_export(OrchestrationRepository(uow.session))
+        servico = _servico_de_export(OrchestrationRepository(uow.session), uow.session)
         for _ in range(MAX_AUTORIZACOES_PENDENTES):
             servico.preflight(
                 control_principal_ref=principal_ref,

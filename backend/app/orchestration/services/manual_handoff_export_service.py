@@ -25,6 +25,11 @@ REJECTED_RESULT BLOCKS ADVANCE
 import uuid
 from dataclasses import dataclass
 
+from app.connections.services.connection_execution_receipt_service import (
+    ConnectionExecutionReceiptService,
+    manual_attribution,
+)
+from app.connections.services.connection_profile_service import ConnectionProfileService
 from app.orchestration.errors.exceptions import (
     DispatchBlockedError,
     OrchestrationLifecycleViolationError,
@@ -110,13 +115,32 @@ class ManualHandoffExportService:
         human_gate: GateAuthorizationPort | None = None,
         control_service: ControlService | None = None,
         schedule_service: ScheduleService | None = None,
+        *,
+        connection_profiles: ConnectionProfileService,
+        connection_receipts: ConnectionExecutionReceiptService,
     ) -> None:
+        """As duas dependências de conexão são OBRIGATÓRIAS.
+
+        ```text
+        NEW_MANUAL_ATTEMPT = EXACTLY_ONE_RECEIPT
+        NO_DEFAULT · NO_SILENT_FALLBACK
+        ```
+
+        Keyword-only e **sem** `= None`: um default faria "esqueci de
+        injetar" e "decidi não atribuir" ficarem indistinguíveis, e a
+        atribuição operacional viraria opcional na prática enquanto o
+        documento a chama de obrigatória. Uma raiz de composição que não
+        as forneça falha na construção, não em produção — e uma guarda
+        AST varre todo `app/` para que nenhuma escape por omissão.
+        """
         self._repository = repository
         self._handoff_service = handoff_service
         self._schedule_service = schedule_service or ScheduleService(repository)
         self._transport = transport
         self._human_gate = human_gate
         self._control_service = control_service
+        self._connection_profiles = connection_profiles
+        self._connection_receipts = connection_receipts
         self._autorizacoes_emitidas: dict[uuid.UUID, DispatchAuthorized] = {}
         """Autorizações emitidas por ESTA instância e ainda não usadas.
 
@@ -497,6 +521,34 @@ class ManualHandoffExportService:
             schedule_id=schedule_id,
             step_id=step_id,
             sealer_ref=sealer_ref,
+        )
+
+        # ```text
+        # 1 Attempt = 1 ConnectionExecutionReceipt
+        # PROFILE_DESCREVE_CONFIGURAÇÃO != RECIBO_DESCREVE_EXECUÇÃO
+        # ```
+        #
+        # Mesma unidade transacional da Attempt, do SealReceipt e do
+        # CommandReceipt: se a gravação do recibo falhar, o `rollback` do
+        # handler leva os quatro juntos, e não sobra Attempt sem
+        # atribuição. Escrever aqui, e não no router, é o que faz a
+        # garantia valer para todo chamador do serviço — inclusive os que
+        # ainda não existem.
+        #
+        # A gravação vem ANTES do transporte pela mesma razão de o
+        # consumo de delegação vir antes da Attempt: o efeito externo é o
+        # último passo, para que nada atravesse a fronteira sem que o
+        # registro interno já esteja de pé na transação.
+        perfil = self._connection_profiles.ensure_manual_profile(
+            control_principal_ref=control_principal_ref
+        )
+        self._connection_receipts.record_execution(
+            control_principal_ref=control_principal_ref,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            attempt_id=selado.attempt_id,
+            attribution=manual_attribution(connection_id=perfil.profile.connection_id),
+            observed_at=self._connection_receipts.database_now(),
         )
 
         envelope = EnvelopeContent(

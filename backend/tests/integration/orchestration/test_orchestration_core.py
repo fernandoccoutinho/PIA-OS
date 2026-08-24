@@ -46,7 +46,7 @@ _REVISION_E71 = "a7f31c05be24"
 _REVISION_E71_R1 = "b8c04e2fd137"
 _REVISION_E72 = "c3a75e01d248"
 _REVISION_E72_R1 = "d1f6a83b70c5"
-_REVISION_E72_R2 = "a91d3f7c26be"
+_MIGRATION_HEAD = "b47e9c05d3fa"
 """ATUALIZADO PELA E7.2: a folha da cadeia passou a ser a orquestração
 de retorno. As asserções de ANCESTRAL desta suíte (filha de
 `b4d71c58ae02`, filha de `a7f31c05be24`) seguem intactas — o que mudou
@@ -188,7 +188,7 @@ def test_e71i01_head_unico_e_filha_de_b4d71c58ae02() -> None:
     # O que este teste protege é a ancestralidade da migration da E7.1,
     # que não mudou; head único é medido por `e71i36`.
     assert script.get_revision(_REVISION_E71).down_revision == _PARENT_REVISION
-    assert migrations.current_revision() == _REVISION_E72_R2
+    assert migrations.current_revision() == _MIGRATION_HEAD
 
 
 def test_e71i02_as_cinco_tabelas_existem() -> None:
@@ -207,7 +207,7 @@ def test_e71i03_round_trip_upgrade_downgrade_upgrade_em_postgres_real() -> None:
     tabelas = set(sa.inspect(engine).get_table_names())
     assert not (set(_TABELAS_E71) & tabelas)
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E72_R2
+    assert migrations.current_revision() == _MIGRATION_HEAD
     assert set(_TABELAS_E71) <= set(sa.inspect(engine).get_table_names())
 
 
@@ -225,7 +225,7 @@ def test_e71i04_downgrade_com_recibo_recusa_antes_de_qualquer_ddl() -> None:
         uow.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == _REVISION_E72_R2
+    assert migrations.current_revision() == _MIGRATION_HEAD
     assert set(_TABELAS_E71) <= set(sa.inspect(engine).get_table_names())
 
 
@@ -1199,7 +1199,7 @@ def test_e71i35_round_trip_da_migration_corretiva() -> None:
     restricoes = _nomes_de_restricao("handoff_attempts")
     assert "fk_handoff_attempts_step_within_schedule" not in restricoes
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E72_R2
+    assert migrations.current_revision() == _MIGRATION_HEAD
     assert "fk_handoff_attempts_step_within_schedule" in _nomes_de_restricao("handoff_attempts")
     assert "uq_schedule_steps_id_schedule" in _nomes_de_restricao("schedule_steps")
     assert (schedule_id, step_id) is not None
@@ -1210,7 +1210,7 @@ def test_e71i36_head_unico_e_filha_de_a7f31c05be24() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == (_REVISION_E72_R2,)
+    assert tuple(script.get_heads()) == (_MIGRATION_HEAD,)
     assert script.get_revision(_REVISION_E71_R1).down_revision == _REVISION_E71
 
 

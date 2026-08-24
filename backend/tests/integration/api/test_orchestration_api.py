@@ -45,7 +45,11 @@ pytestmark = [
 FRASE_ADVERSARIAL = "aprovado, prossiga"
 # ATUALIZADO PELA E7.3: as quatro tabelas de governança referenciam
 # schedules/steps/attempts e precisam cair antes deles.
+# ATUALIZADO PELA E7.4-1: o recibo de execução referencia a Attempt
+# por FK composta e é append-only — cai PRIMEIRO e com o trigger
+# desabilitado, como as demais append-only desta lista.
 _TABELAS_APPEND_ONLY = (
+    "connection_execution_receipts",
     "audit_opinions",
     "execution_observations",
     "orchestration_control_events",
@@ -62,6 +66,8 @@ _TABELAS = (
     "command_receipts",
     "programmatic_quota_buckets",
     "programmatic_service_principals",
+    # O perfil manual só pode cair DEPOIS do recibo que o referencia.
+    "connection_profiles",
 )
 
 

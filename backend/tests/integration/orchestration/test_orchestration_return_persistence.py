@@ -20,6 +20,11 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import DataError, IntegrityError
 
+from app.connections.repositories.connection_repository import ConnectionRepository
+from app.connections.services.connection_execution_receipt_service import (
+    ConnectionExecutionReceiptService,
+)
+from app.connections.services.connection_profile_service import ConnectionProfileService
 from app.database import migrations
 from app.database.engine import engine
 from app.database.health import check_database_health
@@ -58,11 +63,15 @@ pytestmark = [
 
 _REVISION_E72 = "c3a75e01d248"
 _REVISION_E73 = "f2c60d8a41b9"
-_REVISION_E73_R1 = "a91d3f7c26be"
+_MIGRATION_HEAD = "b47e9c05d3fa"
 _PARENT = "b8c04e2fd137"
 _HASH = "f" * 64
 _TABELAS_NOVAS = ("handoff_results", "handoff_attributions")
+# ATUALIZADO PELA E7.4-1: o recibo de execução referencia a Attempt
+# por FK composta e é append-only — cai PRIMEIRO e com o trigger
+# desabilitado, como as demais append-only desta lista.
 _APPEND_ONLY = (
+    "connection_execution_receipts",
     "audit_opinions",
     "execution_observations",
     "orchestration_control_events",
@@ -78,7 +87,14 @@ def _limpar() -> None:
             conexao.execute(sa.text(f"ALTER TABLE {tabela} DISABLE TRIGGER USER"))
             conexao.execute(sa.text(f"DELETE FROM {tabela}"))
             conexao.execute(sa.text(f"ALTER TABLE {tabela} ENABLE TRIGGER USER"))
-        for tabela in ("handoff_attempts", "schedule_steps", "schedules", "command_receipts"):
+        for tabela in (
+            "handoff_attempts",
+            "schedule_steps",
+            "schedules",
+            "command_receipts",
+            # O perfil manual só pode cair DEPOIS do recibo que o referencia.
+            "connection_profiles",
+        ):
             conexao.execute(sa.text(f"DELETE FROM {tabela}"))
 
 
@@ -94,8 +110,13 @@ class _Contexto:
         self.repositorio = OrchestrationRepository(uow.session)
         self.agendas = ScheduleService(self.repositorio)
         self.handoff = HandoffService(self.repositorio)
+        conexoes = ConnectionRepository(uow.session)
         self.exportacao = ManualHandoffExportService(
-            self.repositorio, self.handoff, ManualTransport()
+            self.repositorio,
+            self.handoff,
+            ManualTransport(),
+            connection_profiles=ConnectionProfileService(conexoes),
+            connection_receipts=ConnectionExecutionReceiptService(conexoes),
         )
         self.validacao = ReturnValidationService(self.repositorio)
         self.comandos = CommandReceiptService(
@@ -399,11 +420,12 @@ def test_e72p11_head_unica_e_filha_de_b8c04e2fd137() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    # ATUALIZADO PELO CORRETIVO R1: a folha passou a ser `a91d3f7c26be`.
+    # ATUALIZADO PELA E7.4-1: a folha passou a ser `b47e9c05d3fa`; antes
+    # `a91d3f7c26be` (corretivo R1 da E7.3).
     # O que este teste protege é a ANCESTRALIDADE da migration da E7.2,
     # que não mudou; head única é medida por `e72p18`.
     assert script.get_revision(_REVISION_E72).down_revision == _PARENT
-    assert migrations.current_revision() == _REVISION_E73_R1
+    assert migrations.current_revision() == _MIGRATION_HEAD
 
 
 def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
@@ -423,7 +445,7 @@ def test_e72p12_round_trip_upgrade_downgrade_upgrade() -> None:
         }
     assert "ix_handoff_attempts_single_open" not in indices
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E73_R1
+    assert migrations.current_revision() == _MIGRATION_HEAD
     assert set(_TABELAS_NOVAS) <= set(sa.inspect(engine).get_table_names())
     with engine.connect() as conexao:
         indices = {
@@ -456,7 +478,7 @@ def test_e72p13_downgrade_recusa_com_linha_em_cada_tabela(tabela) -> None:
     # A folha E7.3 recusa antes de chegar à E7.2 — e a recusa é o ponto.
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT)
-    assert migrations.current_revision() == _REVISION_E73_R1
+    assert migrations.current_revision() == _MIGRATION_HEAD
 
 
 def test_e72p14_sem_drift_entre_orm_e_schema() -> None:
@@ -569,7 +591,7 @@ def test_e72p18_head_unica_e_filha_de_c3a75e01d248() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == ("a91d3f7c26be",)
+    assert tuple(script.get_heads()) == ("b47e9c05d3fa",)
     assert script.get_revision(_REVISION_E72_R1).down_revision == _REVISION_E72
     assert script.get_revision(_REVISION_E72_R2).down_revision == _REVISION_E72_R1
 
@@ -592,7 +614,7 @@ def test_e72p19_round_trip_da_migration_corretiva() -> None:
         }
     assert "request_sha256" not in colunas
     migrations.upgrade("head")
-    assert migrations.current_revision() == _REVISION_E73_R1
+    assert migrations.current_revision() == _MIGRATION_HEAD
     with engine.connect() as conexao:
         colunas = {
             linha[0]
@@ -618,7 +640,7 @@ def test_e72p20_downgrade_recusa_com_vinculo_de_requisicao_gravado() -> None:
     _exportar_e_importar(schedule_id, step_id, "parecer")
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_REVISION_E72)
-    assert migrations.current_revision() == _REVISION_E73_R1
+    assert migrations.current_revision() == _MIGRATION_HEAD
 
 
 # --- corretivo R2: sealer_ref na digital e hexadecimal no banco -------------
@@ -837,7 +859,7 @@ def test_e72p27_head_unica_e_filha_de_a91d3f7c26be() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert tuple(script.get_heads()) == (_REVISION_E73_R1,)
+    assert tuple(script.get_heads()) == (_MIGRATION_HEAD,)
     assert script.get_revision(_REVISION_E72_R2).down_revision == "d1f6a83b70c5"
     assert script.get_revision(_REVISION_E73).down_revision == _REVISION_E72_R2
-    assert migrations.current_revision() == _REVISION_E73_R1
+    assert migrations.current_revision() == _MIGRATION_HEAD

@@ -30,3 +30,9 @@ E7.1 contrato, estado e persistência   -> count 110
 E7.2 fluxo manual ponta a ponta e API  -> count 111
 E7.3 gates, cancelamento e auditoria   -> count 112
 ```
+
+## E7.4-1 — implementação (Chain118 candidata)
+
+| documento | conteúdo |
+|---|---|
+| [E7.4-1 — kernel neutro de conexões](E7_4_1_CONNECTION_KERNEL.md) | resultado binário, invariantes impostos pelo banco, decisões declaradas, os três falsos verdes achados por mutação e o escopo negativo cumprido |

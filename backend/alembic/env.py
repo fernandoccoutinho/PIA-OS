@@ -11,6 +11,7 @@ from sqlalchemy import engine_from_config, pool
 # `app.cognitive` (E3.2+) e de outros domínios devem seguir o mesmo
 # padrão: importar aqui para participar do autogenerate.
 import app.cognitive.models  # noqa: F401,E402
+import app.connections.models  # noqa: F401,E402
 import app.memory.models  # noqa: F401,E402
 import app.models.programmatic_service_principal  # noqa: F401,E402
 import app.orchestration.models  # noqa: F401,E402
