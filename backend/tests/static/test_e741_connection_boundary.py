@@ -29,6 +29,7 @@ de passar por ela.
 import ast
 import io
 import pathlib
+import re
 import tokenize
 
 import pytest
@@ -600,30 +601,59 @@ def test_e741s15_familia_release_provedor_e_conexao_nao_colapsam() -> None:
     assert "valid_until" in CapabilitySnapshot.__table__.columns
 
 
-def _ignores_attr_defined(caminho: pathlib.Path) -> list[tuple[int, str]]:
-    """Comentários `type: ignore[attr-defined]` REAIS, por tokenização.
+def _type_ignores(caminho: pathlib.Path) -> list[tuple[int, str, str]]:
+    """TODO comentário `type: ignore` do mypy — qualificado **ou amplo**.
+
+    Devolve `(linha, código, texto)`; o código é o que está entre
+    colchetes, ou `<amplo>` quando não há colchetes.
 
     ```text
-    HEURISTICA_DE_LINHA = GUARDA_CONTORNÁVEL
+    TOKENIZATION = CORRECT
+    IGNORE_POLICY = INCOMPLETE   <- o defeito R4-C1
     ```
 
-    ACHADO C1 DA AUDITORIA DA CHAIN120. A versão anterior filtrava linhas
-    que contivessem crase, para não contar as menções em docstring. A
-    heurística era contornável de forma trivial: um ignore novo seguido
-    de `# \N{GRAVE ACCENT}qualquer coisa\N{GRAVE ACCENT}` atravessava a
-    guarda. Reproduzido adversarialmente antes de corrigido.
+    ACHADO C1 DA AUDITORIA DA CHAIN121. A versão do R3 tokenizava
+    corretamente e procurava o literal `type: ignore[attr-defined]`. Um
+    `# type: ignore` **amplo** — que é mais permissivo, porque silencia
+    toda categoria de erro e não só `attr-defined` — atravessava o
+    detector. Tokenizar certo e procurar a coisa errada continua sendo
+    procurar a coisa errada.
+
+    A expressão regular admite espaço variável (`type:ignore`,
+    `type:  ignore`) porque o mypy admite; casar só a forma canônica
+    reabriria a mesma porta com outra grafia.
 
     `tokenize` distingue COMMENT de STRING no nível do lexer, então
     menção em docstring não é comentário e não entra — sem depender de
-    nenhuma convenção de escrita.
+    nenhuma convenção de escrita. Essa parte, herdada do corretivo R3,
+    permanece correta: o defeito era a política, não a tokenização.
     """
     fonte = caminho.read_text(encoding="utf-8")
-    achados: list[tuple[int, str]] = []
+    achados: list[tuple[int, str, str]] = []
     with io.StringIO(fonte) as fluxo:
         for token in tokenize.generate_tokens(fluxo.readline):
-            if token.type is tokenize.COMMENT and "type: ignore[attr-defined]" in token.string:
-                achados.append((token.start[0], token.string.strip()))
+            if token.type is not tokenize.COMMENT:
+                continue
+            if not re.search(r"type:\s*ignore", token.string):
+                continue
+            qualificado = re.search(r"type:\s*ignore\[([^\]]+)\]", token.string)
+            codigo = qualificado.group(1) if qualificado else "<amplo>"
+            achados.append((token.start[0], codigo, token.string.strip()))
     return achados
+
+
+def _funcao_proprietaria(caminho: pathlib.Path, linha: int) -> str:
+    """Função que CONTÉM a linha — a mais interna, quando há aninhamento."""
+    arvore = _arvore(caminho)
+    candidatas = [
+        no
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.FunctionDef | ast.AsyncFunctionDef)
+        and no.lineno <= linha <= (no.end_lineno or no.lineno)
+    ]
+    if not candidatas:
+        return "<módulo>"
+    return min(candidatas, key=lambda f: (f.end_lineno or f.lineno) - f.lineno).name
 
 
 # --- corretivo R1: fronteiras tipadas, não silenciadas ---------------------
@@ -656,10 +686,16 @@ tipá-los é ampliação que esta auditoria não pediu. O que a guarda impede
 
 
 def test_e741s16_fronteiras_novas_nao_silenciam_acesso_a_campo() -> None:
-    """Nenhum `type: ignore[attr-defined]` nas fronteiras tipadas."""
+    """`TYPE_IGNORE = ZERO` nas fronteiras tipadas.
+
+    CORRETIVO R4: a política deixou de ser "nenhum `attr-defined`" e
+    passou a ser "**nenhum** `type: ignore`, qualificado ou amplo". Um
+    ignore amplo é mais permissivo que o qualificado, e permitir o mais
+    permissivo enquanto se proíbe o menos era o defeito R4-C1.
+    """
     for arquivo in FRONTEIRAS_TIPADAS:
-        culpadas = _ignores_attr_defined(arquivo)
-        assert not culpadas, f"{arquivo.relative_to(BACKEND)} silencia acesso a campo: {culpadas}"
+        culpadas = _type_ignores(arquivo)
+        assert not culpadas, f"TYPE_IGNORE != ZERO em {arquivo.relative_to(BACKEND)}: {culpadas}"
 
 
 def test_e741s17_os_helpers_do_servico_de_consulta_recebem_tipo_concreto() -> None:
@@ -740,12 +776,50 @@ def test_e741s19_os_mapeadores_do_router_nao_silenciam_acesso_a_campo() -> None:
     deliberado — a guarda mede as funções que o commit converteu, não o
     arquivo inteiro.
     """
-    todos = _ignores_attr_defined(ROUTER_ORQUESTRACAO)
+    todos = _type_ignores(ROUTER_ORQUESTRACAO)
     for nome in MAPEADORES_TIPADOS_DO_ROUTER:
         funcao = _funcao_do_router(nome)
         fim = funcao.end_lineno or funcao.lineno
-        culpadas = [(n, txt) for n, txt in todos if funcao.lineno <= n <= fim]
+        culpadas = [(n, cod, txt) for n, cod, txt in todos if funcao.lineno <= n <= fim]
         assert not culpadas, f"{nome} silencia acesso a campo: {culpadas}"
+
+
+INVENTARIO_AUTORIZADO_DO_ROUTER: dict[tuple[str, str], int] = {
+    ("_assert_every_route_is_protected", "attr-defined"): 1,
+    ("_audit_view", "attr-defined"): 6,
+    ("_control_event_view", "attr-defined"): 6,
+    ("_delegation_view_from", "attr-defined"): 8,
+    ("_observation_view", "attr-defined"): 9,
+    ("_resposta_export", "attr-defined"): 3,
+    ("_resposta_import", "attr-defined"): 2,
+    ("_schedule_view", "attr-defined"): 5,
+    ("_step_view", "attr-defined"): 8,
+}
+"""Inventário ESTRUTURAL dos 48 ignores históricos: função, código, quantidade.
+
+```text
+CONTAGEM_GLOBAL = INVENTÁRIO_FRACO
+```
+
+ACHADO C1 DA AUDITORIA DA CHAIN121, segundo facet. `s20` congelava
+apenas o total `48`. Remover um ignore histórico de um helper e
+introduzir outro em local novo mantinha o total e atravessava a guarda —
+a soma é invariante sob troca, e trocar era exatamente o ataque.
+
+O inventário prende **onde** e **de que tipo**, não quanto. Cada helper
+listado recebe linha ORM viva dentro da transação de escrita, e é por
+isso que os seus ignores são legítimos; um ignore em qualquer outra
+função não é histórico, é novo.
+"""
+
+
+def _divergentes(inventario: dict[tuple[str, str], int]) -> list[tuple[str, str]]:
+    """Chaves cuja quantidade difere do autorizado."""
+    return [
+        chave
+        for chave, quantidade in inventario.items()
+        if INVENTARIO_AUTORIZADO_DO_ROUTER.get(chave) != quantidade
+    ]
 
 
 def test_e741s20_o_router_conserva_apenas_os_ignores_historicos() -> None:
@@ -769,10 +843,20 @@ def test_e741s20_o_router_conserva_apenas_os_ignores_historicos() -> None:
     GUARD_PASSED != PROPERTY_PROVED
     ```
     """
-    ignores = _ignores_attr_defined(ROUTER_ORQUESTRACAO)
-    assert len(ignores) == 48, (
-        f"HISTORICAL_ROUTER_ATTR_DEFINED mudou de 48 para {len(ignores)}; "
-        "se foi ampliação deliberada, atualize este número e declare no handoff"
+    inventario: dict[tuple[str, str], int] = {}
+    for linha, codigo, _ in _type_ignores(ROUTER_ORQUESTRACAO):
+        chave = (_funcao_proprietaria(ROUTER_ORQUESTRACAO, linha), codigo)
+        inventario[chave] = inventario.get(chave, 0) + 1
+
+    assert inventario == INVENTARIO_AUTORIZADO_DO_ROUTER, (
+        "o inventário de ignores do router divergiu do autorizado.\n"
+        f"  sobram: {sorted(set(inventario) - set(INVENTARIO_AUTORIZADO_DO_ROUTER))}\n"
+        f"  faltam: {sorted(set(INVENTARIO_AUTORIZADO_DO_ROUTER) - set(inventario))}\n"
+        f"  quantidade divergente: {sorted(_divergentes(inventario))}"
+    )
+    assert sum(inventario.values()) == 48, (
+        f"HISTORICAL_ROUTER_ATTR_DEFINED mudou de 48 para {sum(inventario.values())}; "
+        "se foi ampliação deliberada, atualize o inventário E declare no handoff"
     )
 
 
@@ -813,16 +897,29 @@ def test_e741s21_a_documentacao_do_recibo_descreve_a_fk_real() -> None:
         "connection_method",
     ], f"a FK mudou para {colunas}; atualize a documentação E esta guarda"
 
+    # Representação CANÔNICA derivada do metadata, não escrita à mão.
+    #
+    # ```text
+    # PALAVRA_PRESENTE != DESCRIÇÃO_CORRETA
+    # ```
+    #
+    # ACHADO C2 DA AUDITORIA DA CHAIN121. A versão do R3 exigia apenas
+    # que a palavra `connection_method` aparecesse em algum lugar e que a
+    # tupla binária não aparecesse. Uma descrição com coluna inventada
+    # passava, porque a palavra verdadeira estava em outro parágrafo.
+    canonica = "(" + ", ".join(colunas) + ")"
     documentos = (
         APP / "connections" / "models" / "connection_execution_receipt.py",
         BACKEND / "docs" / "entregas" / "entrega-7" / "E7_4_1_CONNECTION_KERNEL.md",
     )
+    padrao = re.compile(r"\(connection_id,\s*control_principal_ref[^)]*\)")
     for documento in documentos:
-        texto = documento.read_text(encoding="utf-8")
+        normalizado = " ".join(documento.read_text(encoding="utf-8").split())
+        assert canonica in normalizado, (
+            f"{documento.name} não contém a representação canônica `{canonica}`; "
+            "a descrição do vínculo precisa listar as três colunas, na ordem do schema"
+        )
+        divergentes = {t for t in padrao.findall(normalizado) if t != canonica}
         assert (
-            "connection_method" in texto
-        ), f"{documento.name} não menciona connection_method na descrição do vínculo"
-        # A forma BINÁRIA não pode aparecer descrevendo o vínculo ao perfil.
-        assert (
-            "(connection_id, control_principal_ref)" not in texto
-        ), f"{documento.name} ainda descreve a FK binária, que não existe mais"
+            not divergentes
+        ), f"{documento.name} descreve o vínculo de outra forma: {sorted(divergentes)}"

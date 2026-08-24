@@ -277,6 +277,55 @@ MUTANTES: tuple[Mutante, ...] = (
         ),
         descricao="ignore novo com crase — a heurística de linha era contornável",
     ),
+    Mutante(
+        nome="M-BROAD-IGNORE",
+        arquivo="app/orchestration/services/orchestration_query_service.py",
+        alvo="def _projetar_selo(selo: SealReceipt) -> SealReceiptProjection:",
+        troca=(
+            "def _fronteira_ampla(x: object) -> str:\n"
+            "    return x.campo_inexistente  # type: ignore\n"
+            "\n"
+            "\n"
+            "def _projetar_selo(selo: SealReceipt) -> SealReceiptProjection:"
+        ),
+        testes=(
+            "tests/static/test_e741_connection_boundary.py"
+            "::test_e741s16_fronteiras_novas_nao_silenciam_acesso_a_campo",
+        ),
+        descricao="`# type: ignore` amplo numa fronteira tipada",
+    ),
+    Mutante(
+        nome="M-SWAP-IGNORE",
+        arquivo="app/routers/orchestration.py",
+        alvo=("        issued_at=parecer.issued_at,  # type: ignore[attr-defined]\n" "    )\n"),
+        troca=(
+            "        issued_at=parecer.issued_at,\n"
+            "    )\n"
+            "\n"
+            "\n"
+            "def _funcao_nao_autorizada(x: object) -> str:\n"
+            "    return x.campo  # type: ignore[attr-defined]\n"
+        ),
+        testes=(
+            "tests/static/test_e741_connection_boundary.py"
+            "::test_e741s20_o_router_conserva_apenas_os_ignores_historicos",
+        ),
+        descricao=(
+            "TRANSFERÊNCIA: -1 attr-defined em _audit_view, +1 em função "
+            "não autorizada; total 48 preservado"
+        ),
+    ),
+    Mutante(
+        nome="M-DOC-FK",
+        arquivo="docs/entregas/entrega-7/E7_4_1_CONNECTION_KERNEL.md",
+        alvo="FK (connection_id, control_principal_ref, connection_method)",
+        troca="FK (connection_id, control_principal_ref, wrong_method)",
+        testes=(
+            "tests/static/test_e741_connection_boundary.py"
+            "::test_e741s21_a_documentacao_do_recibo_descreve_a_fk_real",
+        ),
+        descricao="documento descreve coluna incorreta com a palavra certa noutro parágrafo",
+    ),
 )
 
 
