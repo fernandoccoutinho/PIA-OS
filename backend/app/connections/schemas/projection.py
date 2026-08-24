@@ -127,9 +127,44 @@ class ConnectionExecutionReceiptView:
     observed_at: datetime
 
     def __post_init__(self) -> None:
+        """Os DOIS invariantes, e não só a bicondicional.
+
+        ```text
+        attested       <=> observed_model IS NOT NULL
+        manual_handoff  => provider/requested/observed NULL, atestação unknown
+        ```
+
+        ACHADO R1 DA AUDITORIA DA CHAIN119. O corretivo R1 declarou, no
+        handoff e na matriz, que os mesmos invariantes tinham entrado em
+        `ExecutionAttribution` **e** aqui. Só entraram no primeiro: a
+        edição do segundo foi feita com um `str.replace` que não casou e
+        falhou em **silêncio**, e a prova `p15` exercitava apenas o outro
+        construtor.
+
+        ```text
+        SILENT_EDIT = UNAPPLIED_EDIT
+        UM CONSTRUTOR PÚBLICO PROVADO != TODOS OS CONSTRUTORES PÚBLICOS
+        ```
+
+        Esta view é construtível diretamente por qualquer chamador — é
+        um segundo caminho público para a mesma atribuição, e um
+        invariante que existe só no primeiro é contornado pelo segundo.
+        """
         atestado = self.model_attestation_level is ModelAttestationLevel.ATTESTED
         if atestado != (self.observed_model is not None):
             raise ValueError("atestação `attested` exige observed_model não nulo, e vice-versa")
+        if self.connection_method is ConnectionMethod.MANUAL_HANDOFF and any(
+            (
+                self.access_provider is not None,
+                self.requested_model is not None,
+                self.observed_model is not None,
+                self.model_attestation_level is not ModelAttestationLevel.UNKNOWN,
+            )
+        ):
+            raise ValueError(
+                "repasse manual não tem operador, modelo solicitado, modelo observado "
+                "nem atestação diferente de `unknown`"
+            )
 
 
 @dataclass(frozen=True)

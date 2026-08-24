@@ -661,3 +661,92 @@ def test_e741s17_os_helpers_do_servico_de_consulta_recebem_tipo_concreto() -> No
             assert not (
                 isinstance(anotacao, ast.Name) and anotacao.id == "object"
             ), f"{funcao.name}: parâmetro `object` reabre a fronteira silenciada"
+
+
+# --- corretivo R2: os quatro mapeadores tipados do router ------------------
+
+MAPEADORES_TIPADOS_DO_ROUTER: dict[str, str] = {
+    "_delegation_view_da_projecao": "DelegationProjection",
+    "_control_event_da_projecao": "ControlEventProjection",
+    "_observation_da_projecao": "ObservationProjection",
+    "_audit_da_projecao": "AuditOpinionProjection",
+    "_result_view": "ResultProjection",
+    "_attribution_view": "AttributionProjection",
+}
+"""Os mapeadores que a Chain118 passou a alimentar com projeções congeladas.
+
+```text
+ARQUIVO_EXCLUÍDO_DA_GUARDA != FUNÇÃO_EXCLUÍDA_DA_GUARDA
+```
+
+ACHADO R2 DA AUDITORIA DA CHAIN119. `s16` exclui o router inteiro —
+correto, porque ele conserva 48 ignores históricos em helpers que recebem
+linha ORM viva. Mas a exclusão do **arquivo** deixou estas seis funções
+sem proteção nenhuma: alguém poderia rebaixar um parâmetro para `object`
+e reintroduzir `attr-defined` sem que guarda alguma reprovasse.
+
+A implementação estava certa; a proteção permanente é que estava
+incompleta. A guarda passa a ser por **função**, não por arquivo.
+"""
+
+
+def _funcao_do_router(nome: str) -> ast.FunctionDef:
+    for no in ast.walk(_arvore(ROUTER_ORQUESTRACAO)):
+        if isinstance(no, ast.FunctionDef) and no.name == nome:
+            return no
+    raise AssertionError(f"{nome} não existe em {ROUTER_ORQUESTRACAO.name}")
+
+
+def test_e741s18_os_mapeadores_do_router_tem_tipo_concreto_exato() -> None:
+    """Tipo **exato**, não apenas "não é `object`".
+
+    Uma anotação qualquer satisfaria uma guarda que só recusasse
+    `object`; exigir o nome da projeção correspondente é o que impede
+    trocar o tipo por outro e continuar passando.
+    """
+    for nome, esperado in MAPEADORES_TIPADOS_DO_ROUTER.items():
+        funcao = _funcao_do_router(nome)
+        assert len(funcao.args.args) == 1, f"{nome}: assinatura mudou"
+        anotacao = funcao.args.args[0].annotation
+        assert isinstance(anotacao, ast.Name), f"{nome}: anotação ausente ou não simples"
+        assert anotacao.id == esperado, f"{nome}: esperado `{esperado}`, encontrado `{anotacao.id}`"
+
+
+def test_e741s19_os_mapeadores_do_router_nao_silenciam_acesso_a_campo() -> None:
+    """Nenhum `attr-defined` no CORPO destas seis funções.
+
+    O restante do router segue com os seus ignores históricos, e isso é
+    deliberado — a guarda mede as funções que o commit converteu, não o
+    arquivo inteiro.
+    """
+    fonte = ROUTER_ORQUESTRACAO.read_text(encoding="utf-8").splitlines()
+    for nome in MAPEADORES_TIPADOS_DO_ROUTER:
+        funcao = _funcao_do_router(nome)
+        fim = funcao.end_lineno or funcao.lineno
+        corpo = fonte[funcao.lineno - 1 : fim]
+        culpadas = [
+            (funcao.lineno + i, ln.strip())
+            for i, ln in enumerate(corpo)
+            if "type: ignore[attr-defined]" in ln
+        ]
+        assert not culpadas, f"{nome} silencia acesso a campo: {culpadas}"
+
+
+def test_e741s20_o_router_conserva_apenas_os_ignores_historicos() -> None:
+    """Contagem declarada, não "zero global".
+
+    ```text
+    NEW_ATTR_DEFINED_IN_TYPED_BOUNDARIES = 0
+    HISTORICAL_ROUTER_ATTR_DEFINED       = 48
+    ```
+
+    A guarda prende o número: se subir, alguém reintroduziu silêncio no
+    router; se cair, alguém tipou helpers históricos sem declarar a
+    ampliação. Os dois merecem revisão, e nenhum deve passar calado.
+    """
+    fonte = ROUTER_ORQUESTRACAO.read_text(encoding="utf-8").splitlines()
+    ignores = [ln for ln in fonte if "type: ignore[attr-defined]" in ln and "`" not in ln]
+    assert len(ignores) == 48, (
+        f"HISTORICAL_ROUTER_ATTR_DEFINED mudou de 48 para {len(ignores)}; "
+        "se foi ampliação deliberada, atualize este número e declare no handoff"
+    )

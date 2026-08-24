@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.connections.models.enums import ModelAttestationLevel
+from app.connections.models.enums import ConnectionMethod, ModelAttestationLevel
 from app.connections.schemas.projection import (
     CapabilityView,
     ConnectionExecutionReceiptView,
@@ -112,3 +112,91 @@ def test_e741u03_atribuicao_manual_nao_tem_operador_nem_modelo() -> None:
             observed_model=None,
             model_attestation_level=ModelAttestationLevel.UNKNOWN,
         )
+
+
+# --- corretivo R2: a verdade do manual no SEGUNDO construtor público -------
+
+
+def _receipt_view_kwargs(**overrides: object) -> dict[str, object]:
+    """Kwargs de um recibo manual honesto, com sobreposições pontuais."""
+    base: dict[str, object] = {
+        "receipt_id": uuid.uuid4(),
+        "attempt_id": uuid.uuid4(),
+        "step_id": uuid.uuid4(),
+        "schedule_id": uuid.uuid4(),
+        "connection_id": uuid.uuid4(),
+        "connection_method": ConnectionMethod.MANUAL_HANDOFF,
+        "access_provider": None,
+        "requested_model": None,
+        "observed_model": None,
+        "model_attestation_level": ModelAttestationLevel.UNKNOWN,
+        "observed_at": _AGORA,
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.parametrize(
+    ("violacao", "kwargs"),
+    [
+        ("operador", {"access_provider": "openai"}),
+        ("modelo solicitado", {"requested_model": "gpt-4"}),
+        (
+            "modelo observado",
+            {"observed_model": "gpt-4", "model_attestation_level": ModelAttestationLevel.ATTESTED},
+        ),
+        (
+            "atestação",
+            {"model_attestation_level": ModelAttestationLevel.SELF_DECLARED},
+        ),
+    ],
+)
+def test_e741u04_a_view_do_recibo_recusa_manual_falso(violacao, kwargs) -> None:  # noqa: ANN001
+    """Achado R1 da auditoria da Chain119 — as QUATRO violações.
+
+    ```text
+    manual_handoff => access_provider IS NULL
+                      requested_model IS NULL
+                      observed_model  IS NULL
+                      atestação       = unknown
+    ```
+
+    `ConnectionExecutionReceiptView` é um **segundo construtor público**
+    para a mesma atribuição. O corretivo R1 declarou o invariante aqui e
+    não o aplicou; `p15` exercitava só `ExecutionAttribution` e passou
+    sem provar este caminho.
+
+    ```text
+    UM CONSTRUTOR PÚBLICO PROVADO != TODOS OS CONSTRUTORES PÚBLICOS
+    ```
+
+    O caso de `observed_model` carrega atestação coerente de propósito:
+    sem isso a recusa viria da bicondicional, e a prova mediria a guarda
+    errada — o defeito recorrente desta entrega.
+    """
+    with pytest.raises(ValueError, match="repasse manual"):
+        ConnectionExecutionReceiptView(**_receipt_view_kwargs(**kwargs))  # type: ignore[arg-type]
+
+
+def test_e741u05_a_view_aceita_o_manual_honesto_e_o_nao_manual_atestado() -> None:
+    """Não-vacuidade nos dois sentidos.
+
+    Sem isto, a prova acima não distinguiria "recusa o manual falso" de
+    "recusa tudo que é manual".
+    """
+    honesto = ConnectionExecutionReceiptView(**_receipt_view_kwargs())  # type: ignore[arg-type]
+    assert honesto.observed_model is None
+    assert honesto.model_attestation_level is ModelAttestationLevel.UNKNOWN
+
+    # O invariante do manual NÃO alcança outros métodos: um recibo de API
+    # direta pode e deve carregar operador, modelo e atestação.
+    api = ConnectionExecutionReceiptView(
+        **_receipt_view_kwargs(
+            connection_method=ConnectionMethod.DIRECT_PROVIDER_API,
+            access_provider="operador-x",
+            requested_model="modelo-x",
+            observed_model="modelo-x",
+            model_attestation_level=ModelAttestationLevel.ATTESTED,
+        )  # type: ignore[arg-type]
+    )
+    assert api.observed_model == "modelo-x"

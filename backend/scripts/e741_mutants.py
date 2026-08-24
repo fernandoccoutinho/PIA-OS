@@ -231,6 +231,34 @@ MUTANTES: tuple[Mutante, ...] = (
         ),
         descricao="consulta de superfície MCP volta a alcançar o repositório",
     ),
+    Mutante(
+        nome="M-VIEW-MANUAL",
+        arquivo="app/connections/schemas/projection.py",
+        alvo=(
+            "        if self.connection_method is ConnectionMethod.MANUAL_HANDOFF and any(\n"
+            "            (\n"
+            "                self.access_provider is not None,\n"
+            "                self.requested_model is not None,\n"
+            "                self.observed_model is not None,\n"
+            "                self.model_attestation_level is not ModelAttestationLevel.UNKNOWN,\n"
+            "            )\n"
+            "        ):"
+        ),
+        troca="        if False:",
+        testes=("tests/unit/connections/test_connection_projection.py",),
+        descricao="a view do recibo volta a aceitar manual falso",
+    ),
+    Mutante(
+        nome="M-ROUTER-OBJECT",
+        arquivo="app/routers/orchestration.py",
+        alvo="def _control_event_da_projecao(e: ControlEventProjection) -> dto.ControlEventView:",
+        troca="def _control_event_da_projecao(e: object) -> dto.ControlEventView:",
+        testes=(
+            "tests/static/test_e741_connection_boundary.py"
+            "::test_e741s18_os_mapeadores_do_router_tem_tipo_concreto_exato",
+        ),
+        descricao="mapeador do router rebaixado para `object`",
+    ),
 )
 
 

@@ -105,8 +105,39 @@ observado e atestação `attested` — atribuição inteiramente inventada.
 
 Correção: alvo ternário `uq_connection_profiles_id_principal_method`, FK
 do recibo incluindo `connection_method` (a binária foi **substituída**,
-não somada) e `ck_connection_execution_receipts_manual_truth`. Os mesmos
-invariantes em `ExecutionAttribution` e `ConnectionExecutionReceiptView`.
+não somada) e `ck_connection_execution_receipts_manual_truth`.
+
+## Corretivo R2 — os dois resíduos do R1
+
+Migration inalterada; o R2 é de código e de guarda.
+
+### R2-1 — a view do recibo ainda aceitava manual falso
+
+```text
+SILENT_EDIT = UNAPPLIED_EDIT
+UM CONSTRUTOR PÚBLICO PROVADO != TODOS OS CONSTRUTORES PÚBLICOS
+```
+
+O corretivo R1 **declarou** o invariante em `ExecutionAttribution` e em
+`ConnectionExecutionReceiptView`, e o aplicou só no primeiro: a edição do
+segundo usou um `str.replace` que não casou e falhou em silêncio. A prova
+`p15` exercitava apenas um construtor, então nada reprovou.
+
+Corrigido com assertiva de aplicação, quatro provas de violação
+(`u04`), não-vacuidade nos dois sentidos (`u05`) e mutante próprio
+(`M-VIEW-MANUAL`).
+
+### R2-2 — a guarda excluía o router por arquivo
+
+```text
+ARQUIVO_EXCLUÍDO_DA_GUARDA != FUNÇÃO_EXCLUÍDA_DA_GUARDA
+```
+
+`s16` exclui o router inteiro — correto, porque ele conserva 48 ignores
+históricos legítimos. Mas isso deixava os seis mapeadores convertidos sem
+proteção: dava para rebaixá-los a `object` e reintroduzir `attr-defined`
+sem reprovação. A guarda passou a ser **por função** (`s18`, `s19`), com
+a contagem histórica presa em `s20`, e mutante `M-ROUTER-OBJECT`.
 
 ### C2 — a fronteira nova estava silenciada
 
