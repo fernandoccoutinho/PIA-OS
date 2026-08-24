@@ -27,7 +27,9 @@ de passar por ela.
 """
 
 import ast
+import io
 import pathlib
+import tokenize
 
 import pytest
 
@@ -598,6 +600,32 @@ def test_e741s15_familia_release_provedor_e_conexao_nao_colapsam() -> None:
     assert "valid_until" in CapabilitySnapshot.__table__.columns
 
 
+def _ignores_attr_defined(caminho: pathlib.Path) -> list[tuple[int, str]]:
+    """Comentários `type: ignore[attr-defined]` REAIS, por tokenização.
+
+    ```text
+    HEURISTICA_DE_LINHA = GUARDA_CONTORNÁVEL
+    ```
+
+    ACHADO C1 DA AUDITORIA DA CHAIN120. A versão anterior filtrava linhas
+    que contivessem crase, para não contar as menções em docstring. A
+    heurística era contornável de forma trivial: um ignore novo seguido
+    de `# \N{GRAVE ACCENT}qualquer coisa\N{GRAVE ACCENT}` atravessava a
+    guarda. Reproduzido adversarialmente antes de corrigido.
+
+    `tokenize` distingue COMMENT de STRING no nível do lexer, então
+    menção em docstring não é comentário e não entra — sem depender de
+    nenhuma convenção de escrita.
+    """
+    fonte = caminho.read_text(encoding="utf-8")
+    achados: list[tuple[int, str]] = []
+    with io.StringIO(fonte) as fluxo:
+        for token in tokenize.generate_tokens(fluxo.readline):
+            if token.type is tokenize.COMMENT and "type: ignore[attr-defined]" in token.string:
+                achados.append((token.start[0], token.string.strip()))
+    return achados
+
+
 # --- corretivo R1: fronteiras tipadas, não silenciadas ---------------------
 
 FRONTEIRAS_TIPADAS = (
@@ -630,14 +658,7 @@ tipá-los é ampliação que esta auditoria não pediu. O que a guarda impede
 def test_e741s16_fronteiras_novas_nao_silenciam_acesso_a_campo() -> None:
     """Nenhum `type: ignore[attr-defined]` nas fronteiras tipadas."""
     for arquivo in FRONTEIRAS_TIPADAS:
-        linhas = arquivo.read_text(encoding="utf-8").splitlines()
-        culpadas = [
-            (n, ln.strip())
-            for n, ln in enumerate(linhas, 1)
-            if "type: ignore[attr-defined]" in ln and not ln.lstrip().startswith(("#", "*", "a "))
-        ]
-        # Menção em docstring é prosa, não anotação: só conta linha de código.
-        culpadas = [(n, ln) for n, ln in culpadas if "`" not in ln]
+        culpadas = _ignores_attr_defined(arquivo)
         assert not culpadas, f"{arquivo.relative_to(BACKEND)} silencia acesso a campo: {culpadas}"
 
 
@@ -719,16 +740,11 @@ def test_e741s19_os_mapeadores_do_router_nao_silenciam_acesso_a_campo() -> None:
     deliberado — a guarda mede as funções que o commit converteu, não o
     arquivo inteiro.
     """
-    fonte = ROUTER_ORQUESTRACAO.read_text(encoding="utf-8").splitlines()
+    todos = _ignores_attr_defined(ROUTER_ORQUESTRACAO)
     for nome in MAPEADORES_TIPADOS_DO_ROUTER:
         funcao = _funcao_do_router(nome)
         fim = funcao.end_lineno or funcao.lineno
-        corpo = fonte[funcao.lineno - 1 : fim]
-        culpadas = [
-            (funcao.lineno + i, ln.strip())
-            for i, ln in enumerate(corpo)
-            if "type: ignore[attr-defined]" in ln
-        ]
+        culpadas = [(n, txt) for n, txt in todos if funcao.lineno <= n <= fim]
         assert not culpadas, f"{nome} silencia acesso a campo: {culpadas}"
 
 
@@ -743,10 +759,70 @@ def test_e741s20_o_router_conserva_apenas_os_ignores_historicos() -> None:
     A guarda prende o número: se subir, alguém reintroduziu silêncio no
     router; se cair, alguém tipou helpers históricos sem declarar a
     ampliação. Os dois merecem revisão, e nenhum deve passar calado.
+
+    CORRETIVO R3: a contagem passou a vir de `_ignores_attr_defined`,
+    que tokeniza. A versão da Chain120 filtrava linhas com crase e era
+    atravessada por `# type: ignore[attr-defined]  # \N{GRAVE ACCENT}x\N{GRAVE ACCENT}`.
+
+    ```text
+    HEURISTICA_DE_LINHA = GUARDA_CONTORNÁVEL
+    GUARD_PASSED != PROPERTY_PROVED
+    ```
     """
-    fonte = ROUTER_ORQUESTRACAO.read_text(encoding="utf-8").splitlines()
-    ignores = [ln for ln in fonte if "type: ignore[attr-defined]" in ln and "`" not in ln]
+    ignores = _ignores_attr_defined(ROUTER_ORQUESTRACAO)
     assert len(ignores) == 48, (
         f"HISTORICAL_ROUTER_ATTR_DEFINED mudou de 48 para {len(ignores)}; "
         "se foi ampliação deliberada, atualize este número e declare no handoff"
     )
+
+
+# --- corretivo R3: a documentação não pode contradizer o vínculo real ------
+
+
+def test_e741s21_a_documentacao_do_recibo_descreve_a_fk_real() -> None:
+    """A prosa que explica o vínculo é conferida contra o ORM.
+
+    ```text
+    DOCUMENTAÇÃO_DESATUALIZADA = AFIRMAÇÃO_FALSA_NO_REPOSITÓRIO
+    ```
+
+    ACHADO C2 DA AUDITORIA DA CHAIN120. O corretivo R1 trocou a FK
+    binária pela ternária no ORM e na migration, e deixou dois textos
+    dizendo `(connection_id, control_principal_ref)` — a docstring do
+    próprio modelo e o documento de entrega. A documentação contradizia
+    exatamente o schema que pretendia explicar.
+
+    A guarda lê as colunas da FK **no metadata** e exige que os dois
+    textos as mencionem. Comparar contra o ORM, e não contra uma lista
+    escrita à mão, é o que impede a guarda de envelhecer junto com a
+    prosa.
+    """
+    from app.connections.models.connection_execution_receipt import ConnectionExecutionReceipt
+
+    alvo = "fk_connection_execution_receipts_connection_within_principal"
+    fks = [
+        fk
+        for fk in ConnectionExecutionReceipt.__table__.constraints
+        if getattr(fk, "name", None) == alvo
+    ]
+    assert len(fks) == 1, f"{alvo} não encontrada no metadata"
+    colunas = [c.name for c in fks[0].columns]  # type: ignore[attr-defined]
+    assert colunas == [
+        "connection_id",
+        "control_principal_ref",
+        "connection_method",
+    ], f"a FK mudou para {colunas}; atualize a documentação E esta guarda"
+
+    documentos = (
+        APP / "connections" / "models" / "connection_execution_receipt.py",
+        BACKEND / "docs" / "entregas" / "entrega-7" / "E7_4_1_CONNECTION_KERNEL.md",
+    )
+    for documento in documentos:
+        texto = documento.read_text(encoding="utf-8")
+        assert (
+            "connection_method" in texto
+        ), f"{documento.name} não menciona connection_method na descrição do vínculo"
+        # A forma BINÁRIA não pode aparecer descrevendo o vínculo ao perfil.
+        assert (
+            "(connection_id, control_principal_ref)" not in texto
+        ), f"{documento.name} ainda descreve a FK binária, que não existe mais"

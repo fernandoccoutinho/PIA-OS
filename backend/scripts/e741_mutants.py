@@ -259,6 +259,24 @@ MUTANTES: tuple[Mutante, ...] = (
         ),
         descricao="mapeador do router rebaixado para `object`",
     ),
+    Mutante(
+        nome="M-CRASE",
+        arquivo="app/routers/orchestration.py",
+        alvo="def _control_event_da_projecao(e: ControlEventProjection) -> dto.ControlEventView:",
+        troca=(
+            "def _fronteira_adversarial(x: object) -> str:\n"
+            "    return x.campo_inexistente  # type: ignore[attr-defined]  "
+            "# `silencio novo`\n"
+            "\n"
+            "\n"
+            "def _control_event_da_projecao(e: ControlEventProjection) -> dto.ControlEventView:"
+        ),
+        testes=(
+            "tests/static/test_e741_connection_boundary.py"
+            "::test_e741s20_o_router_conserva_apenas_os_ignores_historicos",
+        ),
+        descricao="ignore novo com crase — a heurística de linha era contornável",
+    ),
 )
 
 

@@ -39,17 +39,20 @@ externo existir.
 ```text
 ck_connection_profiles_available_method          ENUM_OR_REGISTRY != AVAILABLE
 ix_connection_profiles_manual_singleton          NULL_NÃO_COLIDE_COM_NULL
-uq_connection_profiles_id_principal              alvo da FK composta
+uq_connection_profiles_id_principal_method       alvo da FK ternária
 FK (attempt_id, step_id, schedule_id)            -> handoff_attempts (DEFERRED)
-FK (connection_id, control_principal_ref)        -> connection_profiles
+FK (connection_id, control_principal_ref, connection_method)
+                                                 -> connection_profiles
 UNIQUE (attempt_id)                              1 Attempt = 1 recibo
 CHECK (attestation='attested') = (observed_model IS NOT NULL)
+CHECK manual => provider/requested/observed NULL e atestação unknown
 triggers append-only                             snapshot, evidência, recibo
 trigger de ciclo de vida                         entitlement monotônico
 ```
 
 ```text
 TWO_VALID_REFERENCES != ONE_COHERENT_REFERENCE
+COHERENT_OWNER       != COHERENT_ROUTE
 COERÊNCIA SOBREVIVE FORA DOS SERVIÇOS
 ```
 
@@ -169,6 +172,71 @@ sobravam cinco chamadas diretas permitidas pelo plano (`lock_schedule`,
 `get_command_receipt`, `get_control_event`, `get_audit_opinion`,
 `get_delegation`). A guarda passou a classificar **exaustivamente**, e
 reprova chamada nova não classificada.
+
+## Corretivo R3 — dois resíduos da Chain120
+
+Sem migration nova; `c58d1e0a94f7` permanece a folha.
+
+### R3-1 — a contagem de ignores era contornável
+
+```text
+HEURISTICA_DE_LINHA = GUARDA_CONTORNÁVEL
+GUARD_PASSED != PROPERTY_PROVED
+```
+
+`s20` filtrava linhas contendo crase, para não contar menções em
+docstring. Um ignore novo seguido de `# <crase>qualquer coisa<crase>`
+atravessava a guarda — reproduzido adversarialmente antes de corrigido.
+`s16`, `s19` e `s20` passaram a usar `tokenize`, que separa COMMENT de
+STRING no lexer. Mutante permanente `M-CRASE`.
+
+### R3-2 — a documentação descrevia a FK que não existe mais
+
+Dois textos ainda descreviam o vínculo ao perfil **sem**
+`connection_method`, depois de o corretivo R1 ter trocado a FK pela
+ternária. `s21` lê as colunas no metadata do ORM e exige que os dois
+documentos as mencionem, recusando a forma binária.
+
+Nota de método: a redação acima evita **citar** a tupla antiga, porque
+`s21` é uma verificação literal e deve continuar sendo. Ensinar a guarda
+a distinguir "narrar o que foi corrigido" de "descrever o vínculo atual"
+exigiria heurística — e heurística em guarda foi exatamente o defeito
+`R3-1`. Prefiro reescrever a prosa a enfraquecer a verificação.
+
+```text
+GUARDA_LITERAL_INCONVENIENTE > GUARDA_HEURÍSTICA_CONTORNÁVEL
+```
+
+```text
+DOCUMENTAÇÃO_DESATUALIZADA = AFIRMAÇÃO_FALSA_NO_REPOSITÓRIO
+```
+
+## Autoridade desta cadeia
+
+```text
+CHAIN121_AUTHORITY                = MASTER_v2.9.10 + ACTIVE_E7_4_1_PROMPT
+MASTER_v2.9.11                    = PROSPECTIVE_AUTHORITY
+RETROACTIVE_APPLICATION_TO_E7_4_1 = FORBIDDEN
+MANUAL_PROFILE_STATE              = UNCHANGED
+HUMAN_PROTECTION_GATE             = NOT_IMPLEMENTED
+```
+
+O Master v2.9.11 entrou em vigor **depois** da autorização e da
+implementação desta cadeia, e por decisão do titular não se aplica
+retroativamente. Nada aqui foi alterado em razão da §20: nem estado do
+perfil manual, nem migration, nem schema, nem comportamento. Nenhuma
+conformidade com documento posterior é declarada.
+
+A divisão acordada, para a entrega que a v2.9.11 governará:
+
+```text
+E7 = gate técnico cumulativo anterior ao efeito
+E8 = interação, explicação, revisão e controle humano
+E9 = provas adversariais, falsos positivos e falsos negativos
+```
+
+O preflight próprio de proteção humana abre depois do `PASS_FINAL` da
+Chain121 e antes da E7.4-2.
 
 ## Escopo negativo cumprido
 

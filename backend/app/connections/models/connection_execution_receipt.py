@@ -14,16 +14,21 @@ de uma execução antiga.
 ## Vínculo bilateral
 
 ```text
-FK COMPOSTA (attempt_id, step_id, schedule_id)     -> handoff_attempts
-FK COMPOSTA (connection_id, control_principal_ref) -> connection_profiles
+FK COMPOSTA (attempt_id, step_id, schedule_id)  -> handoff_attempts
+FK TERNÁRIA (connection_id, control_principal_ref, connection_method)
+                                                -> connection_profiles
 UNIQUE (attempt_id)
 CHECK  (model_attestation_level = 'attested') = (observed_model IS NOT NULL)
+CHECK  manual_handoff => provider/requested/observed NULL e atestação unknown
 TWO_VALID_REFERENCES != ONE_COHERENT_REFERENCE
+COHERENT_OWNER       != COHERENT_ROUTE
 ```
 
 Uma FK **simples** para o perfil permitiria, por SQL bruto, ligar a
 Attempt do principal A à conexão do principal B: cada referência seria
 válida sozinha, e nenhuma provaria que as duas pertencem ao mesmo dono.
+E a FK **binária** provava dono sem provar **rota** — corrigida em
+`c58d1e0a94f7`, que a substituiu pela ternária.
 É exatamente o defeito que a Chain111 corrigiu em `handoff_attempts` e a
 Chain112 corrigiu no binding de Schedule.
 
