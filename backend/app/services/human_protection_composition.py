@@ -62,6 +62,19 @@ from app.orchestration.protection.bridge import HumanProtectionBridge
 from app.orchestration.protection.decision import HumanProtectionApplication, ProtectionEffects
 from app.orchestration.protection.vocabulary import GatePosition, ProtectionOutcome
 
+GATES_DO_B2: frozenset[GatePosition] = frozenset({GatePosition.G1, GatePosition.G4})
+"""Posições que o B2 ativa. Enumerado pela mesma razão de `GATES_DO_B1B`."""
+
+GATES_ATIVOS: frozenset[GatePosition] = frozenset(
+    {GatePosition.G1, GatePosition.G2, GatePosition.G3, GatePosition.G4}
+)
+"""União explícita, escrita membro a membro.
+
+Não é `GATES_DO_B1B | GATES_DO_B2` nem `frozenset(GatePosition)`: as duas
+formas fariam uma posição futura entrar sozinha em algum dos lados. Aqui,
+acrescentar uma posição exige escrevê-la aqui **e** no bloco que a aplica.
+"""
+
 GATES_DO_B1B: frozenset[GatePosition] = frozenset({GatePosition.G2, GatePosition.G3})
 """Posições que esta entrega ativa. G1 e G4 são do B2.
 
@@ -138,6 +151,22 @@ class WorkPausePort(Protocol):
         ...
 
 
+class DelegationRevocationPort(Protocol):
+    """Revoga delegações quando G4 bloqueia. Devolve quantas revogou."""
+
+    def revoke(self, *, schedule_id: uuid.UUID, reason_fingerprint: str) -> int:
+        """Revoga e conta. Levantar exceção é resposta legítima."""
+        ...
+
+
+class WorkResumePort(Protocol):
+    """Retoma o trabalho suspenso, e **só** sob decisão nova que permita."""
+
+    def resume(self, *, schedule_id: uuid.UUID, decision_fingerprint: str) -> None:
+        """Reativa o Schedule. Levantar exceção é resposta legítima."""
+        ...
+
+
 class HumanProtectionComposition:
     """Compõe E8 -> tradução -> ponte -> registro, numa posição de gate."""
 
@@ -148,6 +177,8 @@ class HumanProtectionComposition:
         bridge: HumanProtectionBridge,
         boundary_version: int,
         pause_port: WorkPausePort,
+        revocation_port: "DelegationRevocationPort | None" = None,
+        resume_port: "WorkResumePort | None" = None,
     ) -> None:
         if isinstance(boundary_version, bool) or not isinstance(boundary_version, int):
             raise TypeError("boundary_version deve ser int")
@@ -157,6 +188,8 @@ class HumanProtectionComposition:
         self._bridge = bridge
         self._boundary_version = boundary_version
         self._pause = pause_port
+        self._revocation = revocation_port
+        self._resume = resume_port
 
     def aplicar(
         self,
@@ -177,7 +210,7 @@ class HumanProtectionComposition:
         sob o lock final e precisa amarrar a decisão à tentativa que vai
         exportar, não a uma criada depois.
         """
-        if gate_position not in GATES_DO_B1B:
+        if gate_position not in GATES_ATIVOS:
             raise HumanProtectionGateUnavailableError(
                 f"posição '{gate_position.value}' não é ativada por esta composição"
             )
@@ -221,7 +254,9 @@ class HumanProtectionComposition:
             efeitos if efeitos is not None else ProtectionEffects(attempt_id=attempt_id)
         )
         if bloqueado:
-            efeitos_finais = self._pausar(binding=binding, vista=vista, efeitos=efeitos_finais)
+            efeitos_finais = self._efeitos_do_bloqueio(
+                binding=binding, vista=vista, efeitos=efeitos_finais
+            )
 
         return self._bridge.registrar_aplicacao(
             vista=vista,
@@ -229,6 +264,74 @@ class HumanProtectionComposition:
             efeitos=efeitos_finais,
             moment=moment,
         )
+
+    def _efeitos_do_bloqueio(
+        self,
+        *,
+        binding: GovernanceBinding,
+        vista: GovernanceResolutionView,
+        efeitos: ProtectionEffects,
+    ) -> ProtectionEffects:
+        """Efeitos do bloqueio, por posição.
+
+        ```text
+        G1 -> recusar a criacao; NAO ha Schedule a pausar
+        G2/G3 -> suspender o trabalho
+        G4 -> suspender E revogar a delegacao pedida
+        ```
+
+        G1 é o único que não pausa, e o invariante do evento o exige: um
+        `pause_applied` em G1 afirmaria que algo foi suspenso antes de
+        existir. Recusar a criação já é o efeito inteiro.
+        """
+        if binding.gate_position is GatePosition.G1:
+            return ProtectionEffects(
+                pause_applied=False,
+                delegations_revoked=efeitos.delegations_revoked,
+            )
+
+        pausados = self._pausar(binding=binding, vista=vista, efeitos=efeitos)
+
+        if binding.gate_position is not GatePosition.G4:
+            return pausados
+
+        revogadas = self._revogar(binding=binding, vista=vista)
+        return ProtectionEffects(
+            pause_applied=pausados.pause_applied,
+            delegations_revoked=max(revogadas, pausados.delegations_revoked),
+        )
+
+    def _revogar(self, *, binding: GovernanceBinding, vista: GovernanceResolutionView) -> int:
+        """Revoga a delegação recusada em G4.
+
+        Falha de revogação é recusa, não bloqueio parcial: uma delegação
+        concedida sobrevivendo a um G4 bloqueado seria a autoridade que o
+        gate acabou de negar, viva.
+
+        ```text
+        FAILED_REVOCATION != SILENT_BLOCK
+        ```
+        """
+        if self._revocation is None:
+            raise HumanProtectionGateUnavailableError(
+                "g4 bloqueado exige porta de revogação de delegação"
+            )
+        if binding.schedule_id is None:
+            raise HumanProtectionGateUnavailableError("g4 exige schedule cuja delegação revogar")
+        try:
+            revogadas = self._revocation.revoke(
+                schedule_id=binding.schedule_id,
+                reason_fingerprint=vista.decision_fingerprint,
+            )
+        except Exception as falha:
+            raise HumanProtectionGateUnavailableError(
+                f"a delegação não pôde ser revogada após o bloqueio: {falha}"
+            ) from falha
+        if isinstance(revogadas, bool) or not isinstance(revogadas, int) or revogadas < 0:
+            raise HumanProtectionGateUnavailableError(
+                "a porta de revogação devolveu contagem não utilizável"
+            )
+        return revogadas
 
     def _pausar(
         self,
@@ -279,6 +382,61 @@ class HumanProtectionComposition:
         permite.
         """
         return aplicacao.outcome is ProtectionOutcome.ALLOWED
+
+    def retomar(
+        self,
+        *,
+        objective: str,
+        gate_position: GatePosition,
+        principal_ref: str,
+        operation: CognitiveOperation,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        moment: datetime | None = None,
+    ) -> HumanProtectionApplication:
+        """Retoma trabalho suspenso — **somente** sob decisão nova que permita.
+
+        A retomada não é o desfazer do bloqueio: é uma decisão nova, com
+        descritor novo, sobre o mesmo objetivo. Reativar sob a autorização
+        anterior seria exatamente a prova velha que o programa recusa.
+
+        ```text
+        RESUME_UNDER_THE_OLD_DECISION = STALE_AUTHORIZATION
+        NEW_DESCRIPTOR · NEW_BINDING · NEW_DECISION
+        ```
+
+        Se a decisão nova bloquear de novo, a pausa é reaplicada e nada é
+        retomado: bloqueio que retoma seria a recusa se autoconcedendo.
+        """
+        if self._resume is None:
+            raise HumanProtectionGateUnavailableError("retomada exige porta de retomada composta")
+        if gate_position is GatePosition.G1:
+            raise HumanProtectionGateUnavailableError(
+                "g1 não retoma — não houve trabalho suspenso antes da criação"
+            )
+
+        aplicacao = self.aplicar(
+            objective=objective,
+            gate_position=gate_position,
+            principal_ref=principal_ref,
+            operation=operation,
+            schedule_id=schedule_id,
+            step_id=step_id,
+            moment=moment,
+        )
+        if aplicacao.outcome is not ProtectionOutcome.ALLOWED:
+            return aplicacao
+
+        try:
+            self._resume.resume(
+                schedule_id=schedule_id,
+                decision_fingerprint=aplicacao.decision_fingerprint,
+            )
+        except Exception as falha:
+            raise HumanProtectionGateUnavailableError(
+                f"o trabalho não pôde ser retomado: {falha}"
+            ) from falha
+        return aplicacao
 
     def _descritor(
         self,

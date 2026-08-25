@@ -241,17 +241,25 @@ def test_b1bu09_allowed_fica_registrado_e_prova_que_o_gate_rodou() -> None:
     assert aplicacao.producer_ref
 
 
-def test_b1bu10_g1_e_g4_nao_sao_ativados_por_esta_composicao() -> None:
-    composicao = _composicao(SemanticClassification())
-    for posicao in (GatePosition.G1, GatePosition.G4):
-        with pytest.raises(HumanProtectionGateUnavailableError):
-            composicao.aplicar(
-                objective="qualquer objetivo",
-                gate_position=posicao,
-                principal_ref="principal-1",
-                operation=CognitiveOperation.EXPOSE,
-                moment=MOMENTO,
-            )
+def test_b1bu10_g4_bloqueado_sem_porta_de_revogacao_e_recusado() -> None:
+    """B2 ativou G1/G4; sem a porta de revogação, um G4 bloqueado recusa."""
+    composicao = _composicao(
+        SemanticClassification(
+            capabilities=frozenset({CriticalCapability.CATASTROPHIC_HARM_ENABLEMENT}),
+            engagement=CapabilityEngagement.OPERATIONAL_ENABLEMENT,
+        )
+    )
+    with pytest.raises(HumanProtectionGateUnavailableError) as capturado:
+        composicao.aplicar(
+            objective="delegação recusada sem porta composta",
+            gate_position=GatePosition.G4,
+            principal_ref="principal-1",
+            operation=CognitiveOperation.EXPOSE,
+            schedule_id=uuid.uuid4(),
+            step_id=uuid.uuid4(),
+            moment=MOMENTO,
+        )
+    assert "porta de revogação" in str(capturado.value)
 
 
 def test_b1bu11_gates_do_b1b_sao_enumerados_nao_derivados() -> None:
@@ -373,3 +381,185 @@ def test_b1bu17_allowed_nao_suspende_nada() -> None:
         moment=MOMENTO,
     )
     assert pausa.chamadas == []
+
+
+# --- B2: G1/G4, pausa e retomada --------------------------------------------
+
+
+class _Revogacao:
+    def __init__(self, quantas: int = 2, erro: Exception | None = None) -> None:
+        self.chamadas: list[uuid.UUID] = []
+        self._quantas = quantas
+        self._erro = erro
+
+    def revoke(self, *, schedule_id: uuid.UUID, reason_fingerprint: str) -> int:
+        if self._erro is not None:
+            raise self._erro
+        self.chamadas.append(schedule_id)
+        return self._quantas
+
+
+class _Retomada:
+    def __init__(self, erro: Exception | None = None) -> None:
+        self.chamadas: list[uuid.UUID] = []
+        self._erro = erro
+
+    def resume(self, *, schedule_id: uuid.UUID, decision_fingerprint: str) -> None:
+        if self._erro is not None:
+            raise self._erro
+        self.chamadas.append(schedule_id)
+
+
+def _composicao_b2(
+    classificacao: SemanticClassification,
+    *,
+    pausa: "_Pausa | None" = None,
+    revogacao: "_Revogacao | None" = None,
+    retomada: "_Retomada | None" = None,
+) -> HumanProtectionComposition:
+    broker = IntentAuthorizationBroker(
+        _Classificador(classificacao),  # type: ignore[arg-type]
+        ttl=timedelta(minutes=5),
+    )
+    return HumanProtectionComposition(
+        broker=broker,
+        bridge=_Ponte(_PortaDeGovernanca(), _Repositorio()),  # type: ignore[arg-type]
+        boundary_version=BOUNDARY_VERSION,
+        pause_port=pausa if pausa is not None else _Pausa(),  # type: ignore[arg-type]
+        revocation_port=revogacao if revogacao is not None else _Revogacao(),  # type: ignore[arg-type]
+        resume_port=retomada if retomada is not None else _Retomada(),  # type: ignore[arg-type]
+    )
+
+
+_BLOQUEIA = SemanticClassification(
+    capabilities=frozenset({CriticalCapability.CATASTROPHIC_HARM_ENABLEMENT}),
+    engagement=CapabilityEngagement.OPERATIONAL_ENABLEMENT,
+)
+
+
+def test_b2u01_g1_bloqueia_sem_schedule_e_sem_pausa() -> None:
+    pausa = _Pausa()
+    aplicacao = _composicao_b2(_BLOQUEIA, pausa=pausa).aplicar(
+        objective="criação recusada na origem",
+        gate_position=GatePosition.G1,
+        principal_ref="principal-1",
+        operation=CognitiveOperation.EXPOSE,
+        moment=MOMENTO,
+    )
+    assert aplicacao.outcome is ProtectionOutcome.BLOCKED
+    assert aplicacao.pause_applied is False
+    assert aplicacao.schedule_id is None and aplicacao.step_id is None
+    assert pausa.chamadas == []
+
+
+def test_b2u02_g1_permitido_deixa_criar() -> None:
+    aplicacao = _composicao_b2(SemanticClassification()).aplicar(
+        objective="criação legítima",
+        gate_position=GatePosition.G1,
+        principal_ref="principal-1",
+        operation=CognitiveOperation.EXPOSE,
+        moment=MOMENTO,
+    )
+    assert aplicacao.outcome is ProtectionOutcome.ALLOWED
+
+
+def test_b2u03_g4_bloqueado_pausa_e_revoga_delegacao() -> None:
+    pausa, revogacao = _Pausa(), _Revogacao(quantas=3)
+    schedule = uuid.uuid4()
+    aplicacao = _composicao_b2(_BLOQUEIA, pausa=pausa, revogacao=revogacao).aplicar(
+        objective="delegação recusada",
+        gate_position=GatePosition.G4,
+        principal_ref="principal-1",
+        operation=CognitiveOperation.EXPOSE,
+        schedule_id=schedule,
+        step_id=uuid.uuid4(),
+        moment=MOMENTO,
+    )
+    assert aplicacao.pause_applied is True
+    assert aplicacao.delegations_revoked == 3
+    assert revogacao.chamadas == [schedule]
+
+
+def test_b2u04_revogacao_que_falha_nao_vira_bloqueio_parcial() -> None:
+    composicao = _composicao_b2(_BLOQUEIA, revogacao=_Revogacao(erro=RuntimeError("sem lock")))
+    with pytest.raises(HumanProtectionGateUnavailableError) as capturado:
+        composicao.aplicar(
+            objective="delegação recusada",
+            gate_position=GatePosition.G4,
+            principal_ref="principal-1",
+            operation=CognitiveOperation.EXPOSE,
+            schedule_id=uuid.uuid4(),
+            step_id=uuid.uuid4(),
+            moment=MOMENTO,
+        )
+    assert "não pôde ser revogada" in str(capturado.value)
+
+
+def test_b2u05_g4_permitido_nao_revoga_nada() -> None:
+    revogacao = _Revogacao()
+    aplicacao = _composicao_b2(SemanticClassification(), revogacao=revogacao).aplicar(
+        objective="delegação legítima",
+        gate_position=GatePosition.G4,
+        principal_ref="principal-1",
+        operation=CognitiveOperation.EXPOSE,
+        schedule_id=uuid.uuid4(),
+        step_id=uuid.uuid4(),
+        moment=MOMENTO,
+    )
+    assert aplicacao.delegations_revoked == 0
+    assert revogacao.chamadas == []
+
+
+def test_b2u06_retomada_exige_decisao_nova_que_permita() -> None:
+    retomada = _Retomada()
+    schedule = uuid.uuid4()
+    aplicacao = _composicao_b2(SemanticClassification(), retomada=retomada).retomar(
+        objective="mesmo objetivo, decisão nova",
+        gate_position=GatePosition.G2,
+        principal_ref="principal-1",
+        operation=CognitiveOperation.EXPOSE,
+        schedule_id=schedule,
+        step_id=uuid.uuid4(),
+        moment=MOMENTO,
+    )
+    assert aplicacao.outcome is ProtectionOutcome.ALLOWED
+    assert retomada.chamadas == [schedule]
+
+
+def test_b2u07_bloqueio_novo_nao_retoma() -> None:
+    """`RESUME_UNDER_THE_OLD_DECISION = STALE_AUTHORIZATION`."""
+    retomada = _Retomada()
+    aplicacao = _composicao_b2(_BLOQUEIA, retomada=retomada).retomar(
+        objective="objetivo que segue bloqueado",
+        gate_position=GatePosition.G2,
+        principal_ref="principal-1",
+        operation=CognitiveOperation.EXPOSE,
+        schedule_id=uuid.uuid4(),
+        step_id=uuid.uuid4(),
+        moment=MOMENTO,
+    )
+    assert aplicacao.outcome is ProtectionOutcome.BLOCKED
+    assert retomada.chamadas == []
+
+
+def test_b2u08_g1_nao_retoma() -> None:
+    with pytest.raises(HumanProtectionGateUnavailableError):
+        _composicao_b2(SemanticClassification()).retomar(
+            objective="qualquer",
+            gate_position=GatePosition.G1,
+            principal_ref="principal-1",
+            operation=CognitiveOperation.EXPOSE,
+            schedule_id=uuid.uuid4(),
+            step_id=uuid.uuid4(),
+            moment=MOMENTO,
+        )
+
+
+def test_b2u09_gates_ativos_sao_escritos_membro_a_membro() -> None:
+    from app.services.human_protection_composition import GATES_ATIVOS, GATES_DO_B2
+
+    assert frozenset({GatePosition.G1, GatePosition.G4}) == GATES_DO_B2
+    assert (
+        frozenset({GatePosition.G1, GatePosition.G2, GatePosition.G3, GatePosition.G4})
+        == GATES_ATIVOS
+    )
