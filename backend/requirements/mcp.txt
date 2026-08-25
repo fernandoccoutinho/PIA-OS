@@ -1,0 +1,12 @@
+# E7.4-2 — MCP Runtime. NAO e dependencia de producao.
+#
+#     MCP_PRODUCTION     = BLOCKED
+#     PRODUCTION_DEFAULT = DISABLED
+#
+# base.txt tem Stop Condition propria (e741s03, e72b13) que proibe mcp e
+# pyjwt e fixa 11 linhas. A proibicao esta certa: enquanto o runtime nao
+# for montado na composicao produtiva, estas dependencias nao pertencem
+# ao caminho produtivo. Ficam aqui, fixadas exatamente.
+-r base.txt
+mcp==1.29.1
+PyJWT==2.13.0
