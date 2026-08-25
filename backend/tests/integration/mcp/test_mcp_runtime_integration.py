@@ -153,11 +153,9 @@ async def test_int01_nenhuma_tool_publica_credencial_no_input_schema(
         ),
     )
     from app.mcp.runtime import _registrar
-    from app.mcp.token_verifier import PiaTokenVerifier as PTV
 
-    verificador = PTV(autenticador)
     for nome in tools.nomes():
-        _registrar(servidor, tools, verificador, nome)
+        _registrar(servidor, tools, nome)
 
     listadas = await servidor.list_tools()
     assert len(listadas) == 5
@@ -240,26 +238,23 @@ async def test_int06_escopo_insuficiente_nao_colapsa_em_401(chave: dict[str, Any
 
 
 @pytest.mark.anyio
-async def test_int07_token_valido_resolve_e_o_principal_e_consumido(
-    chave: dict[str, Any],
-) -> None:
-    """`EPHEMERAL_BY_CONSTRUCTION` — lido uma vez, some."""
-    from app.mcp.token_verifier import PiaTokenVerifier
+async def test_int07_principal_viaja_no_access_token_tipado(chave: dict[str, Any]) -> None:
+    """`PER_REQUEST_BY_CONSTRUCTION` — sem mapa, sem retencao."""
+    from app.mcp.token_verifier import PiaAccessToken, PiaTokenVerifier
 
     autenticador = ResourceServerAuthenticator(
         config=CONFIG, jwks=_Jwks(chave), resolver=_Resolver(), quota=_Quota()
     )
     verificador = PiaTokenVerifier(autenticador)
-    token = _emitir(chave)
-    concedido = await verificador.verify_token(token)
-    assert concedido is not None
-    assert ESCOPO_EXIGIDO in concedido.scopes
-    assert verificador.consumir_principal(token) is not None
-    assert verificador.consumir_principal(token) is None
+    concedido = await verificador.verify_token(_emitir(chave))
+    assert isinstance(concedido, PiaAccessToken)
+    assert concedido.principal_ref == "principal-1"
+    assert vars(verificador).get("_resolvidos") is None
 
 
 @pytest.mark.anyio
 async def test_int08_principal_alheio_nao_enxerga_recurso(chave: dict[str, Any]) -> None:
+    from app.mcp.auth import PrincipalAutenticado
     from app.mcp.token_verifier import PiaTokenVerifier
 
     schedules = _Schedules()
@@ -274,11 +269,13 @@ async def test_int08_principal_alheio_nao_enxerga_recurso(chave: dict[str, Any])
     autenticador = ResourceServerAuthenticator(
         config=CONFIG, jwks=_Jwks(chave), resolver=_Resolver(), quota=_Quota()
     )
-    verificador = PiaTokenVerifier(autenticador)
-    token = _emitir(chave, sub="sub-2")
-    await verificador.verify_token(token)
-    principal = verificador.consumir_principal(token)
-    assert principal is not None
+    concedido = await PiaTokenVerifier(autenticador).verify_token(_emitir(chave, sub="sub-2"))
+    assert concedido is not None
+    principal = PrincipalAutenticado(
+        principal_ref=concedido.principal_ref,
+        scopes=frozenset(concedido.scopes),
+        subject="sub-2",
+    )
     with pytest.raises(PermissionError):
         tools.chamar(
             nome="schedule.read",

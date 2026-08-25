@@ -38,17 +38,42 @@ que o cliente MCP espera.
 401_AND_403_COME_FROM_THE_SDK · NOT_FROM_US
 ```
 
-## O principal validado não viaja no token
+## O principal viaja no token tipado, nunca num mapa
 
-`verify_token` devolve o `AccessToken` do SDK, que não tem campo para o
-nosso `principal_ref`. Guardamos a resolução num mapa efêmero indexado
-pelo próprio token, consumido pela tool no mesmo ciclo de requisição.
-O token nunca é persistido, nunca sai deste processo, e o mapa é limpo
-ao ser lido.
+`PiaAccessToken` e subclasse de `AccessToken` com o `principal_ref` ja
+resolvido. O SDK guarda a instancia devolvida por `verify_token` num
+`ContextVar`, e `get_access_token()` a recupera dentro da MESMA
+requisicao.
+
+Isso substitui um mapa `{token: principal}` defeituoso em tres frentes:
 
 ```text
-EPHEMERAL_BY_CONSTRUCTION · NEVER_PERSISTED
+GLOBAL_MUTABLE_MAP   -> estado compartilhado entre requisicoes
+INDEXED_BY_RAW_TOKEN -> credencial retida na memoria do processo
+POP_ON_READ          -> duas chamadas com o MESMO token competem;
+                        uma vence, a outra recebe None
 ```
+
+A terceira era a pior: falha intermitente sob exatamente a carga que um
+servidor MCP recebe.
+
+```text
+PER_REQUEST_BY_CONSTRUCTION · NOTHING_SHARED · NOTHING_RETAINED
+```
+
+## Cota esgotada nao e token invalido
+
+Cota limita o uso de credencial VALIDA. Colapsa-la em `None` faria o SDK
+responder 401 `invalid_token`, e o cliente tentaria reautenticar contra
+um limite que reautenticar nao resolve.
+
+```text
+QUOTA_EXHAUSTED != INVALID_TOKEN
+ONE_CALL = ONE_QUOTA_UNIT
+```
+
+A cota e consumida UMA vez, na verificacao, e o resultado viaja no token
+tipado: revalidar na tool queimaria duas unidades por chamada.
 """
 
 from datetime import UTC, datetime
@@ -59,17 +84,27 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from app.mcp.auth import (
     ErroDeAutenticacao,
     ErroDeAutorizacao,
-    PrincipalAutenticado,
     ResourceServerAuthenticator,
 )
 
 
+class PiaAccessToken(AccessToken):
+    """`AccessToken` do SDK com o principal ja resolvido."""
+
+    principal_ref: str = ""
+    quota_exhausted: bool = False
+    """Cota ja avaliada e consumida na verificacao. Nunca reavaliar."""
+
+
 class PiaTokenVerifier(TokenVerifier):
-    """Traduz o `TokenVerifier` do SDK para a validação já existente."""
+    """Traduz o `TokenVerifier` do SDK para a validação já existente.
+
+    SEM ESTADO. Nenhum atributo guarda token ou principal: seguro para
+    uso concorrente por construção.
+    """
 
     def __init__(self, autenticador: ResourceServerAuthenticator) -> None:
         self._autenticador = autenticador
-        self._resolvidos: dict[str, PrincipalAutenticado] = {}
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """`None` quando o token não vale — o SDK devolve 401.
@@ -84,29 +119,42 @@ class PiaTokenVerifier(TokenVerifier):
         try:
             principal = self._autenticador.autenticar(headers={"Authorization": f"Bearer {token}"})
         except ErroDeAutorizacao as falha:
-            escopos = getattr(falha, "escopos_do_token", None)
-            if escopos is None:
-                return None
-            return AccessToken(
-                token=token, client_id="pia-mcp", scopes=sorted(escopos), expires_at=None
-            )
+            return self._insuficiente(token, falha)
         except ErroDeAutenticacao:
             return None
         except Exception:
-            # Falha inesperada nunca vira permissão.
+            # Falha inesperada nunca vira permissao.
             return None
 
-        self._resolvidos[token] = principal
-        return AccessToken(
+        return PiaAccessToken(
             token=token,
             client_id="pia-mcp",
             scopes=sorted(principal.scopes),
             expires_at=None,
+            principal_ref=principal.principal_ref,
         )
 
-    def consumir_principal(self, token: str) -> PrincipalAutenticado | None:
-        """Lê e descarta. O token não permanece indexado após a leitura."""
-        return self._resolvidos.pop(token, None)
+    @staticmethod
+    def _insuficiente(token: str, falha: ErroDeAutorizacao) -> AccessToken | None:
+        """Token valido, autoridade insuficiente -> 403, nunca 401.
+
+        Escopo insuficiente devolve os escopos REAIS. Cota esgotada
+        devolve escopos vazios: o token e valido, mas nesta requisicao
+        nao carrega autoridade utilizavel.
+        """
+        escopos = getattr(falha, "escopos_do_token", None)
+        cota_esgotada = "cota" in falha.motivo.lower()
+        if escopos is None and not cota_esgotada:
+            # Sub sem principal existente: nao ha autoridade a reportar.
+            return None
+        return PiaAccessToken(
+            token=token,
+            client_id="pia-mcp",
+            scopes=sorted(escopos) if escopos else [],
+            expires_at=None,
+            principal_ref="",
+            quota_exhausted=cota_esgotada,
+        )
 
 
 def agora_utc() -> datetime:

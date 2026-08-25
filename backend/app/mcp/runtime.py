@@ -33,7 +33,7 @@ from app.mcp.auth import (
     ResourceServerConfig,
     metadata_do_recurso,
 )
-from app.mcp.token_verifier import PiaTokenVerifier, montar_auth_settings
+from app.mcp.token_verifier import PiaAccessToken, PiaTokenVerifier, montar_auth_settings
 from app.mcp.tools import McpTools
 
 
@@ -69,19 +69,14 @@ def criar_app(
     )
 
     for nome in tools.nomes():
-        _registrar(servidor, tools, verificador, nome)
+        _registrar(servidor, tools, nome)
 
     aplicacao = servidor.streamable_http_app()
     _montar_metadata(aplicacao, config)
     return aplicacao
 
 
-def _registrar(
-    servidor: Any,
-    tools: McpTools,
-    verificador: PiaTokenVerifier,
-    nome: str,
-) -> None:
+def _registrar(servidor: Any, tools: McpTools, nome: str) -> None:
     """Registra uma tool. A assinatura tem SOMENTE `arguments`.
 
     Qualquer parâmetro extra aqui vira campo do `inputSchema` publicado
@@ -90,31 +85,40 @@ def _registrar(
     """
 
     async def _executar(arguments: dict[str, Any]) -> dict[str, Any]:
-        principal = _principal_da_requisicao(verificador)
+        principal = _principal_da_requisicao()
         return tools.chamar(nome=nome, argumentos=arguments, principal=principal)
 
     _executar.__name__ = nome.replace(".", "_")
     servidor.tool(name=nome)(_executar)
 
 
-def _principal_da_requisicao(verificador: PiaTokenVerifier) -> Any:
-    """Recupera o principal que o middleware do SDK já validou.
+def _principal_da_requisicao() -> Any:
+    """Lê o principal do `AccessToken` desta requisição.
 
-    Se chegou aqui, o middleware autenticou: token ausente ou inválido
-    nunca alcança a tool, e escopo insuficiente já virou 403 antes.
-    Ainda assim, ausência de principal é recusa — nunca execução anônima.
+    O SDK guarda num `ContextVar` a instância que `verify_token`
+    devolveu. Cada requisição tem a sua: nada é compartilhado e o token
+    bruto não é indexado em lugar nenhum.
+
+        PER_REQUEST_BY_CONSTRUCTION
+
+    Ausência de principal é recusa, nunca execução anônima.
 
         NO_PRINCIPAL -> REFUSE · NEVER_ANONYMOUS_EXECUTION
     """
     from mcp.server.auth.middleware.auth_context import get_access_token
 
+    from app.mcp.auth import PrincipalAutenticado
+
     token_de_acesso = get_access_token()
     if token_de_acesso is None:
         raise PermissionError("requisição sem contexto de autenticação")
-    principal = verificador.consumir_principal(token_de_acesso.token)
-    if principal is None:
+    if not isinstance(token_de_acesso, PiaAccessToken) or not token_de_acesso.principal_ref:
         raise PermissionError("principal não resolvido para a credencial apresentada")
-    return principal
+    return PrincipalAutenticado(
+        principal_ref=token_de_acesso.principal_ref,
+        scopes=frozenset(token_de_acesso.scopes),
+        subject=token_de_acesso.principal_ref,
+    )
 
 
 def _montar_metadata(aplicacao: Any, config: ResourceServerConfig) -> None:
