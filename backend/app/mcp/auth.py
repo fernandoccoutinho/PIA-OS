@@ -77,10 +77,22 @@ class ErroDeAutorizacao(Exception):
 
     status_code = 403
 
-    def __init__(self, motivo: str, *, escopo: str = ESCOPO_EXIGIDO) -> None:
+    def __init__(
+        self,
+        motivo: str,
+        *,
+        escopo: str = ESCOPO_EXIGIDO,
+        escopos_do_token: frozenset[str] | None = None,
+    ) -> None:
         super().__init__(motivo)
         self.motivo = motivo
         self.escopo = escopo
+        # Escopos REAIS do token, quando ele e valido e apenas
+        # insuficiente. Permite ao adapter do SDK produzir 403 em vez de
+        # colapsar em 401:
+        #
+        #     VALID_BUT_INSUFFICIENT != INVALID
+        self.escopos_do_token = escopos_do_token
 
     @property
     def www_authenticate(self) -> str:
@@ -265,7 +277,7 @@ class ResourceServerAuthenticator:
 
         escopos = self._escopos(reivindicacoes)
         if ESCOPO_EXIGIDO not in escopos:
-            raise ErroDeAutorizacao("escopo insuficiente")
+            raise ErroDeAutorizacao("escopo insuficiente", escopos_do_token=frozenset(escopos))
 
         if not self._quota.consumir(principal_ref=principal_ref, quota=COTA):
             raise ErroDeAutorizacao("cota esgotada", escopo=ESCOPO_EXIGIDO)

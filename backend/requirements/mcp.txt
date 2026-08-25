@@ -10,3 +10,4 @@
 -r base.txt
 mcp==1.12.4
 PyJWT==2.13.0
+cryptography==44.0.0
