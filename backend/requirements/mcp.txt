@@ -8,5 +8,5 @@
 # for montado na composicao produtiva, estas dependencias nao pertencem
 # ao caminho produtivo. Ficam aqui, fixadas exatamente.
 -r base.txt
-mcp==1.29.1
+mcp==1.12.4
 PyJWT==2.13.0

@@ -45,6 +45,18 @@ disco tem um segundo canal de configuração que ninguém audita junto com
 o primeiro.
 """
 
+VOCABULARIO_PERMITIDO: frozenset[str] = frozenset({"app.orchestration.models.enums"})
+"""Exceção única, e MEDIDA — não afirmada.
+
+`enums.py` está sob `app.orchestration.models` por localização, mas é
+vocabulário puro: `test_mcp03b` prova que não importa ORM nenhum. Uma
+guarda que bloqueia por caminho, e não pela propriedade que lhe importa,
+bloqueia a coisa certa pelo motivo errado — e o motivo errado é o que
+alguém afrouxa depois sem perceber o que estava protegendo.
+
+    GUARD_BY_PATH < GUARD_BY_PROPERTY
+"""
+
 PREFIXOS_INTERNOS_PROIBIDOS: tuple[str, ...] = (
     "app.orchestration.repositories",
     "app.orchestration.models",
@@ -97,6 +109,8 @@ def test_mcp03_boundary_nao_alcanca_repositorio_orm_ou_modelo() -> None:
     violacoes: list[str] = []
     for modulo in _modulos_do_boundary():
         for importado in _importados(modulo):
+            if importado in VOCABULARIO_PERMITIDO:
+                continue
             if importado.startswith(PREFIXOS_INTERNOS_PROIBIDOS):
                 violacoes.append(f"{modulo.name}: {importado}")
     assert violacoes == [], f"boundary MCP puxou persistência direto: {violacoes}"
@@ -200,3 +214,13 @@ def test_mcp10_boundary_nao_e_montado_na_composicao_produtiva() -> None:
             if importado == "app.mcp" or importado.startswith("app.mcp."):
                 referencias.append(f"{modulo.relative_to(RAIZ)}: {importado}")
     assert referencias == [], f"boundary MCP alcançado pela produção: {referencias}"
+
+
+def test_mcp03b_o_vocabulario_permitido_nao_carrega_orm() -> None:
+    """A exceção de `test_mcp03` é medida, não confiada."""
+    for permitido in VOCABULARIO_PERMITIDO:
+        caminho = RAIZ.parent / (permitido.replace(".", "/") + ".py")
+        importados = _importados(caminho)
+        raizes = {i.split(".")[0] for i in importados}
+        assert not (raizes & {"sqlalchemy", "psycopg", "alembic"}), permitido
+        assert not any(i.startswith("app.db") for i in importados), permitido

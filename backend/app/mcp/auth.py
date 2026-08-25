@@ -295,7 +295,17 @@ class ResourceServerAuthenticator:
                 algorithms=[alg],
                 audience=self._config.audience,
                 issuer=self._config.issuer,
-                options={"require": ["exp", "iat", "sub", "aud", "iss"]},
+                options={
+                    "require": ["exp", "iat", "sub", "aud", "iss"],
+                    # A janela e validada por _validar_janela com o instante
+                    # INJETADO. Deixar o PyJWT ler o proprio relogio criaria
+                    # um segundo relogio no mesmo fluxo, e dois relogios
+                    # envelhecem entre si:
+                    #
+                    #     MULTIPLE_CLOCK_READS = FLAKY_BY_CONSTRUCTION
+                    "verify_exp": False,
+                    "verify_nbf": False,
+                },
             )
         except Exception as falha:
             # A mensagem do provider pode conter o token; redigir antes de
@@ -313,9 +323,8 @@ class ResourceServerAuthenticator:
         if exp is None or not isinstance(exp, int | float) or instante >= float(exp):
             raise ErroDeAutenticacao("token expirado")
         nbf = reivindicacoes.get("nbf")
-        if nbf is not None:
-            if not isinstance(nbf, int | float) or instante < float(nbf):
-                raise ErroDeAutenticacao("token ainda não é válido")
+        if nbf is not None and (not isinstance(nbf, int | float) or instante < float(nbf)):
+            raise ErroDeAutenticacao("token ainda não é válido")
         iat = reivindicacoes.get("iat")
         if iat is not None and isinstance(iat, int | float) and instante < float(iat):
             raise ErroDeAutenticacao("token emitido no futuro")
