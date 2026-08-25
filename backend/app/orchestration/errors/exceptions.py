@@ -10,6 +10,7 @@ from app.orchestration.errors.codes import (
     PIA_8062_DISPATCH_BLOCKED,
     PIA_8063_DELEGATION_IMMUTABLE,
     PIA_8064_AUDIT_RECORD_IMMUTABLE,
+    PIA_8069_HUMAN_PROTECTION_GATE_UNAVAILABLE,
 )
 
 
@@ -59,3 +60,9 @@ class GovernanceRecordImmutableError(PIAOSException):
     """Evento, observação e parecer não são alteráveis nem removíveis."""
 
     error_code = PIA_8064_AUDIT_RECORD_IMMUTABLE
+
+
+class HumanProtectionGateUnavailableError(PIAOSException):
+    """O gate de proteção humana não pôde decidir — zero efeito, nunca permissão."""
+
+    error_code = PIA_8069_HUMAN_PROTECTION_GATE_UNAVAILABLE

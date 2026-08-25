@@ -35,4 +35,5 @@ E7.3 gates, cancelamento e auditoria   -> count 112
 
 | documento | conteúdo |
 |---|---|
+| [E7.4-1 B1a — ponte de proteção humana](E7_4_1_B1A_HUMAN_PROTECTION_BRIDGE.md) | ponte de enforcement da Governança **não composta**: porta, vocabulário de fronteira, binding de dez campos, duas identidades versionadas, schema append-only e escopo negativo. Entrega DIFERENTE do kernel de conexões, apesar da etiqueta compartilhada |
 | [E7.4-1 — kernel neutro de conexões](E7_4_1_CONNECTION_KERNEL.md) | resultado binário, invariantes impostos pelo banco, decisões declaradas, os três falsos verdes achados por mutação e o escopo negativo cumprido |

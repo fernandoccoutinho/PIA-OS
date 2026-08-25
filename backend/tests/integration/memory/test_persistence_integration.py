@@ -87,6 +87,24 @@ _E6_PROGRAMMATIC_TABLES = (
     "programmatic_quota_buckets",
 )
 
+_E7_4_1_HUMAN_PROTECTION_TABLES = (
+    "human_protection_events",
+    "human_protection_event_capabilities",
+)
+"""Tabelas do gate de proteção humana, autorizadas pelo `PASS_FINAL` de
+pré-implementação R10.1 da E7.4-1 (B1a).
+
+Tupla **própria**, pela mesma razão do censo de conexões: apesar do rótulo
+`E7.4-1` compartilhado, o gate de proteção humana é entrega DIFERENTE do
+kernel de conexões, e fundir os censos faria o teste deixar de dizer qual
+entrega autorizou o quê.
+
+```text
+PASS_FINAL_CHAIN122_DOES_NOT_COVER_HUMAN_PROTECTION_GATE = TRUE
+```
+"""
+
+
 _E7_4_CONNECTION_TABLES = (
     "connection_provider_families",
     "connection_model_families",
@@ -622,6 +640,7 @@ def test_pi13_no_new_table_and_no_new_migration():
         | set(_E6_PROGRAMMATIC_TABLES)
         | set(_E7_ORCHESTRATION_TABLES)
         | set(_E7_4_CONNECTION_TABLES)
+        | set(_E7_4_1_HUMAN_PROTECTION_TABLES)
         | {"alembic_version"}
     )
     assert tabelas == esperadas, f"tabela inesperada: {tabelas - esperadas}"

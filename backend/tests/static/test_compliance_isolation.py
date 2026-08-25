@@ -231,12 +231,14 @@ def test_g01_2_a_e4_10_nao_criou_migration_propria():
     assert sucessoras_e5 == ["f8a91c2d4e60"], sucessoras_e5
     pais = {p for p in grafo.values() if p}
     folhas = sorted(r for r in grafo if r not in pais)
-    # ATUALIZADO PELO CORRETIVO R1 DA E7.4-1: a folha passou a ser
-    # `c58d1e0a94f7`; antes `b47e9c05d3fa`
-    # (kernel de conexões); antes `a91d3f7c26be`
-    # (orquestração). A guarda continua medindo folha ÚNICA — não
-    # imobilidade da cadeia.
-    assert folhas == ["c58d1e0a94f7"], folhas
+    # ATUALIZADO PELO B1a DA E7.4-1 (proteção humana): a folha passou a ser
+    # `d7a4c1e93b28`; antes `c58d1e0a94f7` (corretivo R1 do kernel de
+    # conexões); antes `b47e9c05d3fa` (kernel de conexões); antes
+    # `a91d3f7c26be` (orquestração). A guarda continua medindo folha ÚNICA —
+    # não imobilidade da cadeia.
+    #
+    #     DOCUMENTAÇÃO_DESATUALIZADA = AFIRMAÇÃO_FALSA_NO_REPOSITÓRIO
+    assert folhas == ["d7a4c1e93b28"], folhas
 
 
 def test_g99_1_a_guarda_de_persistencia_detecta_um_modelo():

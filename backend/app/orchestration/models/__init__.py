@@ -29,6 +29,10 @@ from app.orchestration.models.enums import (
 from app.orchestration.models.execution_observation import ExecutionObservation
 from app.orchestration.models.handoff_attribution import HandoffAttribution
 from app.orchestration.models.handoff_result import HandoffResult
+from app.orchestration.models.human_protection_event import HumanProtectionEvent
+from app.orchestration.models.human_protection_event_capability import (
+    HumanProtectionEventCapability,
+)
 from app.orchestration.models.schedule import Schedule
 from app.orchestration.models.seal_receipt import SealReceipt
 from app.orchestration.models.service_delegation import ServiceDelegation
@@ -54,6 +58,8 @@ __all__ = [
     "HandoffMode",
     "HandoffResult",
     "HandoffResultStatus",
+    "HumanProtectionEvent",
+    "HumanProtectionEventCapability",
     "Schedule",
     "ScheduleState",
     "ScheduleStep",

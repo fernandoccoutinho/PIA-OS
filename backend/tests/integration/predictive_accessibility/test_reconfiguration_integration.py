@@ -57,6 +57,21 @@ def _fresh_e5l_table():
         # DROP CONSTRAINT` abaixo é deliberadamente SEM `CASCADE` — ele
         # tem de falhar se algum descendente novo for esquecido, em vez
         # de arrastar objetos silenciosamente.
+        # ATUALIZADO PELO B1a DA E7.4-1 (proteção humana): as duas tabelas
+        # do gate são a folha ATUAL e entram antes de tudo, pela mesma razão
+        # material do bloco seguinte — `fk_hpe_attempt` depende de
+        # `uq_handoff_attempts_id_step_schedule`, e o `DROP CONSTRAINT`
+        # abaixo é deliberadamente SEM `CASCADE`.
+        for tabela_hp in (
+            "human_protection_event_capabilities",
+            "human_protection_events",
+        ):
+            connection.execute(sa.text(f"DROP TABLE IF EXISTS {tabela_hp}"))
+        connection.execute(sa.text("DROP FUNCTION IF EXISTS hp_event_coherence() CASCADE"))
+        connection.execute(sa.text("DROP FUNCTION IF EXISTS hp_append_only() CASCADE"))
+        connection.execute(
+            sa.text("ALTER TABLE schedules DROP CONSTRAINT IF EXISTS uq_schedules_id_principal")
+        )
         for tabela_e741 in (
             "connection_execution_receipts",
             "connection_capability_snapshots",
@@ -309,7 +324,7 @@ def test_e5l_migration_round_trip_vazio() -> None:
             is None
         )
     migrations.upgrade("head")
-    assert migrations.current_revision() == "c58d1e0a94f7"
+    assert migrations.current_revision() == "d7a4c1e93b28"
     with engine.connect() as connection:
         assert (
             connection.execute(
@@ -326,7 +341,7 @@ def test_e5l_downgrade_com_historico_recusa_antes_de_ddl() -> None:
         session.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == "c58d1e0a94f7"
+    assert migrations.current_revision() == "d7a4c1e93b28"
     with engine.connect() as connection:
         assert (
             connection.execute(

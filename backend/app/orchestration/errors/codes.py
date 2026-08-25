@@ -130,3 +130,31 @@ PIA_8064_AUDIT_RECORD_IMMUTABLE = ErrorCode(
     severity=ErrorSeverity.ERROR,
 )
 """Evento de controle, observação e parecer são append-only."""
+
+PIA_8069_HUMAN_PROTECTION_GATE_UNAVAILABLE = ErrorCode(
+    code="PIA-8069",
+    default_message="human_protection_gate_unavailable",
+    category=ErrorCategory.VALIDATION,
+    http_status=409,
+    severity=ErrorSeverity.ERROR,
+)
+"""Indisponibilidade **técnica** do gate de proteção humana (`E7.4-1`).
+
+```text
+SOFTWARE_FAILURE != HUMAN_HARM_CATEGORY
+MISSING_AUTHORIZED_DESCRIPTOR != AUTHORIZED_NOT_APPLICABLE
+```
+
+Cobre resolução ausente, expirada, incompatível com o binding, desfecho fora
+de `{prohibited, not_applicable}`, porta que levanta, e vencedor de corrida
+divergente do que esta transação aplicaria.
+
+Falha do gate **não** é categoria de dano humano: ela não cria
+`ProtectionOutcome`, capacidade, sinal nem evento de proteção. O código é
+próprio, e não reuso de `PIA-8062`: aquele fala de despacho recusado por gate
+de delegação, e confundir os dois mandaria o operador procurar o problema na
+tabela errada.
+
+A faixa `PIA-8065..8068` pertence ao kernel de conexões
+(`app/connections/errors/codes.py`). Próximo global livre: `PIA-8070`.
+"""

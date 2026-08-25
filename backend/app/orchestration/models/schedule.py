@@ -13,7 +13,7 @@ leitura e mutação, imposta no repositório, e não numa camada acima que
 alguém possa contornar chamando o repositório direto.
 """
 
-from sqlalchemy import CheckConstraint, Index, String
+from sqlalchemy import CheckConstraint, Index, String, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,13 +37,30 @@ class Schedule(BaseModel):
             name="ck_schedules_control_principal_not_blank",
         ),
         Index("ix_schedules_control_principal_ref", "control_principal_ref"),
+        UniqueConstraint("id", "control_principal_ref", name="uq_schedules_id_principal"),
     )
-    """Dois `CHECK` e um índice.
+    """Dois `CHECK`, um índice e o alvo composto de referência.
 
     O índice existe porque **toda** consulta filtra por
     `control_principal_ref`: sem ele, o escopo obrigatório seria um scan.
     Não há `UNIQUE` sobre título — dois trabalhos podem se chamar igual, e
     fundi-los apagaria a distinção entre eles.
+
+    ## E7.4-1 B1a — `uq_schedules_id_principal`
+
+    AMPLIAÇÃO DECLARADA, corretiva. Redundante em cardinalidade (`id` já é
+    a chave primária) e obrigatória em referência: é o alvo da FK composta
+    que o evento de proteção humana usa para provar, no banco, que o
+    Schedule citado pertence àquele principal.
+
+    ```text
+    TWO_VALID_REFERENCES != ONE_COHERENT_REFERENCE
+    ```
+
+    Mesmo precedente de `uq_schedule_steps_id_schedule` (Chain111) e de
+    `uq_handoff_attempts_id_step_schedule` (E7.3). Declarada aqui **e** na
+    migration porque a guarda de drift compara o metadata com o schema
+    real.
     """
 
     title: Mapped[str] = mapped_column(String(MAX_TITLE_LENGTH), nullable=False)
