@@ -404,3 +404,141 @@ def test_mcp49_metodos_ficticios_nao_existem_no_boundary() -> None:
             if re.search(padrao, f.read_text(encoding="utf-8"))
         ]
         assert achados == [], f"{padrao} ainda e chamado em: {achados}"
+
+
+# --- composition root transacional -----------------------------------------
+
+
+class _SessaoTransacional:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rollbacks = 0
+        self.closed = False
+
+    def __enter__(self) -> "_SessaoTransacional":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.closed = True
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+def _deps_transacionais(fabrica: Any) -> Any:
+    from app.services.mcp_composition_root import RuntimeDependencies
+
+    return RuntimeDependencies(
+        session_factory=fabrica,
+        protecao_factory=lambda _s: None,
+        objetivo_por_step=lambda **_: "objetivo",
+        operacao="expose",
+        resource_config=None,
+        jwks=None,
+        principal_resolver=None,
+        quota=None,
+    )
+
+
+def test_mcp50_uma_chamada_abre_commita_e_fecha_uma_sessao(monkeypatch: Any) -> None:
+    from app.services import mcp_composition_root as raiz
+
+    sessoes: list[_SessaoTransacional] = []
+
+    def fabrica() -> _SessaoTransacional:
+        sessao = _SessaoTransacional()
+        sessoes.append(sessao)
+        return sessao
+
+    class _Tools:
+        def chamar(self, **_: Any) -> dict[str, bool]:
+            return {"ok": True}
+
+    monkeypatch.setattr(raiz, "construir_servicos", lambda _s, _d: _Tools())
+    dispatcher = raiz.TransactionalMcpTools(_deps_transacionais(fabrica))
+
+    assert dispatcher.chamar(nome="schedule.read", argumentos={}, principal=PRINCIPAL) == {
+        "ok": True
+    }
+    assert dispatcher.chamar(nome="schedule.read", argumentos={}, principal=PRINCIPAL) == {
+        "ok": True
+    }
+    assert len(sessoes) == 2
+    assert all(s.commits == 1 and s.rollbacks == 0 and s.closed for s in sessoes)
+
+
+def test_mcp51_falha_reverte_e_fecha_sem_commit(monkeypatch: Any) -> None:
+    from app.services import mcp_composition_root as raiz
+
+    sessao = _SessaoTransacional()
+
+    class _Tools:
+        def chamar(self, **_: Any) -> dict[str, bool]:
+            raise RuntimeError("efeito recusado")
+
+    monkeypatch.setattr(raiz, "construir_servicos", lambda _s, _d: _Tools())
+    dispatcher = raiz.TransactionalMcpTools(_deps_transacionais(lambda: sessao))
+
+    with pytest.raises(RuntimeError, match="efeito recusado"):
+        dispatcher.chamar(nome="handoff.export", argumentos={}, principal=PRINCIPAL)
+    assert sessao.commits == 0
+    assert sessao.rollbacks == 1
+    assert sessao.closed is True
+
+
+def test_mcp52_g3_acontece_antes_do_selo_e_da_transicao() -> None:
+    from app.mcp.supervised_export_service import SupervisedAutomaticHandoffExportService
+    from app.orchestration.protection.vocabulary import ProtectionOutcome
+
+    eventos: list[str] = []
+    attempt_id = uuid.uuid4()
+
+    @dataclass(frozen=True)
+    class _Aplicacao:
+        outcome: ProtectionOutcome
+        decision_fingerprint: str = "f" * 64
+
+    class _Repositorio:
+        def lock_step(self, **_: Any) -> object:
+            eventos.append("lock")
+            return object()
+
+        def set_step_state(self, **_: Any) -> None:
+            eventos.append("state")
+
+    class _Protecao:
+        def aplicar(self, **_: Any) -> _Aplicacao:
+            eventos.append("g3")
+            return _Aplicacao(ProtectionOutcome.ALLOWED)
+
+    class _Selo:
+        def seal_step_for_export(self, **_: Any) -> Any:
+            eventos.append("seal")
+
+            @dataclass(frozen=True)
+            class _Saida:
+                attempt_id: uuid.UUID
+                attempt_number: int = 1
+                receipt_id: uuid.UUID = uuid.uuid4()
+                content_sha256: str = "a" * 64
+
+            return _Saida(attempt_id=attempt_id)
+
+    servico = SupervisedAutomaticHandoffExportService(
+        _Repositorio(),
+        _Selo(),
+        protecao=_Protecao(),
+        operacao="expose",
+        objetivo_por_step=lambda **_: "objetivo",
+    )
+    servico.export_step(
+        attempt_id=attempt_id,
+        control_principal_ref="principal-1",
+        schedule_id=uuid.uuid4(),
+        step_id=uuid.uuid4(),
+        sealer_ref="principal-1",
+    )
+    assert eventos == ["lock", "g3", "seal", "state"]

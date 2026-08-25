@@ -26,7 +26,7 @@ DUPLICATED_SCOPE_CHECK = SECOND_AUTHORITY_THAT_DRIFTS
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from app.mcp import TOOL_NAMES
 from app.mcp.auth import PrincipalAutenticado
@@ -46,6 +46,16 @@ from app.mcp.schemas import (
 
 class ToolDesconhecidaError(Exception):
     """Nome fora das cinco. Recusa, nunca despacho dinâmico."""
+
+
+class McpToolsPort(Protocol):
+    """Superfície mínima consumida pelo runtime MCP."""
+
+    def nomes(self) -> tuple[str, ...]: ...
+
+    def chamar(
+        self, *, nome: str, argumentos: dict[str, Any], principal: PrincipalAutenticado
+    ) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)

@@ -54,6 +54,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from app.mcp import TOOL_NAMES
+from app.mcp.auth import PrincipalAutenticado
+from app.mcp.tools import McpToolsPort
+
 
 @dataclass(frozen=True)
 class RuntimeDependencies:
@@ -67,6 +71,37 @@ class RuntimeDependencies:
     jwks: Any
     principal_resolver: Any
     quota: Any
+
+
+class TransactionalMcpTools:
+    """Abre, confirma/reverte e fecha uma sessão em cada chamada MCP."""
+
+    def __init__(self, deps: RuntimeDependencies) -> None:
+        self._deps = deps
+
+    def nomes(self) -> tuple[str, ...]:
+        return TOOL_NAMES
+
+    def chamar(
+        self,
+        *,
+        nome: str,
+        argumentos: dict[str, Any],
+        principal: PrincipalAutenticado,
+    ) -> dict[str, Any]:
+        with self._deps.session_factory() as sessao:
+            try:
+                ferramentas: McpToolsPort = construir_servicos(sessao, self._deps)
+                resposta = ferramentas.chamar(
+                    nome=nome,
+                    argumentos=argumentos,
+                    principal=principal,
+                )
+                sessao.commit()
+                return resposta
+            except Exception:
+                sessao.rollback()
+                raise
 
 
 def construir_servicos(sessao: Any, deps: RuntimeDependencies) -> Any:
@@ -153,7 +188,8 @@ def criar_runtime(deps: RuntimeDependencies) -> Any:
         quota=deps.quota,
     )
 
-    with deps.session_factory() as sessao:
-        tools = construir_servicos(sessao, deps)
-
-    return criar_app(tools=tools, autenticador=autenticador, config=deps.resource_config)
+    return criar_app(
+        tools=TransactionalMcpTools(deps),
+        autenticador=autenticador,
+        config=deps.resource_config,
+    )

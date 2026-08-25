@@ -80,7 +80,9 @@ executar 04_mcp_unitarias  python -m pytest tests/unit/mcp/ -q --no-cov -p no:ca
 executar 05_concorrencia python -m pytest -q --no-cov -p no:cacheprovider -k concorrencia
 
 # --- 5. mutantes: UM POR VEZ ------------------------------------------------
-[ -f scripts/e742_mcp_mutants.py ] && executar 06_mutantes_e742 python scripts/e742_mcp_mutants.py
+[ -f scripts/e742_mcp_mutants.py ] || {
+  echo "M0: arnês obrigatório E7.4-2 ausente." >&2; exit 2; }
+executar 06_mutantes_e742 python scripts/e742_mcp_mutants.py
 executar 07_mutantes_b3free python scripts/e741_b3free_mutants.py
 executar 08_mutantes_novos  python scripts/e741_hp_mutants.py
 executar 09_mutantes_e71    python scripts/mutation_evidence_e71.py

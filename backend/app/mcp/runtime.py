@@ -34,12 +34,12 @@ from app.mcp.auth import (
     metadata_do_recurso,
 )
 from app.mcp.token_verifier import PiaAccessToken, PiaTokenVerifier, montar_auth_settings
-from app.mcp.tools import McpTools
+from app.mcp.tools import McpToolsPort
 
 
 def criar_app(
     *,
-    tools: McpTools,
+    tools: McpToolsPort,
     autenticador: ResourceServerAuthenticator,
     config: ResourceServerConfig,
 ) -> Any:
@@ -76,7 +76,7 @@ def criar_app(
     return aplicacao
 
 
-def _registrar(servidor: Any, tools: McpTools, nome: str) -> None:
+def _registrar(servidor: Any, tools: McpToolsPort, nome: str) -> None:
     """Registra uma tool. A assinatura tem SOMENTE `arguments`.
 
     Qualquer parâmetro extra aqui vira campo do `inputSchema` publicado
@@ -85,8 +85,15 @@ def _registrar(servidor: Any, tools: McpTools, nome: str) -> None:
     """
 
     async def _executar(arguments: dict[str, Any]) -> dict[str, Any]:
+        from anyio import to_thread
+
         principal = _principal_da_requisicao()
-        return tools.chamar(nome=nome, argumentos=arguments, principal=principal)
+        # Os serviços e a sessão SQLAlchemy são síncronos. Executá-los no
+        # event loop serializaria clientes MCP e transformaria uma chamada
+        # lenta em indisponibilidade global do runtime.
+        return await to_thread.run_sync(
+            lambda: tools.chamar(nome=nome, argumentos=arguments, principal=principal)
+        )
 
     _executar.__name__ = nome.replace(".", "_")
     servidor.tool(name=nome)(_executar)

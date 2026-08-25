@@ -232,3 +232,13 @@ def test_mcp10_boundary_nao_e_montado_na_composicao_produtiva() -> None:
 
     assert referencias == [], f"boundary MCP alcancado pela producao: {referencias}"
     assert alcancam_a_raiz == [], f"composition root alcancado: {alcancam_a_raiz}"
+
+
+def test_mcp11_fixture_de_as_nao_e_selecionavel_em_producao() -> None:
+    """Produção nunca importa fixture, helper ou módulo sob ``tests``."""
+    violacoes: list[str] = []
+    for modulo in RAIZ.rglob("*.py"):
+        for importado in _importados(modulo):
+            if importado == "tests" or importado.startswith("tests."):
+                violacoes.append(f"{modulo.relative_to(RAIZ)}: {importado}")
+    assert violacoes == [], f"fixture de teste alcançável pela produção: {violacoes}"
