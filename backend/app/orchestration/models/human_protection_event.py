@@ -16,8 +16,8 @@ foi pedido — `SAFETY_AUDIT_METADATA != DANGEROUS_PAYLOAD_ARCHIVE` (§20.6).
 Precedente literal: `PredictiveReconfigurationEvent` (E5). `BaseModel`
 acrescentaria `updated_at`, e uma coluna de "última atualização" numa tabela
 que recusa `UPDATE` por gatilho seria uma afirmação falsa no schema.
-`decided_at` é o instante da decisão, informado pela aplicação, e não o
-instante da inserção.
+`decided_at` é o instante de persistência atribuído pelo PostgreSQL por
+`server_default=now()`; a aplicação não fornece esse valor.
 
 ## Vocabulários em `String` com `CHECK` explícito
 
@@ -32,7 +32,7 @@ levanta em vez de virar texto solto.
 ## Onde cada garantia mora (Master Parte III §15.2)
 
 ```text
-DB_LEVEL  os 30 CHECK de linha, as 3 FKs e o UNIQUE de idempotência, aqui
+DB_LEVEL  os CHECK de linha derivados de CHECKS_DO_EVENTO, 3 FKs e UNIQUE, aqui
 DB_LEVEL  UPDATE/DELETE/TRUNCATE recusados por gatilho, na migration
 DB_LEVEL  coerência pai/filha avaliada no COMMIT, constraint trigger diferido
 APPLICATION_LEVEL  as mesmas regras de linha, em HumanProtectionApplication
@@ -92,8 +92,10 @@ CHECKS_DO_EVENTO: tuple[tuple[str, str], ...] = (
     ("ck_hpe_revoked_non_neg", "delegations_revoked >= 0"),
     (
         "ck_hpe_blocked_engagement",
-        f"outcome <> 'blocked' OR capability_engagement IN {_ENGAGEMENTS_QUE_BLOQUEIAM_SQL}",
+        "outcome <> 'blocked' OR (capability_engagement IS NOT NULL AND "
+        f"capability_engagement IN {_ENGAGEMENTS_QUE_BLOQUEIAM_SQL})",
     ),
+    ("ck_hpe_allowed_no_engagement", "outcome <> 'allowed' OR capability_engagement IS NULL"),
     ("ck_hpe_allowed_no_pause", "outcome <> 'allowed' OR pause_applied = false"),
     ("ck_hpe_allowed_no_revoke", "outcome <> 'allowed' OR delegations_revoked = 0"),
     (
@@ -123,7 +125,7 @@ CHECKS_DO_EVENTO: tuple[tuple[str, str], ...] = (
     ("ck_hpe_non_g3_no_binding_attempt", "gate_position = 'g3' OR binding_attempt_id IS NULL"),
     ("ck_hpe_attempt_matches_binding", "attempt_id IS NULL OR attempt_id = binding_attempt_id"),
 )
-"""Os trinta `CHECK` de linha, na ordem do schema aprovado no R10.1.
+"""Os `CHECK` de linha, na ordem do schema efetivo.
 
 Fonte única desta declaração no ORM; a migration repete o mesmo conjunto e um
 teste estático compara os dois com o `pg_constraint` real.

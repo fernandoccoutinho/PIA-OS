@@ -27,6 +27,7 @@ GUARD_EXIT_0_WITH_KNOWN_FORBIDDEN_FIXTURE = GUARD_FAILURE
 """
 
 import ast
+import importlib.util
 import pathlib
 import re
 
@@ -46,7 +47,15 @@ REPOSITORIO_HP = ORQUESTRACAO / "repositories" / "human_protection_repository.py
 ADAPTADOR = APP / "services" / "governance_bridge.py"
 ROUTER = APP / "routers" / "orchestration.py"
 MAIN = BACKEND / "main.py"
-MIGRATION = BACKEND / "alembic" / "versions" / "d7a4c1e93b28_human_protection_bridge_e7_4_1_b1a.py"
+MIGRATION_B1A = (
+    BACKEND / "alembic" / "versions" / "d7a4c1e93b28_human_protection_bridge_e7_4_1_b1a.py"
+)
+MIGRATION_CHAIN124 = (
+    BACKEND
+    / "alembic"
+    / "versions"
+    / "f4c8b0d51e73_close_human_protection_temporal_and_sql_gaps.py"
+)
 DOCS = BACKEND / "docs" / "entregas" / "entrega-7"
 
 #: Nunca existem no código nem no schema produtivos (contrato R10.1).
@@ -195,7 +204,7 @@ def test_hp_s05_nenhum_composition_root_produtivo_instancia_a_ponte() -> None:
 
 def test_hp_s06_nenhum_simbolo_de_dublê_existe_no_codigo_produtivo() -> None:
     """`TEST_DOUBLE_IN_PRODUCTION_SCHEMA = PRODUCTION_CAPABILITY`."""
-    for caminho in sorted(APP.rglob("*.py")) + [MIGRATION]:
+    for caminho in sorted(APP.rglob("*.py")) + [MIGRATION_B1A, MIGRATION_CHAIN124]:
         encontrados = _nomes(caminho) & SIMBOLOS_PROIBIDOS
         assert not encontrados, f"{caminho}: {sorted(encontrados)}"
 
@@ -273,21 +282,43 @@ def _checks_declarados(caminho: pathlib.Path, nome_da_tupla: str) -> set[str]:
     raise AssertionError(f"{nome_da_tupla} não encontrada em {caminho}")
 
 
-def test_hp_s10_o_orm_e_a_migration_declaram_os_mesmos_checks() -> None:
-    """Reconciliação MECÂNICA entre as duas declarações.
+def _carregar_modulo(caminho: pathlib.Path, nome: str):
+    especificacao = importlib.util.spec_from_file_location(nome, caminho)
+    assert especificacao is not None and especificacao.loader is not None
+    modulo = importlib.util.module_from_spec(especificacao)
+    especificacao.loader.exec_module(modulo)
+    return modulo
+
+
+def test_hp_s10_o_orm_e_as_migrations_declaram_os_mesmos_checks_e_predicados() -> None:
+    """Reconciliação MECÂNICA de nomes e predicados efetivos.
 
     ```text
     PARTIAL_ENUMERATION = GUARD_WITH_A_HOLE
     ```
 
-    Declarar em dois lugares só é aceitável quando algo compara os dois. É
-    isto.
+    Comparar somente nomes passaria verde justamente quando ORM e migration
+    dessem significados diferentes ao mesmo nome.
     """
-    assert _checks_declarados(MODELO_EVENTO, "CHECKS_DO_EVENTO") == _checks_declarados(
-        MIGRATION, "_CHECKS_DO_EVENTO"
+    from app.orchestration.models.human_protection_event import (
+        CHECKS_DA_CAPACIDADE,
+        CHECKS_DO_EVENTO,
     )
-    assert _checks_declarados(MODELO_EVENTO, "CHECKS_DA_CAPACIDADE") == _checks_declarados(
-        MIGRATION, "_CHECKS_DA_CAPACIDADE"
+
+    base = _carregar_modulo(MIGRATION_B1A, "hp_migration_b1a")
+    corretivo = _carregar_modulo(MIGRATION_CHAIN124, "hp_migration_chain124")
+    checks_efetivos = dict(base._CHECKS_DO_EVENTO)
+    checks_efetivos.update(dict(corretivo.CHECKS_CORRETIVOS))
+
+    assert dict(CHECKS_DO_EVENTO) == checks_efetivos
+    assert dict(CHECKS_DA_CAPACIDADE) == dict(base._CHECKS_DA_CAPACIDADE)
+
+
+def test_hp_s10b_downgrade_restaura_o_predicado_chain123() -> None:
+    base = _carregar_modulo(MIGRATION_B1A, "hp_migration_b1a_downgrade")
+    corretivo = _carregar_modulo(MIGRATION_CHAIN124, "hp_migration_chain124_downgrade")
+    assert (
+        dict(base._CHECKS_DO_EVENTO)["ck_hpe_blocked_engagement"] == corretivo._PREDICADO_CHAIN123
     )
 
 
@@ -299,8 +330,14 @@ def test_hp_s11_a_contagem_de_checks_vem_do_metadata_e_nao_de_lista() -> None:
     evento = Base.metadata.tables["human_protection_events"]
     associacao = Base.metadata.tables["human_protection_event_capabilities"]
     tipo = "CheckConstraint"
-    assert len([c for c in evento.constraints if type(c).__name__ == tipo]) == 30
+    from app.orchestration.models.human_protection_event import (
+        CHECKS_DA_CAPACIDADE,
+        CHECKS_DO_EVENTO,
+    )
+
+    assert len([c for c in evento.constraints if type(c).__name__ == tipo]) == len(CHECKS_DO_EVENTO)
     assert len([c for c in associacao.constraints if type(c).__name__ == tipo]) == 2
+    assert len(CHECKS_DA_CAPACIDADE) == 2
     assert len([c for c in evento.constraints if type(c).__name__ == "ForeignKeyConstraint"]) == 3
 
 

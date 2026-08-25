@@ -112,8 +112,11 @@ class HumanProtectionBridge:
         o que amarra a resposta à pergunta é o `binding_sha256` recalculado
         sobre os dez campos do binding recebido.
         """
-        agora = moment if moment is not None else datetime.now(UTC)
         vista = self._resolver(query)
+        # A porta produtiva pode carimbar ``evaluated_at`` usando o relógio
+        # real. Capturar o consumo antes da resolução cria uma corrida em que
+        # a decisão parece vir do futuro.
+        agora = moment if moment is not None else datetime.now(UTC)
         self._exigir_vinculo(vista, query.binding)
         self._exigir_validade(vista, agora)
         return vista
@@ -160,7 +163,7 @@ class HumanProtectionBridge:
 
     @staticmethod
     def _exigir_validade(vista: GovernanceResolutionView, agora: datetime) -> None:
-        if agora > vista.valid_until:
+        if agora >= vista.valid_until:
             raise HumanProtectionGateUnavailableError(
                 "resolução vencida — decisão expirada não autoriza nem recusa"
             )
@@ -224,6 +227,7 @@ class HumanProtectionBridge:
         vista: GovernanceResolutionView,
         binding: GovernanceBinding,
         efeitos: ProtectionEffects,
+        moment: datetime | None = None,
     ) -> HumanProtectionApplication:
         """Registra a aplicação uma única vez por `(fingerprint, gate, binding)`.
 
@@ -233,6 +237,10 @@ class HumanProtectionBridge:
         """
         self._exigir_vinculo(vista, binding)
         aplicacao = self.montar_aplicacao(vista=vista, binding=binding, efeitos=efeitos)
+        # Avaliar ainda dentro da janela não autoriza uma escrita posterior ao
+        # vencimento. Esta é a última validação antes do efeito persistente.
+        agora = moment if moment is not None else datetime.now(UTC)
+        self._exigir_validade(vista, agora)
         if self._repository.inserir_se_ausente(aplicacao) is None:
             self._repository.confirmar_vencedor(aplicacao)
         return aplicacao

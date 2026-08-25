@@ -1593,5 +1593,5 @@ def test_gi435_corrective_created_no_table_and_no_migration_head_change():
             sa.text("SELECT to_regclass('public.retention_policies')")
         ).scalar_one()
     assert existe is not None
-    assert migrations.head_revision() == "d7a4c1e93b28"
-    assert migrations.current_revision() == "d7a4c1e93b28"
+    assert migrations.head_revision() == "f4c8b0d51e73"
+    assert migrations.current_revision() == "f4c8b0d51e73"

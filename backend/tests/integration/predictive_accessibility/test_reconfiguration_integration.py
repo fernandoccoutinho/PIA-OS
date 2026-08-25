@@ -324,7 +324,7 @@ def test_e5l_migration_round_trip_vazio() -> None:
             is None
         )
     migrations.upgrade("head")
-    assert migrations.current_revision() == "d7a4c1e93b28"
+    assert migrations.current_revision() == "f4c8b0d51e73"
     with engine.connect() as connection:
         assert (
             connection.execute(
@@ -341,7 +341,7 @@ def test_e5l_downgrade_com_historico_recusa_antes_de_ddl() -> None:
         session.commit()
     with pytest.raises(RuntimeError, match="downgrade recusado"):
         migrations.downgrade(_PARENT_REVISION)
-    assert migrations.current_revision() == "d7a4c1e93b28"
+    assert migrations.current_revision() == "f4c8b0d51e73"
     with engine.connect() as connection:
         assert (
             connection.execute(

@@ -175,8 +175,8 @@ class GovernanceResolutionView:
         object.__setattr__(self, "binding_sha256", _hash("binding_sha256", self.binding_sha256))
         object.__setattr__(self, "evaluated_at", _instante("evaluated_at", self.evaluated_at))
         object.__setattr__(self, "valid_until", _instante("valid_until", self.valid_until))
-        if self.valid_until < self.evaluated_at:
-            raise ValueError("valid_until anterior a evaluated_at — validade inexistente")
+        if self.valid_until <= self.evaluated_at:
+            raise ValueError("valid_until deve ser posterior a evaluated_at — validade inexistente")
 
         self._validar_coerencia()
 

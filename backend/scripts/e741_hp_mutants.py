@@ -38,7 +38,9 @@ vínculo derivado    M-BINDING-SKIP · M-STALE-ATTEMPT
 idempotência        M-WINNER-CAPS-ONLY · M-CONFLICT-SILENT
 fronteira de pacote M-IMPORT-E4
 efeito sem coerência M-BLOCK-NO-PAUSE
-schema              M-CHECK-DROP · M-COHERENCE-IMMEDIATE · M-APPEND-ONLY
+tempo                M-CLOCK-ORDER · M-ZERO-VALIDITY · M-REGISTER-REVALIDATE
+schema              M-BLOCKED-NULL · M-ALLOWED-CHECK · M-ORM-CHECK-DRIFT
+                    M-DOWNGRADE-RESTORE · M-COHERENCE-IMMEDIATE · M-APPEND-ONLY
 composição precoce  M-COMPOSE-EARLY
 ```
 """
@@ -90,10 +92,47 @@ MUTANTES: tuple[Mutante, ...] = (
     Mutante(
         nome="M-EXPIRED",
         arquivo="app/orchestration/protection/bridge.py",
-        alvo="        if agora > vista.valid_until:",
+        alvo="        if agora >= vista.valid_until:",
         troca="        if False:",
         testes=(UNITARIOS,),
         descricao="resolução vencida continuaria valendo",
+    ),
+    Mutante(
+        nome="M-CLOCK-ORDER",
+        arquivo="app/orchestration/protection/bridge.py",
+        alvo=(
+            "        vista = self._resolver(query)\n"
+            "        # A porta produtiva pode carimbar ``evaluated_at`` usando o relógio\n"
+            "        # real. Capturar o consumo antes da resolução cria uma corrida em que\n"
+            "        # a decisão parece vir do futuro.\n"
+            "        agora = moment if moment is not None else datetime.now(UTC)"
+        ),
+        troca=(
+            "        agora = moment if moment is not None else datetime.now(UTC)\n"
+            "        vista = self._resolver(query)"
+        ),
+        testes=(UNITARIOS,),
+        descricao="duas leituras reais em ordem inversa reintroduziriam a corrida",
+    ),
+    Mutante(
+        nome="M-ZERO-VALIDITY",
+        arquivo="app/orchestration/ports/governance.py",
+        alvo="        if self.valid_until <= self.evaluated_at:",
+        troca="        if self.valid_until < self.evaluated_at:",
+        testes=(UNITARIOS,),
+        descricao="vista com validade de duração zero voltaria a existir",
+    ),
+    Mutante(
+        nome="M-REGISTER-REVALIDATE",
+        arquivo="app/orchestration/protection/bridge.py",
+        alvo=(
+            "        agora = moment if moment is not None else datetime.now(UTC)\n"
+            "        self._exigir_validade(vista, agora)\n"
+            "        if self._repository.inserir_se_ausente(aplicacao) is None:"
+        ),
+        troca="        if self._repository.inserir_se_ausente(aplicacao) is None:",
+        testes=(UNITARIOS,),
+        descricao="decisão poderia expirar entre avaliação e persistência",
     ),
     Mutante(
         nome="M-BINDING-SKIP",
@@ -177,16 +216,43 @@ MUTANTES: tuple[Mutante, ...] = (
         descricao="divergência de vocabulário entre E7 e E4 passaria",
     ),
     Mutante(
-        nome="M-CHECK-DROP",
-        arquivo="alembic/versions/d7a4c1e93b28_human_protection_bridge_e7_4_1_b1a.py",
-        alvo=(
-            "f\"outcome <> 'blocked' OR capability_engagement IN \" "
-            'f"{_ENGAGEMENTS_QUE_BLOQUEIAM_SQL}",'
-        ),
-        troca='        "true",',
+        nome="M-BLOCKED-NULL",
+        arquivo="alembic/versions/f4c8b0d51e73_close_human_protection_temporal_and_sql_gaps.py",
+        alvo="\"outcome <> 'blocked' OR (capability_engagement IS NOT NULL AND \"",
+        troca="\"outcome <> 'blocked' OR (\"",
         testes=(INTEGRACAO,),
-        descricao="CHECK esvaziado deixaria bloqueio analítico entrar no schema real",
+        descricao="CHECK voltaria a aceitar bloqueio com engajamento NULL",
         banco_dedicado=True,
+    ),
+    Mutante(
+        nome="M-ALLOWED-CHECK",
+        arquivo="alembic/versions/f4c8b0d51e73_close_human_protection_temporal_and_sql_gaps.py",
+        alvo="\"outcome <> 'allowed' OR capability_engagement IS NULL\",",
+        troca='"true",',
+        testes=(INTEGRACAO,),
+        descricao="permissão com engajamento deixaria de ser recusada pelo banco",
+        banco_dedicado=True,
+    ),
+    Mutante(
+        nome="M-ORM-CHECK-DRIFT",
+        arquivo="app/orchestration/models/human_protection_event.py",
+        alvo="\"outcome <> 'blocked' OR (capability_engagement IS NOT NULL AND \"",
+        troca="\"outcome <> 'blocked' OR (\"",
+        testes=(ESTATICOS,),
+        descricao="mesmo nome com predicado ORM divergente passaria despercebido",
+    ),
+    Mutante(
+        nome="M-DOWNGRADE-RESTORE",
+        arquivo="alembic/versions/f4c8b0d51e73_close_human_protection_temporal_and_sql_gaps.py",
+        alvo=(
+            "_PREDICADO_CHAIN123 = (\n"
+            "    \"outcome <> 'blocked' OR capability_engagement IN \" "
+            'f"{_ENGAGEMENTS_QUE_BLOQUEIAM_SQL}"\n'
+            ")"
+        ),
+        troca='_PREDICADO_CHAIN123 = "true"',
+        testes=(ESTATICOS,),
+        descricao="downgrade deixaria de restaurar o predicado histórico",
     ),
     Mutante(
         nome="M-COHERENCE-IMMEDIATE",

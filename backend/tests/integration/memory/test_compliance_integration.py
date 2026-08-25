@@ -367,8 +367,8 @@ def test_i07_nenhuma_tabela_de_compliance_existe():
 
 def test_i08_a_cabeca_do_alembic_continua_a_da_cadeia_94():
     """`MIGRATION = NONE` — a E4.10 não sucede a migration da E4.9.9.d."""
-    assert migrations.head_revision() == "d7a4c1e93b28"
-    assert migrations.current_revision() == "d7a4c1e93b28"
+    assert migrations.head_revision() == "f4c8b0d51e73"
+    assert migrations.current_revision() == "f4c8b0d51e73"
 
 
 def test_i09_o_diagnostico_nao_sobrevive_a_avaliacao():

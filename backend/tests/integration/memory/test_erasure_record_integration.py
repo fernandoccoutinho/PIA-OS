@@ -463,8 +463,8 @@ def test_i21_round_trip_da_migration():
 
 def test_i22_single_head():
     # Atualizado pela E4.9.6 — head único, agora `c8a3f5017e94`.
-    assert migrations.head_revision() == "d7a4c1e93b28"
-    assert migrations.current_revision() == "d7a4c1e93b28"
+    assert migrations.head_revision() == "f4c8b0d51e73"
+    assert migrations.current_revision() == "f4c8b0d51e73"
 
 
 # --- Guardas do §15.3 ----------------------------------------------------

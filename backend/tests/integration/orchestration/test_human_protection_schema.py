@@ -1,7 +1,7 @@
 """
 Schema da proteção humana contra PostgreSQL real (`E7.4-1 B1a`).
 
-Aqui ficam as provas que só o banco pode dar: os trinta `CHECK` de linha, as
+Aqui ficam as provas que só o banco pode dar: os `CHECK` de linha derivados, as
 três FKs compostas, a idempotência sob concorrência real de duas conexões, os
 gatilhos append-only e a coerência pai/filha avaliada no `COMMIT`.
 
@@ -32,6 +32,7 @@ import sqlalchemy as sa
 from app.database import migrations
 from app.database.engine import engine
 from app.orchestration.errors.exceptions import HumanProtectionGateUnavailableError
+from app.orchestration.models.human_protection_event import CHECKS_DO_EVENTO
 from app.orchestration.ports.governance_vocabulary import (
     BoundaryCapability,
     BoundaryEngagement,
@@ -55,8 +56,8 @@ from app.repositories.unit_of_work import UnitOfWork
 
 pytestmark = pytest.mark.integration
 
+_REVISION_CHAIN124 = "f4c8b0d51e73"
 _REVISION_B1A = "d7a4c1e93b28"
-_REVISION_PAI = "c58d1e0a94f7"
 
 _EVENTOS = "human_protection_events"
 _CAPACIDADES = "human_protection_event_capabilities"
@@ -230,8 +231,8 @@ def test_hp_i01_a_migration_e_folha_unica_filha_do_parent_autorizado() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(config)
-    assert list(script.get_heads()) == [_REVISION_B1A]
-    assert script.get_revision(_REVISION_B1A).down_revision == _REVISION_PAI
+    assert list(script.get_heads()) == [_REVISION_CHAIN124]
+    assert script.get_revision(_REVISION_CHAIN124).down_revision == _REVISION_B1A
 
 
 def test_hp_i02_inventario_literal_dos_constraints() -> None:
@@ -241,14 +242,11 @@ def test_hp_i02_inventario_literal_dos_constraints() -> None:
         def conta(sql: str, **p: object) -> int:
             return conexao.execute(sa.text(sql), p).scalar_one()
 
-        assert (
-            conta(
-                "SELECT count(*) FROM pg_constraint WHERE conrelid = CAST(:t AS regclass) "
-                "AND contype = 'c'",
-                t=_EVENTOS,
-            )
-            == 30
-        )
+        assert conta(
+            "SELECT count(*) FROM pg_constraint WHERE conrelid = CAST(:t AS regclass) "
+            "AND contype = 'c'",
+            t=_EVENTOS,
+        ) == len(CHECKS_DO_EVENTO)
         assert (
             conta(
                 "SELECT count(*) FROM pg_constraint WHERE conrelid = CAST(:t AS regclass) "
@@ -365,6 +363,16 @@ def test_hp_i10_bloqueio_com_engajamento_analitico_falha() -> None:
     """`ANALYSIS != OPERATIONAL_ENABLEMENT`, imposto pelo banco."""
     with pytest.raises(Exception, match="ck_hpe_blocked_engagement"):
         _bruto(outcome="blocked", capability_engagement="analytical", pause_applied=True)
+
+
+def test_hp_i10b_bloqueio_com_engajamento_nulo_falha_pelo_check_correto() -> None:
+    with pytest.raises(Exception, match="ck_hpe_blocked_engagement"):
+        _bruto(outcome="blocked", capability_engagement=None, pause_applied=True)
+
+
+def test_hp_i10c_permissao_com_engajamento_falha_pelo_check_correto() -> None:
+    with pytest.raises(Exception, match="ck_hpe_allowed_no_engagement"):
+        _bruto(outcome="allowed", capability_engagement="operational_enablement")
 
 
 def test_hp_i11_bloqueio_fora_de_g1_sem_pausa_falha() -> None:

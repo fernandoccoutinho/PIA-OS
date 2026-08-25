@@ -232,13 +232,13 @@ def test_g01_2_a_e4_10_nao_criou_migration_propria():
     pais = {p for p in grafo.values() if p}
     folhas = sorted(r for r in grafo if r not in pais)
     # ATUALIZADO PELO B1a DA E7.4-1 (proteção humana): a folha passou a ser
-    # `d7a4c1e93b28`; antes `c58d1e0a94f7` (corretivo R1 do kernel de
+    # `f4c8b0d51e73`; antes `d7a4c1e93b28` (B1a) e `c58d1e0a94f7` (kernel de
     # conexões); antes `b47e9c05d3fa` (kernel de conexões); antes
     # `a91d3f7c26be` (orquestração). A guarda continua medindo folha ÚNICA —
     # não imobilidade da cadeia.
     #
     #     DOCUMENTAÇÃO_DESATUALIZADA = AFIRMAÇÃO_FALSA_NO_REPOSITÓRIO
-    assert folhas == ["d7a4c1e93b28"], folhas
+    assert folhas == ["f4c8b0d51e73"], folhas
 
 
 def test_g99_1_a_guarda_de_persistencia_detecta_um_modelo():

@@ -512,6 +512,12 @@ def test_hp_u24_a_vista_recusa_capacidade_repetida() -> None:
         )
 
 
+def test_hp_u24b_a_vista_recusa_validade_de_duracao_zero() -> None:
+    binding = _binding()
+    with pytest.raises(ValueError, match="deve ser posterior"):
+        _vista(binding, evaluated_at=binding.valid_until)
+
+
 # --- invariantes da consulta ------------------------------------------------
 
 
@@ -817,6 +823,13 @@ def test_hp_u50_resolucao_vencida_nao_autoriza_nem_recusa() -> None:
         _ponte(porta).avaliar(_query(binding), moment=_VALIDADE + timedelta(seconds=1))
 
 
+def test_hp_u50b_instante_exato_da_expiracao_e_vencido() -> None:
+    binding = _binding()
+    porta = _PortaDeTeste(_vista(binding))
+    with pytest.raises(HumanProtectionGateUnavailableError, match="vencida"):
+        _ponte(porta).avaliar(_query(binding), moment=_VALIDADE)
+
+
 def test_hp_u51_resolucao_do_futuro_e_incoerente() -> None:
     binding = _binding()
     porta = _PortaDeTeste(_vista(binding))
@@ -834,6 +847,17 @@ def test_hp_u52_avaliar_sem_moment_usa_o_relogio() -> None:
     binding = _binding(valid_until=_AGORA + timedelta(hours=1))
     vista = _vista(binding, evaluated_at=_AGORA - timedelta(hours=1))
     assert _ponte(_PortaDeTeste(vista)).avaliar(_query(binding)) is vista
+
+
+def test_hp_u52a_defaults_produtivos_nao_criam_corrida_de_relogio() -> None:
+    """A porta carimba primeiro; a ponte captura o consumo depois."""
+    binding = _binding(valid_until=datetime.now(UTC) + timedelta(hours=1))
+    for _ in range(20):
+        adaptador = GovernanceResolutionAdapter(
+            GovernanceManager(_RepositorioNaoConsultado())  # type: ignore[arg-type]
+        )
+        ponte = HumanProtectionBridge(adaptador, _RepositorioDeMemoria())  # type: ignore[arg-type]
+        assert ponte.avaliar(_query(binding)).outcome is BoundaryOutcome.NOT_APPLICABLE
 
 
 def test_hp_u53_desfecho_inesperado_na_ponte_e_indisponibilidade() -> None:
@@ -880,6 +904,44 @@ def test_hp_u56_registrar_com_binding_alheio_e_recusado() -> None:
         _ponte(_PortaDeTeste(None)).registrar_aplicacao(
             vista=_vista(binding), binding=outro, efeitos=ProtectionEffects()
         )
+
+
+def test_hp_u56b_expirar_entre_avaliacao_e_registro_nao_escreve() -> None:
+    binding = _binding()
+    vista = _vista(binding)
+    repositorio = _RepositorioDeMemoria()
+    ponte = _ponte(_PortaDeTeste(vista), repositorio)
+    assert ponte.avaliar(_query(binding), moment=_AGORA) is vista
+    with pytest.raises(HumanProtectionGateUnavailableError, match="vencida"):
+        ponte.registrar_aplicacao(
+            vista=vista,
+            binding=binding,
+            efeitos=ProtectionEffects(),
+            moment=_VALIDADE,
+        )
+    assert repositorio.linhas == {}
+
+
+def test_hp_u56c_vista_do_futuro_e_recusada_tambem_no_registro() -> None:
+    binding = _binding()
+    with pytest.raises(HumanProtectionGateUnavailableError, match="no futuro"):
+        _ponte(_PortaDeTeste(None)).registrar_aplicacao(
+            vista=_vista(binding),
+            binding=binding,
+            efeitos=ProtectionEffects(),
+            moment=_AGORA - timedelta(microseconds=1),
+        )
+
+
+def test_hp_u56d_registrar_sem_moment_usa_relogio_real() -> None:
+    agora = datetime.now(UTC)
+    binding = _binding(valid_until=agora + timedelta(hours=1))
+    vista = _vista(binding, evaluated_at=agora - timedelta(hours=1))
+    repositorio = _RepositorioDeMemoria()
+    _ponte(_PortaDeTeste(None), repositorio).registrar_aplicacao(
+        vista=vista, binding=binding, efeitos=ProtectionEffects()
+    )
+    assert len(repositorio.linhas) == 1
 
 
 def test_hp_u57_retry_do_mesmo_bloqueio_nao_duplica_evento() -> None:

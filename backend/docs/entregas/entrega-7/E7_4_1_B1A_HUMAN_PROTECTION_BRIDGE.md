@@ -132,7 +132,7 @@ guarda reprova qualquer documento que os fixe em prosa.
 ## 5. O que o banco impõe
 
 ```text
-DB_LEVEL  30 CHECK de linha no evento, 2 na associação
+DB_LEVEL  CHECK de linha derivados do metadata no evento, 2 na associação
 DB_LEVEL  3 FKs no evento, 1 na associação
 DB_LEVEL  UNIQUE(decision_fingerprint, gate_position, binding_sha256)
 DB_LEVEL  UPDATE/DELETE/TRUNCATE recusados por gatilho nas duas tabelas
