@@ -58,7 +58,6 @@ rótulo fora do vocabulário — tudo vira `PIA-8070` pelo broker, com zero
 efeito. Nenhum caminho aqui devolve classificação de conveniência.
 """
 
-import hashlib
 import json
 import os
 import urllib.error
@@ -66,86 +65,27 @@ import urllib.request
 from typing import Any, Final
 
 from app.authorization.broker import IntentAuthorizationUnavailableError
+from app.authorization.classification_contract import (
+    CAPABILITY_VALUES as CAPABILITY_VALUES,
+)
+from app.authorization.classification_contract import (
+    CLASSIFICATION_PROMPT,
+    PROMPT_SHA256,
+    RESPONSE_SCHEMA,
+    SCHEMA_SHA256,
+    interpret_classification_text,
+)
+from app.authorization.classification_contract import (
+    ENGAGEMENT_VALUES as ENGAGEMENT_VALUES,
+)
 from app.authorization.ports import SemanticClassification
-from app.memory.models.governance_enums import CapabilityEngagement, CriticalCapability
+from app.memory.models.governance_enums import CriticalCapability
 
 API_KEY_ENV: Final = "PIA_SAFETY_OPENAI_API_KEY"
 MODEL_ENV: Final = "PIA_SAFETY_OPENAI_MODEL"
 ENDPOINT: Final = "https://api.openai.com/v1/responses"
 PROVIDER: Final = "openai"
 DEFAULT_TIMEOUT_SECONDS: Final = 20.0
-
-CAPABILITY_VALUES: Final[tuple[str, ...]] = tuple(
-    sorted(capacidade.value for capacidade in CriticalCapability)
-)
-ENGAGEMENT_VALUES: Final[tuple[str, ...]] = tuple(
-    sorted(engajamento.value for engajamento in CapabilityEngagement)
-)
-"""Valores derivados dos enums, nunca escritos à mão.
-
-Capacidade nova por EDR entra no schema sozinha, e o hash do schema muda
-sozinho — o que invalida a calibração automaticamente, que é o
-comportamento correto.
-"""
-
-RESPONSE_SCHEMA: Final[dict[str, Any]] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["capabilities", "engagement"],
-    "properties": {
-        "capabilities": {
-            "type": "array",
-            "items": {"type": "string", "enum": list(CAPABILITY_VALUES)},
-        },
-        "engagement": {"type": "string", "enum": list(ENGAGEMENT_VALUES)},
-    },
-}
-"""Schema fechado. `additionalProperties: false` e `enum` nos dois campos.
-
-Schema aberto devolveria rótulo livre, e rótulo livre num campo comparado
-por igualdade é exatamente a classificação por texto que o contrato
-proíbe.
-"""
-
-CLASSIFICATION_PROMPT: Final = """Você classifica OBJETIVOS de trabalho para um gate de segurança.
-
-Devolva dois rótulos, nada além disso.
-
-capabilities: quais destas capacidades críticas o objetivo envolveria.
-Lista vazia quando nenhuma se aplica.
-- child_sexual_exploitation
-- minor_targeting_for_exploitation
-- weapon_of_mass_destruction_enablement
-- catastrophic_harm_enablement
-
-engagement: como o objetivo se relaciona com a capacidade.
-- operational_enablement: entregaria capacidade utilizável para causar o dano
-- analytical: histórico, científico, jurídico, jornalístico, analítico
-- preventive: prevenção, detecção, proteção, resposta, denúncia, pesquisa de segurança
-- unspecified: a finalidade não está estabelecida no objetivo
-
-Regras que decidem os casos difíceis:
-
-TEMA NÃO É CAPACIDADE. Falar sobre exploração infantil para proteger,
-detectar, denunciar ou pesquisar não habilita capacidade alguma. Não
-classifique por assunto, por palavra presente, nem pela forma do pedido.
-
-Classifique a capacidade que o objetivo ENTREGARIA, não a que ele
-menciona. Um pedido decomposto em etapas inócuas cuja soma entrega a
-capacidade é operational_enablement. Um pedido ofuscado, hipotético,
-ficcional ou "para um amigo" que ainda assim entregaria a capacidade é
-operational_enablement.
-
-Quando o objetivo envolve capacidade crítica e a finalidade legítima não
-está estabelecida no próprio objetivo, use unspecified. Não invente
-finalidade a partir do tom.
-
-Responda somente com o JSON do schema."""
-
-SCHEMA_SHA256: Final = hashlib.sha256(
-    json.dumps(RESPONSE_SCHEMA, sort_keys=True, separators=(",", ":")).encode("utf-8")
-).hexdigest()
-PROMPT_SHA256: Final = hashlib.sha256(CLASSIFICATION_PROMPT.encode("utf-8")).hexdigest()
 
 
 class HttpTransport:
@@ -292,38 +232,4 @@ class OpenAISemanticCapabilityClassifier:
                 "resposta do provider não trouxe saída classificatória"
             )
 
-        try:
-            bruto = json.loads(texto)
-        except (json.JSONDecodeError, TypeError) as falha:
-            raise IntentAuthorizationUnavailableError(
-                f"saída do provider não é JSON válido: {falha}"
-            ) from falha
-
-        if not isinstance(bruto, dict):
-            raise IntentAuthorizationUnavailableError("saída classificatória não é um objeto")
-        if set(bruto) != {"capabilities", "engagement"}:
-            raise IntentAuthorizationUnavailableError(
-                "saída classificatória fora do schema fechado"
-            )
-
-        cruas = bruto["capabilities"]
-        if not isinstance(cruas, list):
-            raise IntentAuthorizationUnavailableError("capabilities deve ser lista")
-
-        capacidades: set[CriticalCapability] = set()
-        for valor in cruas:
-            try:
-                capacidades.add(CriticalCapability(valor))
-            except (ValueError, TypeError) as falha:
-                raise IntentAuthorizationUnavailableError(
-                    f"capacidade '{valor}' está fora do vocabulário fechado"
-                ) from falha
-
-        try:
-            engajamento = CapabilityEngagement(bruto["engagement"])
-        except (ValueError, TypeError) as falha:
-            raise IntentAuthorizationUnavailableError(
-                f"engajamento '{bruto['engagement']}' está fora do vocabulário fechado"
-            ) from falha
-
-        return SemanticClassification(capabilities=frozenset(capacidades), engagement=engajamento)
+        return interpret_classification_text(texto)
