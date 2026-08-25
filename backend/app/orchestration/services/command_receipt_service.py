@@ -30,7 +30,7 @@ import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 from app.orchestration.errors.exceptions import (
     OrchestrationContractViolationError,
@@ -43,7 +43,6 @@ from app.orchestration.schemas.envelope import MAX_REF_LENGTH, ScheduleDraft
 from app.orchestration.services.handoff_service import HandoffService
 from app.orchestration.services.manual_handoff_export_service import (
     ExportOutcome,
-    ManualHandoffExportService,
 )
 from app.orchestration.services.return_validation_service import (
     DeclaredAttribution,
@@ -103,6 +102,34 @@ def _digest_de_conteudo(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+class ExportServicePort(Protocol):
+    """Quem materializa uma exportação. NEUTRO quanto ao modo.
+
+    ```text
+    MANUAL_EXPORT and SUPERVISED_EXPORT are SIBLINGS
+    ```
+
+    Existe para que a composição HTTP continue recebendo
+    `ManualHandoffExportService` e a composição MCP receba o serviço
+    supervisionado, sem que nenhuma das duas conheça a outra. O tipo
+    concreto saiu da assinatura; o comportamento de cada caminho não
+    mudou em nada.
+    """
+
+    def export_step(
+        self,
+        *,
+        attempt_id: uuid.UUID,
+        control_principal_ref: str,
+        schedule_id: uuid.UUID,
+        step_id: uuid.UUID,
+        sealer_ref: str,
+        authorization: Any | None = None,
+    ) -> Any:
+        """Materializa a exportação e devolve o desfecho."""
+        ...
+
+
 @dataclass(frozen=True)
 class CommandOutcome:
     """Recibo de comando + se ele foi recuperado em vez de produzido.
@@ -128,7 +155,7 @@ class CommandReceiptService:
         repository: OrchestrationRepository,
         schedule_service: ScheduleService,
         handoff_service: HandoffService,
-        export_service: ManualHandoffExportService | None = None,
+        export_service: "ExportServicePort | None" = None,
         return_validation_service: ReturnValidationService | None = None,
         delegation_service: "DelegationService | None" = None,
         control_service: "ControlService | None" = None,
@@ -143,7 +170,7 @@ class CommandReceiptService:
         self._export_service = export_service
         self._return_validation_service = return_validation_service
 
-    def _exigir_export(self) -> ManualHandoffExportService:
+    def _exigir_export(self) -> "ExportServicePort":
         if self._export_service is None:
             raise OrchestrationContractViolationError(
                 message="serviço de exportação não configurado nesta composição"

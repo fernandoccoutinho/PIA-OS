@@ -120,7 +120,6 @@ class McpTools:
                 schedule_id=entrada.schedule_id,
                 step_id=entrada.step_id,
                 command_key=entrada.command_key,
-                request_sha256=entrada.request_sha256,
             )
             return {
                 "attempt_id": str(resultado.attempt_id),
@@ -130,11 +129,18 @@ class McpTools:
             }
 
         assert isinstance(entrada, ReturnImportInput)
-        veredito = self._s.retorno.importar(
+        veredito = self._s.retorno.importar_retorno(
             control_principal_ref=ref,
+            command_key=entrada.command_key,
             schedule_id=entrada.schedule_id,
+            step_id=entrada.step_id,
             attempt_id=entrada.attempt_id,
-            payload=entrada.payload,
+            media_type=entrada.media_type,
+            content=entrada.content,
+            declared_output_ref=entrada.declared_output_ref,
+            declared_instance_id=entrada.declared_instance_id,
+            declared_provider_id=entrada.declared_provider_id,
+            declared_model_id=entrada.declared_model_id,
         )
         # Retorno da IA é dado NÃO CONFIÁVEL e transitório: sai o veredito,
         # nunca o conteúdo. Rejeitado continua resultado persistido, não

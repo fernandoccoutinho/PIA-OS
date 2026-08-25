@@ -57,16 +57,46 @@ class GovernanceReadInput(_Fechado):
 
 
 class HandoffExportInput(_Fechado):
+    """Sem `request_sha256`.
+
+    O `CommandReceiptService` **deriva** a impressão digital canônica a
+    partir da operação e dos identificadores. Aceitá-la do cliente
+    deixaria quem chama escolher a chave de idempotência do servidor — e
+    duas requisições materialmente diferentes poderiam se declarar a
+    mesma.
+
+    ```text
+    CLIENT_SUPPLIED_FINGERPRINT = CLIENT_CHOOSES_WHAT_COUNTS_AS_SAME
+    ```
+    """
+
     schedule_id: uuid.UUID
     step_id: uuid.UUID
     command_key: str
-    request_sha256: str
 
 
 class ReturnImportInput(_Fechado):
+    """Campos tipados, nunca `payload: dict` genérico.
+
+    Um dicionário livre atravessaria o schema fechado carregando o que
+    quisesse: os campos que o `ReturnValidationService` exige ficariam
+    sem validação de fronteira, e os que ele não conhece entrariam junto.
+
+    ```text
+    GENERIC_PAYLOAD = CLOSED_SCHEMA_WITH_AN_OPEN_HOLE
+    ```
+    """
+
+    command_key: str
     schedule_id: uuid.UUID
+    step_id: uuid.UUID
     attempt_id: uuid.UUID
-    payload: dict[str, Any]
+    media_type: str
+    content: str
+    declared_instance_id: str
+    declared_output_ref: str | None = None
+    declared_provider_id: str | None = None
+    declared_model_id: str | None = None
 
 
 ENTRADAS: Final[dict[str, type[_Fechado]]] = {

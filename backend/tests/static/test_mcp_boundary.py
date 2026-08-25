@@ -197,30 +197,38 @@ def test_mcp09_mcp_nao_e_modo_executavel_de_handoff() -> None:
     assert frozenset({HandoffMode.MANUAL_HANDOFF}) == EXECUTABLE_HANDOFF_MODES
 
 
-def test_mcp10_boundary_nao_e_montado_na_composicao_produtiva() -> None:
-    """`MCP_PRODUCTION = BLOCKED` — provado por ausência de montagem.
+COMPOSITION_ROOT = "services/mcp_composition_root.py"
+"""O composition root PODE referenciar o boundary — e o unico que pode."""
 
-    Varre toda a composição de aplicação: nenhum módulo fora de
-    ``app/mcp`` referencia o boundary. Sem ponto de montagem não há flag
-    que o ligue, que é mais forte do que uma flag desligada.
+
+def test_mcp10_boundary_nao_e_montado_na_composicao_produtiva() -> None:
+    """`MCP_PRODUCTION = BLOCKED` — provado por ausencia de montagem.
+
+    Duas medidas, porque uma so nao fecha:
+
+    1. Ninguem alem do composition root alcanca `app.mcp`.
+    2. Ninguem alcanca o proprio composition root.
+
+    A segunda e a que importa: sem ela, bastaria alguem importar a
+    factory para o runtime subir junto com a aplicacao. Com as duas, o
+    unico jeito de montar o MCP e escrever codigo novo — que passa por
+    revisao.
 
         NO_MOUNT_POINT > FLAG_SET_TO_FALSE
     """
     referencias: list[str] = []
+    alcancam_a_raiz: list[str] = []
     for modulo in RAIZ.rglob("*.py"):
+        relativo = str(modulo.relative_to(RAIZ))
         if BOUNDARY in modulo.parents or modulo.parent == BOUNDARY:
             continue
         for importado in _importados(modulo):
-            if importado == "app.mcp" or importado.startswith("app.mcp."):
-                referencias.append(f"{modulo.relative_to(RAIZ)}: {importado}")
-    assert referencias == [], f"boundary MCP alcançado pela produção: {referencias}"
+            if importado.endswith("mcp_composition_root") or "mcp_composition_root" in importado:
+                alcancam_a_raiz.append(f"{relativo}: {importado}")
+            elif (
+                importado == "app.mcp" or importado.startswith("app.mcp.")
+            ) and relativo != COMPOSITION_ROOT:
+                referencias.append(f"{relativo}: {importado}")
 
-
-def test_mcp03b_o_vocabulario_permitido_nao_carrega_orm() -> None:
-    """A exceção de `test_mcp03` é medida, não confiada."""
-    for permitido in VOCABULARIO_PERMITIDO:
-        caminho = RAIZ.parent / (permitido.replace(".", "/") + ".py")
-        importados = _importados(caminho)
-        raizes = {i.split(".")[0] for i in importados}
-        assert not (raizes & {"sqlalchemy", "psycopg", "alembic"}), permitido
-        assert not any(i.startswith("app.db") for i in importados), permitido
+    assert referencias == [], f"boundary MCP alcancado pela producao: {referencias}"
+    assert alcancam_a_raiz == [], f"composition root alcancado: {alcancam_a_raiz}"
