@@ -217,30 +217,126 @@ def _url_de_mutacao() -> str | None:
     return os.environ.get("MUTANT_DATABASE_URL") or os.environ.get("PIA_MUTATION_DATABASE_URL")
 
 
+@dataclass(frozen=True)
+class IdentidadeDeBanco:
+    """Identidade REAL devolvida pelo servidor, não a que a URL declara.
+
+    ```text
+    URL_TEXT != DATABASE_IDENTITY
+    ```
+
+    Duas URLs textualmente diferentes podem abrir o MESMO banco: basta
+    trocar ``localhost`` por ``127.0.0.1``, acrescentar parâmetro de
+    conexão ou variar credencial. Comparar texto não protege nada.
+    """
+
+    database: str
+    endereco: str | None
+    porta: int | None
+
+    @property
+    def indistinguivel(self) -> bool:
+        """Falta componente para decidir se dois bancos são o mesmo.
+
+        Conexão por socket unix devolve ``inet_server_addr()`` e
+        ``inet_server_port()`` nulos. Nesse caso o nome do banco sozinho não
+        distingue servidores, e a recusa é a saída conservadora:
+
+        ```text
+        UNKNOWN_IDENTITY = NOT_A_DISTINCT_IDENTITY
+        ```
+        """
+        return self.endereco is None or self.porta is None
+
+    def __str__(self) -> str:
+        return f"{self.database}@{self.endereco or 'DESCONHECIDO'}:{self.porta or 'DESCONHECIDA'}"
+
+
+def _identidade(url: str) -> IdentidadeDeBanco | str:
+    """Devolve a identidade real da conexão, ou a razão da recusa."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    motor = create_engine(url)
+    try:
+        with motor.connect() as conexao:
+            linha = conexao.execute(
+                text("select current_database(), host(inet_server_addr()), inet_server_port()")
+            ).one()
+    except SQLAlchemyError as erro:
+        return f"CONNECTION_FAILED {type(erro).__name__}"
+    finally:
+        motor.dispose()
+
+    endereco = None if linha[1] is None else str(linha[1])
+    porta = None if linha[2] is None else int(linha[2])
+    return IdentidadeDeBanco(database=str(linha[0]), endereco=endereco, porta=porta)
+
+
 def preparar_banco_de_mutacao() -> str | None:
     """Reconstrói e migra o banco de mutação. Devolve o motivo da recusa, ou None.
 
-    Confirma ``current_database()`` ANTES de derrubar o schema: uma URL não
-    é prova de qual banco está do outro lado da conexão.
+    Toda a verificação de identidade acontece ANTES de qualquer
+    ``DROP SCHEMA``: o arnês conecta-se aos DOIS bancos, pergunta ao
+    PostgreSQL quem ele é em cada conexão e só destrói o schema quando as
+    identidades são distintas e ambas conhecidas.
     """
     from sqlalchemy import create_engine, text
 
     url = _url_de_mutacao()
     if not url:
         return "MUTATION_DB=NOT_CONFIGURED"
-    if url == os.environ.get("DATABASE_URL"):
+    url_teste = os.environ.get("DATABASE_URL")
+    if not url_teste:
+        return "MUTATION_DB=TEST_DATABASE_NOT_CONFIGURED"
+    if url == url_teste:
         return "MUTATION_DB=SAME_AS_TEST_DATABASE"
 
     declarado = urlsplit(url).path.lstrip("/")
     if not declarado:
         return "MUTATION_DB=NO_DATABASE_IN_URL"
 
+    identidade_teste = _identidade(url_teste)
+    if isinstance(identidade_teste, str):
+        return f"MUTATION_DB=TEST_DATABASE_UNREACHABLE {identidade_teste}"
+    identidade_mutacao = _identidade(url)
+    if isinstance(identidade_mutacao, str):
+        return f"MUTATION_DB=UNREACHABLE {identidade_mutacao}"
+
+    if identidade_teste.indistinguivel or identidade_mutacao.indistinguivel:
+        return (
+            "MUTATION_DB=AMBIGUOUS_IDENTITY "
+            f"teste={identidade_teste} mutacao={identidade_mutacao}"
+        )
+    if identidade_teste == identidade_mutacao:
+        return f"MUTATION_DB=SAME_REAL_DATABASE_AS_TEST identidade={identidade_mutacao}"
+    if identidade_mutacao.database != declarado:
+        return (
+            "MUTATION_DB=UNEXPECTED_DATABASE "
+            f"current={identidade_mutacao.database} declarado={declarado}"
+        )
+
+    alternativa = os.environ.get("PIA_MUTATION_DATABASE_URL")
+    principal = os.environ.get("MUTANT_DATABASE_URL")
+    if alternativa and principal and alternativa != principal:
+        identidade_alternativa = _identidade(alternativa)
+        if isinstance(identidade_alternativa, str):
+            return f"MUTATION_DB=ALTERNATE_URL_UNREACHABLE {identidade_alternativa}"
+        if identidade_alternativa.indistinguivel:
+            return f"MUTATION_DB=AMBIGUOUS_IDENTITY alternativa={identidade_alternativa}"
+        if identidade_alternativa != identidade_mutacao:
+            return (
+                "MUTATION_DB=MUTATION_URLS_DISAGREE "
+                f"MUTANT_DATABASE_URL={identidade_mutacao} "
+                f"PIA_MUTATION_DATABASE_URL={identidade_alternativa}"
+            )
+
     motor = create_engine(url)
     try:
         with motor.begin() as conexao:
             atual = conexao.execute(text("select current_database()")).scalar_one()
-            if atual != declarado:
-                return f"MUTATION_DB=UNEXPECTED_DATABASE current={atual} declarado={declarado}"
+            if atual != identidade_mutacao.database:
+                return f"MUTATION_DB=IDENTITY_CHANGED current={atual}"
             conexao.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             conexao.execute(text("CREATE SCHEMA public"))
     finally:
@@ -272,7 +368,8 @@ def preparar_banco_de_mutacao() -> str | None:
     if folha != MIGRATION_LEAF:
         return f"MUTATION_DB=UNEXPECTED_LEAF folha={folha or 'AUSENTE'} esperada={MIGRATION_LEAF}"
 
-    print(f"MUTATION_DB_REBUILT={declarado} LEAF={folha}")
+    print(f"MUTATION_DB_REBUILT={identidade_mutacao} LEAF={folha}")
+    print(f"TEST_DB_PRESERVED={identidade_teste}")
     return None
 
 

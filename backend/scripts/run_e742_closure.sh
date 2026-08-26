@@ -82,6 +82,17 @@ executar 05_concorrencia python -m pytest -q --no-cov -p no:cacheprovider -k con
 # --- 5. mutantes: UM POR VEZ ------------------------------------------------
 [ -f scripts/e742_mcp_mutants.py ] || {
   echo "M0: arnês obrigatório E7.4-2 ausente." >&2; exit 2; }
+
+# Prova NEGATIVA do guard de identidade de banco, ANTES de qualquer arnes
+# destrutivo. Se o guard nao recusa o banco de teste disfarcado de banco de
+# mutacao, nenhum veredito adiante vale: o passo seguinte derruba schema.
+#
+#     A GUARD NEVER SEEN REFUSING IS AN UNPROVEN GUARD
+#
+executar 06_prova_guard_banco python scripts/e742_mutation_guard_proof.py
+grep -qx "GUARD_PROOF=PASS" "$LOGS/06_prova_guard_banco.log" || {
+  echo "M0: prova do guard de banco sem veredito PASS." >&2; exit 1; }
+
 executar 06_mutantes_e742 python scripts/e742_mcp_mutants.py
 executar 07_mutantes_b3free python scripts/e741_b3free_mutants.py
 executar 08_mutantes_novos  python scripts/e741_hp_mutants.py
