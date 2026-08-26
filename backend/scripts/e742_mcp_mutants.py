@@ -4,6 +4,13 @@
 Cada alvo altera produção, exige baseline verde e aborta quando o alvo não
 é único. Os testes PostgreSQL usam o banco de mutação dedicado configurado
 por ``MUTANT_DATABASE_URL``/``PIA_MUTATION_DATABASE_URL``.
+
+O arnês é AUTOSSUFICIENTE quanto ao schema do banco de mutação: ele o
+reconstrói e o migra antes de medir. Depender de outro arnês ter migrado
+antes torna o veredito posicional — verde quando o banco vem sujo de uma
+rodada anterior, vermelho em banco limpo::
+
+    PRECONDITION_PRODUCED_BY_ANOTHER_HARNESS = ORDER_DEPENDENT_VERDICT
 """
 
 from __future__ import annotations
@@ -13,8 +20,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+MIGRATION_LEAF = "f4c8b0d51e73"
 UNIT = "tests/unit/mcp/test_mcp_boundary_functional.py"
 CLIENT = "tests/integration/mcp/test_mcp_client_real.py"
 STATIC = "tests/static/test_mcp_boundary.py"
@@ -204,6 +213,69 @@ MUTANTS = (
 )
 
 
+def _url_de_mutacao() -> str | None:
+    return os.environ.get("MUTANT_DATABASE_URL") or os.environ.get("PIA_MUTATION_DATABASE_URL")
+
+
+def preparar_banco_de_mutacao() -> str | None:
+    """Reconstrói e migra o banco de mutação. Devolve o motivo da recusa, ou None.
+
+    Confirma ``current_database()`` ANTES de derrubar o schema: uma URL não
+    é prova de qual banco está do outro lado da conexão.
+    """
+    from sqlalchemy import create_engine, text
+
+    url = _url_de_mutacao()
+    if not url:
+        return "MUTATION_DB=NOT_CONFIGURED"
+    if url == os.environ.get("DATABASE_URL"):
+        return "MUTATION_DB=SAME_AS_TEST_DATABASE"
+
+    declarado = urlsplit(url).path.lstrip("/")
+    if not declarado:
+        return "MUTATION_DB=NO_DATABASE_IN_URL"
+
+    motor = create_engine(url)
+    try:
+        with motor.begin() as conexao:
+            atual = conexao.execute(text("select current_database()")).scalar_one()
+            if atual != declarado:
+                return f"MUTATION_DB=UNEXPECTED_DATABASE current={atual} declarado={declarado}"
+            conexao.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            conexao.execute(text("CREATE SCHEMA public"))
+    finally:
+        motor.dispose()
+
+    env = os.environ.copy()
+    env["DATABASE_URL"] = url
+    upgrade = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if upgrade.returncode != 0:
+        return f"MUTATION_DB=UPGRADE_FAILED exit={upgrade.returncode}"
+
+    atual_alembic = subprocess.run(
+        [sys.executable, "-m", "alembic", "current"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    linhas = [linha for linha in atual_alembic.stdout.splitlines() if linha.strip()]
+    folha = linhas[-1].split()[0] if linhas else ""
+    if folha != MIGRATION_LEAF:
+        return f"MUTATION_DB=UNEXPECTED_LEAF folha={folha or 'AUSENTE'} esperada={MIGRATION_LEAF}"
+
+    print(f"MUTATION_DB_REBUILT={declarado} LEAF={folha}")
+    return None
+
+
 def run_tests(paths: tuple[str, ...]) -> int:
     env = os.environ.copy()
     mutation_url = env.get("MUTANT_DATABASE_URL") or env.get("PIA_MUTATION_DATABASE_URL")
@@ -220,6 +292,11 @@ def run_tests(paths: tuple[str, ...]) -> int:
 
 
 def main() -> int:
+    recusa = preparar_banco_de_mutacao()
+    if recusa is not None:
+        print(recusa)
+        return 4
+
     baselines: dict[tuple[str, ...], int] = {}
     for mutant in MUTANTS:
         if mutant.tests not in baselines:
