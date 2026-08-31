@@ -30,6 +30,27 @@ guia de início rápido.
 - [Deploy](docs/backend/deployment.md)
 - [Testes](docs/backend/testing.md)
 
+## Entregas
+
+- [E4.9.9.d — Composição Final da E4.9](docs/entregas/entrega-4/E4_9_9_D_DESTRUCTIVE_EXECUTION_COMPOSITION.md)
+  — `DestructiveExecutionService`, alinhamento textual do identificador
+  de regra do recibo e validação prática em sandbox.
+- [E4.10 — Compliance Boundary](docs/entregas/entrega-4/E4_10_COMPLIANCE_BOUNDARY.md)
+  — avaliação de estado ou ação contra política versionada, produzindo
+  diagnóstico e evidência transitórios.
+- [E4.11 — Validated Experience Registry](docs/entregas/entrega-4/E4_11_VALIDATED_EXPERIENCE_REGISTRY.md)
+  — registro persistente e imutável de que uma experiência foi validada,
+  por quem e contra qual critério; estrutura de evidência, não motor.
+- [E4.12 — Final Integration Gate](docs/entregas/entrega-4/E4_12_FINAL_INTEGRATION_GATE.md)
+  — gate final de integração da Entrega 4, sobre PostgreSQL real.
+- [E4 — Manifesto Final](docs/entregas/entrega-4/E4_FINAL_MANIFEST.md)
+  — inventário de fatias, tabelas, APIs, deferidos e capacidades
+  proibidas ausentes.
+- [E4 — Manifesto Final (JSON)](docs/entregas/entrega-4/E4_FINAL_MANIFEST.json)
+  — a mesma informação em formato parseável e determinístico.
+- [E4 → E5 — Handoff](docs/entregas/entrega-4/E4_TO_E5_HANDOFF.md)
+  — o que a E5 pode consumir sem modificar, e o que falta antes dela.
+
 ## Diagramas
 
 Cada diagrama tem uma versão Mermaid (revisável em texto/PR) e uma

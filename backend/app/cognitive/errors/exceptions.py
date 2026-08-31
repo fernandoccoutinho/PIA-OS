@@ -30,6 +30,9 @@ from app.cognitive.errors.codes import (
     PIA_8020_CAUSAL_HISTORY_IMMUTABLE,
     PIA_8021_CAUSAL_EVENT_SELF_PREDECESSOR,
     PIA_8022_SYNC_PACKAGE_INVALID,
+    PIA_8029_MULTI_INPUT_SOURCE_NOT_FOUND,
+    PIA_8030_CAUSAL_PREDECESSOR_NOT_FOUND,
+    PIA_8031_CAUSAL_PREDECESSOR_SUBJECT_MISMATCH,
 )
 from app.exceptions.base import PIAOSException
 
@@ -447,4 +450,66 @@ class SyncPackageInvalidError(PIAOSException):
         super().__init__(
             message=f"Pacote de sincronização inválido: {reason}",
             detail={"reason": reason},
+        )
+
+
+class MultiInputSourceNotFoundError(PIAOSException):
+    """Uma ou mais fontes de uma transformação multi-input não existem
+    (E3.4.2).
+
+    Carrega o **conjunto** de COIDs ausentes, não o primeiro: uma
+    consolidação declara N fontes de uma vez, e reportar uma por vez
+    forçaria N tentativas para descobrir N referências ruins.
+    """
+
+    error_code = PIA_8029_MULTI_INPUT_SOURCE_NOT_FOUND
+
+    def __init__(self, missing_coids: tuple[uuid.UUID, ...]) -> None:
+        self.missing_coids = missing_coids
+        legiveis = ", ".join(str(coid) for coid in missing_coids)
+        super().__init__(
+            message=(
+                f"CognitiveObject(s) não encontrado(s) como fonte de transformação "
+                f"multi-input: {legiveis}."
+            ),
+            detail={"missing_coids": [str(coid) for coid in missing_coids]},
+        )
+
+
+class CausalPredecessorNotFoundError(PIAOSException):
+    """Um `predecessor_event_id` declarado não corresponde a nenhum
+    `CausalHistoryEvent` (E3.4.2)."""
+
+    error_code = PIA_8030_CAUSAL_PREDECESSOR_NOT_FOUND
+
+    def __init__(self, missing_event_ids: tuple[uuid.UUID, ...]) -> None:
+        self.missing_event_ids = missing_event_ids
+        legiveis = ", ".join(str(event_id) for event_id in missing_event_ids)
+        super().__init__(
+            message=(
+                "CausalHistoryEvent(s) declarado(s) como predecessor não " f"existe(m): {legiveis}."
+            ),
+            detail={"missing_event_ids": [str(event_id) for event_id in missing_event_ids]},
+        )
+
+
+class CausalPredecessorSubjectMismatchError(PIAOSException):
+    """Um predecessor declarado pertence à história de um sujeito que
+    não está entre as fontes informadas (E3.4.2)."""
+
+    error_code = PIA_8031_CAUSAL_PREDECESSOR_SUBJECT_MISMATCH
+
+    def __init__(self, event_id: uuid.UUID, subject_coid: uuid.UUID | None) -> None:
+        self.event_id = event_id
+        self.subject_coid = subject_coid
+        sujeito = "história desconhecida" if subject_coid is None else str(subject_coid)
+        super().__init__(
+            message=(
+                f"CausalHistoryEvent {event_id} pertence a {sujeito}, que não está entre "
+                "as fontes declaradas — usá-lo fabricaria causalidade."
+            ),
+            detail={
+                "event_id": str(event_id),
+                "subject_coid": None if subject_coid is None else str(subject_coid),
+            },
         )

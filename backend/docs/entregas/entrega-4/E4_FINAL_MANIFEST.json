@@ -1,0 +1,370 @@
+{
+  "manifest": "E4_FINAL_MANIFEST",
+  "delivery": "E4",
+  "chain": 97,
+  "parent_chain": 96,
+  "migration_head": "e7c25a91f4b3",
+  "generated_by": "E4.12 Final Integration Gate",
+  "slices": [
+    {
+      "id": "E4.0",
+      "name": "Architecture Contract Freeze",
+      "status": "IMPLEMENTED",
+      "path": "docs/entregas/entrega-4/E4_ARCHITECTURE_FREEZE.md"
+    },
+    {
+      "id": "E4.1",
+      "name": "Memory Domain Foundation",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/models/memory_domain.py"
+    },
+    {
+      "id": "E4.2",
+      "name": "Context Manager",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/context_manager.py"
+    },
+    {
+      "id": "E4.3",
+      "name": "Governance Policy",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/governance_manager.py"
+    },
+    {
+      "id": "E4.4",
+      "name": "Persistence Manager",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/persistence_manager.py"
+    },
+    {
+      "id": "E4.5",
+      "name": "Consolidation Manager",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/consolidation_manager.py"
+    },
+    {
+      "id": "E4.6",
+      "name": "Retrieval Manager",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/retrieval_manager.py"
+    },
+    {
+      "id": "E4.7",
+      "name": "Accessibility Policy Manager",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/accessibility_policy_manager.py"
+    },
+    {
+      "id": "E4.8",
+      "name": "Memory Isolation",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/memory_isolation_manager.py"
+    },
+    {
+      "id": "E4.9",
+      "name": "Retention, Approval and Destructive Execution",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/destructive_execution_service.py"
+    },
+    {
+      "id": "E4.10",
+      "name": "Compliance Boundary",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/services/compliance_evaluator.py"
+    },
+    {
+      "id": "E4.11",
+      "name": "Validated Experience Registry",
+      "status": "IMPLEMENTED",
+      "path": "backend/app/memory/models/validated_experience.py"
+    },
+    {
+      "id": "E4.12",
+      "name": "Final Integration Gate",
+      "status": "IMPLEMENTED",
+      "path": "backend/tests/integration/memory/test_e4_12_final_integration_gate.py"
+    }
+  ],
+  "tables": [
+    {
+      "name": "memory_domains",
+      "slice": "E4.1",
+      "status": "IMPLEMENTED",
+      "append_only": false
+    },
+    {
+      "name": "memory_domain_memberships",
+      "slice": "E4.1",
+      "status": "IMPLEMENTED",
+      "append_only": false
+    },
+    {
+      "name": "governance_policies",
+      "slice": "E4.3",
+      "status": "IMPLEMENTED",
+      "append_only": false
+    },
+    {
+      "name": "accessibility_policies",
+      "slice": "E4.7",
+      "status": "IMPLEMENTED",
+      "append_only": false
+    },
+    {
+      "name": "retention_policies",
+      "slice": "E4.9.6",
+      "status": "IMPLEMENTED",
+      "append_only": false
+    },
+    {
+      "name": "erasure_records",
+      "slice": "E4.9.5",
+      "status": "IMPLEMENTED",
+      "append_only": true
+    },
+    {
+      "name": "approval_records",
+      "slice": "E4.9.9.a",
+      "status": "IMPLEMENTED",
+      "append_only": true
+    },
+    {
+      "name": "approval_record_targets",
+      "slice": "E4.9.9.a",
+      "status": "IMPLEMENTED",
+      "append_only": true
+    },
+    {
+      "name": "approval_record_governance_items",
+      "slice": "E4.9.9.a",
+      "status": "IMPLEMENTED",
+      "append_only": true
+    },
+    {
+      "name": "validated_experiences",
+      "slice": "E4.11",
+      "status": "IMPLEMENTED",
+      "append_only": true
+    }
+  ],
+  "error_codes": {
+    "range": "PIA-8000..PIA-8051",
+    "next_free": "PIA-8052",
+    "e4_12_added": 0
+  },
+  "public_apis": [
+    {
+      "id": "GOVERNANCE_RESOLVE",
+      "status": "IMPLEMENTED",
+      "note": "decide admissibilidade, nunca verdade"
+    },
+    {
+      "id": "ACCESSIBILITY_TRANSITION",
+      "status": "IMPLEMENTED",
+      "note": "muda alcançabilidade, nunca existência"
+    },
+    {
+      "id": "RETENTION_ASSESSMENT",
+      "status": "IMPLEMENTED",
+      "note": "informa, nunca autoriza exclusão"
+    },
+    {
+      "id": "DESTRUCTIVE_EXECUTION",
+      "status": "IMPLEMENTED",
+      "note": "exige aprovação humana consumida"
+    },
+    {
+      "id": "COMPLIANCE_EVALUATION",
+      "status": "IMPLEMENTED",
+      "note": "diagnóstico transitório, zero writes"
+    },
+    {
+      "id": "VALIDATED_EXPERIENCE_APPEND",
+      "status": "IMPLEMENTED",
+      "note": "append-only, sem autoridade"
+    },
+    {
+      "id": "REMOTE_HTTP_API",
+      "status": "NOT_APPLICABLE",
+      "note": "nenhuma superfície remota nesta entrega"
+    }
+  ],
+  "boundaries_without_adapter": [
+    {
+      "id": "ErasureEffectPort",
+      "status": "CONTRACT_ONLY",
+      "note": "nenhum adaptador material de produção"
+    },
+    {
+      "id": "ErasureTargetResolverPort",
+      "status": "CONTRACT_ONLY",
+      "note": "nenhum resolvedor de produção"
+    },
+    {
+      "id": "AUTHENTICATOR",
+      "status": "NOT_APPLICABLE",
+      "note": "identidade é atribuída, nunca verificada"
+    }
+  ],
+  "deferred": [
+    {
+      "id": "VALIDATED_EXPERIENCE_TRANSPORT",
+      "status": "DEFERRED",
+      "note": "contrato de portabilidade e atribuição de origem entregues; transporte não implementado, exigiria alterar SECTION_BY_TABLE na E3 congelada",
+      "universal_precondition_for_e5": false
+    },
+    {
+      "id": "EXCEPTIONAL_CAUSAL_RECORD_ERASURE",
+      "status": "FUTURE_STOP_CONDITION",
+      "note": "apagamento excepcional de registro causal permanece adiado; só vira bloqueio se um requisito futuro depender dele"
+    },
+    {
+      "id": "COUT_P_V1_2",
+      "status": "DEFERRED",
+      "note": "Predictive Accessibility é candidato exclusivo da E5. DEFERRED, e não FUTURE_STOP_CONDITION: nada na E4 depende dele, então ele não é nem poderia virar bloqueio desta entrega — DEFERRED_CANDIDATE != FUTURE_STOP_CONDITION.",
+      "universal_precondition_for_e5": false
+    },
+    {
+      "id": "DOC_ROOTS_UNIFICATION",
+      "status": "DEFERRED",
+      "note": "as duas raízes documentais permanecem separadas; unificação não realizada",
+      "universal_precondition_for_e5": false
+    },
+    {
+      "id": "VALIDATED_BY_AUTHENTICATION",
+      "status": "NOT_APPLICABLE",
+      "note": "atribuição sem autenticação, declarada e não alegada"
+    },
+    {
+      "id": "MATERIAL_EFFECT_ADAPTERS",
+      "status": "CONTRACT_ONLY",
+      "note": "apenas contratos e dublês confinados a backend/tests/"
+    }
+  ],
+  "forbidden_capabilities": [
+    {
+      "id": "LEARNING_ENGINE",
+      "status": "FORBIDDEN",
+      "present": false
+    },
+    {
+      "id": "AUTOMATIC_SELECTION",
+      "status": "FORBIDDEN",
+      "present": false
+    },
+    {
+      "id": "SCORE_OR_RANKING",
+      "status": "FORBIDDEN",
+      "present": false
+    },
+    {
+      "id": "AUTOMATIC_PROMOTION",
+      "status": "FORBIDDEN",
+      "present": false
+    },
+    {
+      "id": "BACKGROUND_WORKER",
+      "status": "FORBIDDEN",
+      "present": false
+    },
+    {
+      "id": "SCHEDULER",
+      "status": "FORBIDDEN",
+      "present": false
+    },
+    {
+      "id": "QUEUE",
+      "status": "FORBIDDEN",
+      "present": false
+    },
+    {
+      "id": "PROVIDER_SDK",
+      "status": "FORBIDDEN",
+      "present": false
+    },
+    {
+      "id": "PRODUCTION_DESTRUCTIVE_ADAPTER",
+      "status": "FORBIDDEN",
+      "present": false
+    }
+  ],
+  "e3_freeze": {
+    "original_commit": "014455f93bf7433232a945062e2024d536f7a004",
+    "original_app_cognitive_tree": "f32780bc37c45bc495aed000898354a7d71c8b1b",
+    "effective_commit": "b4e61a4702a4428dd1dea7464efe09a180bf797c",
+    "effective_app_cognitive_tree": "be407b46f679a009e0f7f7e9f01fb784f08dea54",
+    "authorized_delta": "E3.4.2 + E3.4.2.1 — Multi-Input Transformation",
+    "authorized_files": [
+      {
+        "status": "M",
+        "mode": "100644",
+        "path": "backend/app/cognitive/errors/__init__.py"
+      },
+      {
+        "status": "M",
+        "mode": "100644",
+        "path": "backend/app/cognitive/errors/codes.py"
+      },
+      {
+        "status": "M",
+        "mode": "100644",
+        "path": "backend/app/cognitive/errors/exceptions.py"
+      },
+      {
+        "status": "A",
+        "mode": "100644",
+        "path": "backend/app/cognitive/schemas/multi_input_transformation.py"
+      },
+      {
+        "status": "A",
+        "mode": "100644",
+        "path": "backend/app/cognitive/services/multi_input_transformation_manager.py"
+      }
+    ],
+    "modified_after_effective_freeze": false
+  },
+  "doc_roots": {
+    "unified": false,
+    "root": {
+      "path": "docs/entregas/entrega-4",
+      "role": "HISTORICAL_ARCHITECTURE_AND_EDRS",
+      "checked_by_consistency_checker": false
+    },
+    "backend": {
+      "path": "backend/docs/entregas/entrega-4",
+      "role": "CHECKED_DELIVERY_EDRS_AND_FINAL_MANIFEST",
+      "checked_by_consistency_checker": true
+    }
+  },
+  "characterizations": {
+    "historical": 14,
+    "e4_12": "reproduce_e412_final_gate_gaps.py",
+    "total_in_package": 15,
+    "e4_12_probes": 14
+  },
+  "active_stop_conditions": [],
+  "final_state": {
+    "E4_9": "FROZEN",
+    "E4_10": "FROZEN",
+    "E4_11": "FROZEN",
+    "E4_12_IMPLEMENTATION_GATE": "PASS",
+    "E4_FINAL_FREEZE": "PENDING_INDEPENDENT_AUDIT",
+    "GATE_E4_TO_E5": "PENDING",
+    "READY_FOR_E5": "FALSE",
+    "E5": "NOT_STARTED",
+    "PASS_FINAL": "NOT_DECLARED"
+  },
+  "rejected_candidates": [
+    {
+      "head": "afe2c5ec368c7a879f59d8640cf86d5713367ea6",
+      "published": false,
+      "reason": "reprovou a própria caracterização com 4/12"
+    },
+    {
+      "head": "938c553a08981ae29266fbb27531bb1deb754167",
+      "published": true,
+      "reason": "rejeitado pela auditoria independente com sete achados",
+      "stat_measured": "7 arquivos, 2252 inserções"
+    }
+  ]
+}
