@@ -111,6 +111,40 @@ def _git(*argumentos: str) -> str:
     ).stdout.strip()
 
 
+def _cadeia_dsvh_canonica() -> bool:
+    """`True` só quando o repositório contém os commits congelados da cadeia DSVH.
+
+    As guardas `m01`–`m06`, `m14*` e o mutante `m99_2_1` afirmam sobre a
+    **identidade git** da fatia E4.12 — SHAs de commit, hashes de tree e
+    fronteiras da cadeia canônica. Um repositório reconstruído por squash
+    (o handoff ao desenvolvedor) preserva o CONTEÚDO da fatia, mas não os
+    commits originais, então esses meta-testes de história não são
+    aplicáveis fora da cadeia canônica. O restante do gate — varreduras de
+    AST sobre a produção e os demais mutantes — continua valendo.
+    """
+    # Ancestralidade, não mera existência do objeto: um commit congelado pode
+    # estar presente no object store (p.ex. trazido por um bundle/fetch) sem
+    # fazer parte da história do HEAD. A fatia só é canônica se o freeze
+    # efetivo da E3 for ANCESTRAL do HEAD. `merge-base --is-ancestor` devolve
+    # 0 para ancestral, 1 para não-ancestral e outro código quando o commit
+    # não existe ou o diretório não é um repositório git — todos tratados como
+    # "fora da cadeia canônica".
+    resultado = subprocess.run(
+        [GIT, "-C", str(REPO), "merge-base", "--is-ancestor", E3_COMMIT_EFETIVO, "HEAD"],
+        capture_output=True,
+    )
+    return resultado.returncode == 0
+
+
+fora_da_cadeia_canonica = pytest.mark.skipif(
+    not _cadeia_dsvh_canonica(),
+    reason=(
+        "repositório não é a cadeia DSVH canônica (commits E3 congelados ausentes); "
+        "meta-teste de história git da fatia E4.12 não aplicável"
+    ),
+)
+
+
 def _delta_da_e3(de: str, para: str) -> tuple[tuple[str, str, str, str, str], ...]:
     """Delta de `backend/app/cognitive`, por caminho, status, modo e blob.
 
@@ -132,6 +166,7 @@ def _delta_da_e3(de: str, para: str) -> tuple[tuple[str, str, str, str, str], ..
     return tuple(sorted(entradas, key=lambda item: item[4]))
 
 
+@fora_da_cadeia_canonica
 def test_m01_a_e3_sofreu_exatamente_o_delta_autorizado():
     """`E3_ORIGINAL_DELTA = ONLY_AUTHORIZED_E3_4_2_AND_E3_4_2_1`.
 
@@ -145,6 +180,7 @@ def test_m01_a_e3_sofreu_exatamente_o_delta_autorizado():
     )
 
 
+@fora_da_cadeia_canonica
 def test_m02_a_e3_nao_mudou_depois_do_freeze_efetivo():
     """`E3_AFTER_EFFECTIVE_FREEZE_MODIFIED = NO`.
 
@@ -203,6 +239,7 @@ def _artefato_no_head(caminho: str) -> tuple[str, str] | None:
     return (modo, blob)
 
 
+@fora_da_cadeia_canonica
 def test_m02_1_toda_migration_original_da_e3_esta_intacta():
     """`FROZEN_E3_MIGRATIONS_UNCHANGED`, por caminho, modo e blob completo.
 
@@ -220,6 +257,7 @@ def test_m02_1_toda_migration_original_da_e3_esta_intacta():
     assert divergentes == []
 
 
+@fora_da_cadeia_canonica
 def test_m02_2_a_derivacao_encontra_as_treze_migrations_e_o_gitkeep():
     """Guarda de PREMISSA: sem ela, `m02_1` passaria sobre um conjunto vazio.
 
@@ -235,6 +273,7 @@ def test_m02_2_a_derivacao_encontra_as_treze_migrations_e_o_gitkeep():
         assert len(blob) == 40, "blob abreviado compara menos do que parece"
 
 
+@fora_da_cadeia_canonica
 def test_m02_3_migrations_posteriores_sao_permitidas():
     """Acrescentar migration da E4 não é alterar a E3.
 
@@ -251,6 +290,7 @@ def test_m02_3_migrations_posteriores_sao_permitidas():
     assert len(atuais) > len(originais)
 
 
+@fora_da_cadeia_canonica
 def test_m99_2_1_a_guarda_de_migrations_detecta_uma_lista_incompleta():
     """Mutante: retirar uma migration da lista deixa de detectar a alteração.
 
@@ -276,6 +316,7 @@ def test_m99_2_1_a_guarda_de_migrations_detecta_uma_lista_incompleta():
     assert _divergentes(incompleta_adulterada) == []
 
 
+@fora_da_cadeia_canonica
 def test_m03_a_arvore_original_da_e3_e_diferente_e_isso_e_esperado():
     """Guarda de premissa: sem ela, `m01` passaria por coincidência.
 
@@ -363,6 +404,7 @@ def _arquivos_alterados(de: str, para: str, prefixo: str) -> tuple[str, ...]:
     return tuple(sorted(linha for linha in bruto.splitlines() if linha))
 
 
+@fora_da_cadeia_canonica
 def test_m04_producao_tem_delta_zero():
     """`PRODUCTION_DELTA = NONE` — `backend/app/` byte a byte igual NA FATIA."""
     assert _arquivos_alterados(PARENT_CADEIA_96, E4_12_FINAL_COMMIT, "backend/app") == ()
@@ -371,6 +413,7 @@ def test_m04_producao_tem_delta_zero():
     )
 
 
+@fora_da_cadeia_canonica
 def test_m05_migrations_tem_delta_zero():
     """`MIGRATION_DELTA = NONE` na fatia E4.12.
 
@@ -389,6 +432,7 @@ def test_m05_migrations_tem_delta_zero():
     )
 
 
+@fora_da_cadeia_canonica
 def test_m06_o_delta_da_fatia_e_apenas_teste_e_documentacao():
     """A E4.12 acrescenta provas, não capacidades."""
     alterados = _arquivos_alterados(PARENT_CADEIA_96, E4_12_FINAL_COMMIT, "backend")
@@ -402,21 +446,25 @@ def test_m06_o_delta_da_fatia_e_apenas_teste_e_documentacao():
 # --- premissas da fatia, agora explícitas ------------------------------
 
 
+@fora_da_cadeia_canonica
 def test_m04_1_o_commit_final_e_filho_direto_do_parent_da_cadeia_96():
     """Sem isto, o intervalo poderia pular commits e a prova não seria da fatia."""
     assert _git("rev-parse", f"{E4_12_FINAL_COMMIT}^") == PARENT_CADEIA_96
 
 
+@fora_da_cadeia_canonica
 def test_m04_2_as_arvores_de_producao_da_fatia_sao_as_fixadas():
     assert _git("rev-parse", f"{PARENT_CADEIA_96}:backend/app") == E4_12_PARENT_APP_TREE
     assert _git("rev-parse", f"{E4_12_FINAL_COMMIT}:backend/app") == E4_12_FINAL_APP_TREE
 
 
+@fora_da_cadeia_canonica
 def test_m05_1_as_arvores_de_migration_da_fatia_sao_as_fixadas():
     assert _git("rev-parse", f"{PARENT_CADEIA_96}:backend/alembic") == E4_12_PARENT_ALEMBIC_TREE
     assert _git("rev-parse", f"{E4_12_FINAL_COMMIT}:backend/alembic") == E4_12_FINAL_ALEMBIC_TREE
 
 
+@fora_da_cadeia_canonica
 def test_m04_3_existe_producao_posterior_a_fatia_e_por_isso_head_nao_a_representa():
     """A razão do corretivo, provada e não apenas afirmada.
 
@@ -429,6 +477,7 @@ def test_m04_3_existe_producao_posterior_a_fatia_e_por_isso_head_nao_a_represent
     assert _arquivos_alterados(PARENT_CADEIA_96, E4_12_FINAL_COMMIT, "backend/app") == ()
 
 
+@fora_da_cadeia_canonica
 def test_m04_4_o_helper_bilateral_detecta_producao_num_intervalo_que_a_contenha():
     """O instrumento consegue acusar — não é uma guarda que só sabe passar."""
     contendo_producao = _arquivos_alterados(PARENT_CADEIA_96, "HEAD", "backend/app")
@@ -771,6 +820,7 @@ def _fontes_de_producao_no_commit(commit: str) -> list[tuple[str, str]]:
     return [(caminho, _git("show", f"{commit}:{caminho}")) for caminho in caminhos]
 
 
+@fora_da_cadeia_canonica
 def test_m14_nenhum_cout_p_ou_predictive_accessibility_implementado():
     """Candidato exclusivo da E5; nada dele podia nascer NA FATIA E4.12.
 
@@ -798,6 +848,7 @@ def test_m14_nenhum_cout_p_ou_predictive_accessibility_implementado():
     assert infratores == []
 
 
+@fora_da_cadeia_canonica
 def test_m14_1_a_varredura_historica_le_a_arvore_congelada_e_nao_a_worktree():
     """O alvo de `m14` é o commit da fatia, e as duas árvores já divergem."""
     historicas = {caminho for caminho, _ in _fontes_de_producao_no_commit(E4_12_FINAL_COMMIT)}
