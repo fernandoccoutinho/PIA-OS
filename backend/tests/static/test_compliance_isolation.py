@@ -227,9 +227,11 @@ def test_g01_2_a_e4_10_nao_criou_migration_propria():
             grafo[revisao] = pai
     sucessoras = [r for r, p in grafo.items() if p == "d5b31f7a08c4"]
     assert sucessoras == ["e7c25a91f4b3"], sucessoras
+    sucessoras_e5 = [r for r, p in grafo.items() if p == "e7c25a91f4b3"]
+    assert sucessoras_e5 == ["f8a91c2d4e60"], sucessoras_e5
     pais = {p for p in grafo.values() if p}
     folhas = sorted(r for r in grafo if r not in pais)
-    assert folhas == ["e7c25a91f4b3"], folhas
+    assert folhas == ["f8a91c2d4e60"], folhas
 
 
 def test_g99_1_a_guarda_de_persistencia_detecta_um_modelo():

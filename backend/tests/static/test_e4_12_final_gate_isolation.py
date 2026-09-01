@@ -312,50 +312,209 @@ def test_m99_2_a_guarda_da_e3_detecta_status_trocado():
 
 PARENT_CADEIA_96 = "5eeab210627ae631bc2e58237fc5268dc663a93d"
 
+E4_12_FINAL_COMMIT = "340443aa96da16824b624ff767ea24cf1e019daf"
+"""Fim da fatia E4.12, fixado.
 
-def _arquivos_alterados(de: str, prefixo: str) -> tuple[str, ...]:
-    bruto = _git("diff", "--name-only", de, "HEAD", "--", prefixo)
+A fatia é um intervalo **histórico** e fechado:
+
+```text
+E4_12_DELTA = PARENT_CHAIN96..E4_12_FINAL_COMMIT
+E4_12_DELTA != PARENT_CHAIN96..CURRENT_HEAD
+```
+
+A versão anterior destas guardas comparava com `HEAD`. Enquanto `HEAD` era o
+próprio commit da E4.12, ou um descendente apenas documental, a diferença não
+aparecia. A partir do momento em que a E5 acrescentou produção autorizada, a
+mesma asserção passou a proibir permanentemente qualquer entrega futura — e
+uma prova sobre o passado virou uma proibição sobre o futuro.
+
+```text
+HISTORICAL_SLICE_ASSERTION_AGAINST_HEAD = DEFECTIVE_INSTRUMENT
+```
+
+Vale registrar por que o defeito demorou a aparecer: os gates da cadeia 99
+foram executados **antes** do commit, como o processo manda, e naquele instante
+os arquivos novos ainda estavam untracked — `git diff <parent> HEAD` não os via.
+A guarda passou por um motivo alheio à sua intenção.
+
+```text
+GIT_BASED_GUARD_BEFORE_COMMIT != GIT_BASED_GUARD_AFTER_COMMIT
+```
+"""
+
+E4_12_PARENT_APP_TREE = "7b5ce7c4737da8e2ce8bad0fac0ba946f9d7ef64"
+E4_12_FINAL_APP_TREE = "7b5ce7c4737da8e2ce8bad0fac0ba946f9d7ef64"
+E4_12_PARENT_ALEMBIC_TREE = "eb5216dfc69f3eafe0b4073fe848ff8636614691"
+E4_12_FINAL_ALEMBIC_TREE = "eb5216dfc69f3eafe0b4073fe848ff8636614691"
+"""Árvores fixas dos dois lados da fatia.
+
+Fixá-las é o que impede que a prova continue passando por acidente se algum dia
+os dois extremos do intervalo forem trocados por outra coisa.
+"""
+
+
+def _arquivos_alterados(de: str, para: str, prefixo: str) -> tuple[str, ...]:
+    """Diferença entre DOIS commits explícitos, nunca contra `HEAD` implícito.
+
+    Nenhum helper que pretenda medir uma fatia histórica pode escolher o lado
+    direito sozinho.
+    """
+    bruto = _git("diff", "--name-only", de, para, "--", prefixo)
     return tuple(sorted(linha for linha in bruto.splitlines() if linha))
 
 
 def test_m04_producao_tem_delta_zero():
-    """`PRODUCTION_DELTA = NONE` — `backend/app/` byte a byte igual."""
-    assert _arquivos_alterados(PARENT_CADEIA_96, "backend/app") == ()
+    """`PRODUCTION_DELTA = NONE` — `backend/app/` byte a byte igual NA FATIA."""
+    assert _arquivos_alterados(PARENT_CADEIA_96, E4_12_FINAL_COMMIT, "backend/app") == ()
     assert _git("rev-parse", f"{PARENT_CADEIA_96}:backend/app") == _git(
-        "rev-parse", "HEAD:backend/app"
+        "rev-parse", f"{E4_12_FINAL_COMMIT}:backend/app"
     )
 
 
 def test_m05_migrations_tem_delta_zero():
-    """`MIGRATION_DELTA = NONE` e a cabeça permanece a da cadeia 96."""
-    assert _arquivos_alterados(PARENT_CADEIA_96, "backend/alembic") == ()
-    versoes = BACKEND / "alembic" / "versions"
-    grafo: dict[str, str | None] = {}
-    for caminho in sorted(versoes.glob("*.py")):
-        arvore = ast.parse(caminho.read_text(encoding="utf-8"))
-        revisao = pai = None
-        for no in ast.walk(arvore):
-            if isinstance(no, ast.AnnAssign | ast.Assign):
-                alvo = no.target if isinstance(no, ast.AnnAssign) else no.targets[0]
-                if isinstance(alvo, ast.Name) and isinstance(no.value, ast.Constant):
-                    if alvo.id == "revision":
-                        revisao = no.value.value
-                    elif alvo.id == "down_revision":
-                        pai = no.value.value
-        if revisao:
-            grafo[revisao] = pai
-    pais = {p for p in grafo.values() if p}
-    assert sorted(r for r in grafo if r not in pais) == ["e7c25a91f4b3"]
+    """`MIGRATION_DELTA = NONE` na fatia E4.12.
+
+    Não percorre `alembic/versions` da worktree corrente: aquele diretório
+    descreve o estado ATUAL do repositório, não o histórico da E4.12, e usá-lo
+    aqui repetiria o defeito de `HEAD` por outro caminho. A cabeça global
+    vigente continua verificada pelo gate `alembic heads`, fora desta prova.
+
+    ```text
+    CURRENT_WORKTREE_STATE != HISTORICAL_SLICE_STATE
+    ```
+    """
+    assert _arquivos_alterados(PARENT_CADEIA_96, E4_12_FINAL_COMMIT, "backend/alembic") == ()
+    assert _git("rev-parse", f"{PARENT_CADEIA_96}:backend/alembic") == _git(
+        "rev-parse", f"{E4_12_FINAL_COMMIT}:backend/alembic"
+    )
 
 
 def test_m06_o_delta_da_fatia_e_apenas_teste_e_documentacao():
     """A E4.12 acrescenta provas, não capacidades."""
-    alterados = _arquivos_alterados(PARENT_CADEIA_96, "backend")
+    alterados = _arquivos_alterados(PARENT_CADEIA_96, E4_12_FINAL_COMMIT, "backend")
     assert alterados, "a fatia precisa alterar alguma coisa"
     for caminho in alterados:
         assert caminho.startswith(
             ("backend/tests/", "backend/docs/", "backend/README_BACKEND.md")
         ), caminho
+
+
+# --- premissas da fatia, agora explícitas ------------------------------
+
+
+def test_m04_1_o_commit_final_e_filho_direto_do_parent_da_cadeia_96():
+    """Sem isto, o intervalo poderia pular commits e a prova não seria da fatia."""
+    assert _git("rev-parse", f"{E4_12_FINAL_COMMIT}^") == PARENT_CADEIA_96
+
+
+def test_m04_2_as_arvores_de_producao_da_fatia_sao_as_fixadas():
+    assert _git("rev-parse", f"{PARENT_CADEIA_96}:backend/app") == E4_12_PARENT_APP_TREE
+    assert _git("rev-parse", f"{E4_12_FINAL_COMMIT}:backend/app") == E4_12_FINAL_APP_TREE
+
+
+def test_m05_1_as_arvores_de_migration_da_fatia_sao_as_fixadas():
+    assert _git("rev-parse", f"{PARENT_CADEIA_96}:backend/alembic") == E4_12_PARENT_ALEMBIC_TREE
+    assert _git("rev-parse", f"{E4_12_FINAL_COMMIT}:backend/alembic") == E4_12_FINAL_ALEMBIC_TREE
+
+
+def test_m04_3_existe_producao_posterior_a_fatia_e_por_isso_head_nao_a_representa():
+    """A razão do corretivo, provada e não apenas afirmada.
+
+    Se um dia esta asserção falhar, é porque não há mais produção depois da
+    E4.12 — e aí o corretivo teria virado inócuo sem ninguém perceber.
+    """
+    posteriores = _arquivos_alterados(E4_12_FINAL_COMMIT, "HEAD", "backend/app")
+    assert posteriores, "a cadeia corrente deveria conter produção posterior à E4.12"
+    assert _arquivos_alterados(PARENT_CADEIA_96, "HEAD", "backend/app") != ()
+    assert _arquivos_alterados(PARENT_CADEIA_96, E4_12_FINAL_COMMIT, "backend/app") == ()
+
+
+def test_m04_4_o_helper_bilateral_detecta_producao_num_intervalo_que_a_contenha():
+    """O instrumento consegue acusar — não é uma guarda que só sabe passar."""
+    contendo_producao = _arquivos_alterados(PARENT_CADEIA_96, "HEAD", "backend/app")
+    assert any(c.startswith("backend/app/") for c in contendo_producao)
+    infratores = [
+        c
+        for c in _arquivos_alterados(PARENT_CADEIA_96, "HEAD", "backend")
+        if not c.startswith(("backend/tests/", "backend/docs/", "backend/README_BACKEND.md"))
+    ]
+    assert infratores, "um intervalo que contém produção precisa ser acusado pelo helper"
+
+
+FUNCOES_DA_FATIA_HISTORICA = (
+    "_arquivos_alterados",
+    "test_m04_producao_tem_delta_zero",
+    "test_m05_migrations_tem_delta_zero",
+    "test_m06_o_delta_da_fatia_e_apenas_teste_e_documentacao",
+    "test_m14_nenhum_cout_p_ou_predictive_accessibility_implementado",
+)
+"""As que provam a FATIA. Nenhuma delas pode olhar para `HEAD`.
+
+`test_m04_3_*` e `test_m04_4_*` usam `HEAD` de propósito — provam que existe
+produção depois da fatia — e por isso ficam fora desta lista.
+"""
+
+
+def _funcoes_deste_arquivo() -> dict[str, ast.FunctionDef]:
+    arvore = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    return {no.name: no for no in ast.walk(arvore) if isinstance(no, ast.FunctionDef)}
+
+
+def test_m99_8_nenhuma_guarda_da_fatia_referencia_head():
+    """Prova ESTRUTURAL de que o defeito não pode voltar em silêncio.
+
+    Duas das guardas corrigidas — `m05` e `m14` — passam hoje mesmo se alguém
+    devolver `HEAD` ao lugar do commit fixo: a E5.a não criou migration, e não
+    nomeou nenhuma definição com o vocabulário proibido. Uma prova puramente
+    comportamental não distingue os dois casos, e um mutante que troca o commit
+    por `HEAD` sobreviveria — foi o que aconteceu na primeira execução dos
+    mutantes deste corretivo.
+
+    ```text
+    BEHAVIOURALLY_EQUIVALENT_TODAY != CORRECT_INSTRUMENT
+    LATENT_DEFECT_THAT_PASSES = STILL_A_DEFECT
+    ```
+
+    A guarda olha para a própria árvore sintática: nenhuma função da fatia
+    histórica pode conter a constante `"HEAD"`.
+    """
+    funcoes = _funcoes_deste_arquivo()
+    infratores: list[str] = []
+    for nome in FUNCOES_DA_FATIA_HISTORICA:
+        assert nome in funcoes, nome
+        for no in ast.walk(funcoes[nome]):
+            if isinstance(no, ast.Constant) and no.value == "HEAD":
+                infratores.append(nome)
+            if isinstance(no, ast.JoinedStr) and "HEAD" in ast.unparse(no):
+                infratores.append(nome)
+    assert infratores == []
+
+
+def test_m99_9_m14_le_a_arvore_congelada_e_nao_a_worktree():
+    """`m14` não pode chamar o helper que lê a worktree.
+
+    Mesmo motivo do teste anterior: hoje as duas leituras dariam o mesmo
+    resultado, porque a E5.a evitou o vocabulário proibido de propósito. A
+    diferença é de instrumento, não de resultado, e só a AST a enxerga.
+    """
+    m14 = _funcoes_deste_arquivo()[
+        "test_m14_nenhum_cout_p_ou_predictive_accessibility_implementado"
+    ]
+    chamadas = {
+        no.func.id
+        for no in ast.walk(m14)
+        if isinstance(no, ast.Call) and isinstance(no.func, ast.Name)
+    }
+    assert "_fontes_de_producao" not in chamadas
+    assert "_fontes_de_producao_no_commit" in chamadas
+
+
+def test_m99_10_o_mecanismo_de_deteccao_de_head_consegue_acusar():
+    """Mutante do próprio mecanismo: uma função que usa `HEAD` é acusada."""
+    fonte = 'def g():\n    return _git("diff", "--name-only", A, "HEAD")\n'
+    alvo = next(no for no in ast.walk(ast.parse(fonte)) if isinstance(no, ast.FunctionDef))
+    achou = any(isinstance(no, ast.Constant) and no.value == "HEAD" for no in ast.walk(alvo))
+    assert achou
 
 
 def test_m99_3_a_guarda_de_delta_detecta_um_arquivo_de_producao():
@@ -600,18 +759,52 @@ def test_m13_nenhum_adaptador_material_fora_de_testes():
     assert infratores == []
 
 
+def _fontes_de_producao_no_commit(commit: str) -> list[tuple[str, str]]:
+    """Fontes Python de `backend/app` **naquele commit**, lidas por Git.
+
+    Deliberadamente separado de `_fontes_de_producao`, que lê a worktree e
+    serve às guardas cujo invariante é sobre o estado atual. Reaproveitar aquele
+    helper aqui reescoparia `m09`–`m13` sem autorização.
+    """
+    listagem = _git("ls-tree", "-r", "--name-only", commit, "--", "backend/app")
+    caminhos = [linha for linha in listagem.splitlines() if linha.endswith(".py")]
+    return [(caminho, _git("show", f"{commit}:{caminho}")) for caminho in caminhos]
+
+
 def test_m14_nenhum_cout_p_ou_predictive_accessibility_implementado():
-    """Candidato exclusivo da E5; nada dele pode nascer aqui."""
+    """Candidato exclusivo da E5; nada dele podia nascer NA FATIA E4.12.
+
+    Esta é uma afirmação **temporal** sobre o fechamento da E4.12, não uma
+    proibição perpétua. A E5 foi autorizada e iniciada depois, e varrer a
+    produção de um `HEAD` futuro mediria a coisa errada mesmo quando passasse
+    por coincidência nominal.
+
+    ```text
+    E5_CAPABILITY_AT_E4_12_FINAL_COMMIT = ABSENT
+    E5_CAPABILITY_AFTER_AUTHORIZED_E5_START = ALLOWED
+    ```
+
+    O vocabulário proibido e a força da afirmação permanecem os mesmos; o que
+    muda é o alvo, que passa a ser a árvore congelada.
+    """
     proibidos = ("COUTP", "CoutP", "PredictiveAccessibility", "predictive_accessibility")
     infratores: list[str] = []
-    for caminho in _fontes_de_producao():
-        texto = caminho.read_text(encoding="utf-8")
+    for caminho, texto in _fontes_de_producao_no_commit(E4_12_FINAL_COMMIT):
         arvore = ast.parse(texto)
         for no in ast.walk(arvore):
             definicao = isinstance(no, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
             if definicao and any(termo in no.name for termo in proibidos):
-                infratores.append(f"{caminho.name}:{no.name}")
+                infratores.append(f"{caminho}:{no.name}")
     assert infratores == []
+
+
+def test_m14_1_a_varredura_historica_le_a_arvore_congelada_e_nao_a_worktree():
+    """O alvo de `m14` é o commit da fatia, e as duas árvores já divergem."""
+    historicas = {caminho for caminho, _ in _fontes_de_producao_no_commit(E4_12_FINAL_COMMIT)}
+    assert historicas
+    assert not any("predictive_accessibility" in caminho for caminho in historicas)
+    atuais = {f"backend/app/{p.relative_to(APP)}" for p in _fontes_de_producao()}
+    assert atuais - historicas, "a worktree atual deveria ter produção que a fatia não tem"
 
 
 def test_m99_6_a_guarda_de_provider_detecta_um_sdk():

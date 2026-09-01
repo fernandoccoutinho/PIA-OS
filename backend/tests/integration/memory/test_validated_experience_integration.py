@@ -107,6 +107,24 @@ def _truncar() -> None:
     if not pendentes:
         return
     with engine.begin() as conn:
+        # E5.l é a sucessora linear da E4.11. Para reconstruir a E4.11
+        # sem criar branch nem tentar recriar a tabela descendente, a
+        # fixture remove primeiro o descendente vazio e suas funções.
+        assert (
+            conn.execute(
+                sa.text("SELECT count(*) FROM predictive_reconfiguration_events")
+            ).scalar_one()
+            == 0
+        )
+        conn.execute(sa.text("DROP TABLE predictive_reconfiguration_events CASCADE"))
+        conn.execute(
+            sa.text("DROP FUNCTION IF EXISTS reject_predictive_reconfiguration_mutation()")
+        )
+        conn.execute(
+            sa.text(
+                "DROP FUNCTION IF EXISTS " "predictive_string_array_is_canonical(jsonb, boolean)"
+            )
+        )
         conn.execute(sa.text("DROP TABLE validated_experiences CASCADE"))
         conn.execute(sa.text("DROP FUNCTION IF EXISTS reject_validated_experience_mutation()"))
         conn.execute(
@@ -512,8 +530,8 @@ def test_i15_o_banco_recusa_versao_de_criterio_invalida():
 
 
 def test_i16_cabeca_unica_e_sucessora_linear():
-    assert migrations.head_revision() == "e7c25a91f4b3"
-    assert migrations.current_revision() == "e7c25a91f4b3"
+    assert migrations.head_revision() == "f8a91c2d4e60"
+    assert migrations.current_revision() == "f8a91c2d4e60"
 
 
 def test_i17_round_trip_com_a_tabela_vazia():
@@ -526,7 +544,7 @@ def test_i17_round_trip_com_a_tabela_vazia():
         ).scalar_one()
     assert existe == 0
     migrations.upgrade("head")
-    assert migrations.current_revision() == "e7c25a91f4b3"
+    assert migrations.current_revision() == "f8a91c2d4e60"
 
 
 def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
@@ -566,7 +584,7 @@ def test_i18_downgrade_com_dados_recusa_antes_de_qualquer_ddl():
 
     assert (tabela, gatilho, funcao, linhas) == (1, 1, 1, 1)
     assert indices >= 3
-    assert migrations.current_revision() == "e7c25a91f4b3"
+    assert migrations.current_revision() == "f8a91c2d4e60"
 
     # E a trigger continua ativa depois da recusa.
     with pytest.raises(Exception, match="append-only"), engine.begin() as conn:
