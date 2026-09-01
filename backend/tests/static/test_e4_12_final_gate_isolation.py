@@ -129,10 +129,15 @@ def _cadeia_dsvh_canonica() -> bool:
     # 0 para ancestral, 1 para não-ancestral e outro código quando o commit
     # não existe ou o diretório não é um repositório git — todos tratados como
     # "fora da cadeia canônica".
-    resultado = subprocess.run(
-        [GIT, "-C", str(REPO), "merge-base", "--is-ancestor", E3_COMMIT_EFETIVO, "HEAD"],
-        capture_output=True,
-    )
+    try:
+        resultado = subprocess.run(
+            [GIT, "-C", str(REPO), "merge-base", "--is-ancestor", E3_COMMIT_EFETIVO, "HEAD"],
+            capture_output=True,
+        )
+    except OSError:
+        # git ausente (p.ex. o container de teste não o instala): não há como
+        # ser a cadeia canônica, então os meta-testes de história não se aplicam.
+        return False
     return resultado.returncode == 0
 
 
